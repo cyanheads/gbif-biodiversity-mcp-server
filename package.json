@@ -1,7 +1,7 @@
 {
-  "name": "gbif-mcp-server",
+  "name": "@cyanheads/gbif-mcp-server",
   "version": "0.1.0",
-  "description": "",
+  "description": "MCP server for the GBIF API — species taxonomy, occurrence records, datasets, and publishers.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -37,10 +37,21 @@
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js"
   },
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "gbif",
+    "biodiversity",
+    "species",
+    "taxonomy",
+    "occurrences",
+    "darwin-core",
+    "natural-history"
+  ],
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/cyanheads/gbif-mcp-server"
   },
   "license": "Apache-2.0",
   "engines": {

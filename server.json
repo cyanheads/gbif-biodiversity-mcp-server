@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "cyanheads/gbif-mcp-server",
-  "description": "MCP server for the Global Biodiversity Information Facility (GBIF) API — species taxonomy, occurrence records, datasets, and publishers.",
+  "description": "GBIF API MCP server — species taxonomy, occurrence records, datasets, and publishers.",
   "repository": {
     "url": "https://github.com/cyanheads/gbif-mcp-server",
     "source": "github"
@@ -11,7 +11,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "gbif-mcp-server",
+      "identifier": "@cyanheads/gbif-mcp-server",
       "runtimeHint": "node",
       "version": "0.1.0",
       "packageArguments": [
@@ -25,6 +25,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "GBIF_API_KEY",
+          "description": "GBIF API key for higher rate limits. Sent as HTTP Basic Auth username.",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -40,7 +46,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "gbif-mcp-server",
+      "identifier": "@cyanheads/gbif-mcp-server",
       "runtimeHint": "node",
       "version": "0.1.0",
       "packageArguments": [
@@ -54,6 +60,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "GBIF_API_KEY",
+          "description": "GBIF API key for higher rate limits. Sent as HTTP Basic Auth username.",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",
