@@ -14,7 +14,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     'record — all coordinates, administrative geography (GADM), dates, collections metadata, ' +
     'collector identifiers, media links, and quality issue flags. Use the occurrence key from ' +
     'gbif_search_occurrences results to fetch full detail.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     occurrenceKey: z.number().describe('GBIF occurrence key from gbif_search_occurrences results.'),
   }),
@@ -80,13 +80,15 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     issues: z.array(z.string()).optional().describe('GBIF data quality issue flags.'),
     media: z
       .array(
-        z.object({
-          type: z.string().optional().describe('Media type (StillImage, Sound, etc.).'),
-          format: z.string().optional().describe('MIME format of the media.'),
-          identifier: z.string().optional().describe('URL to the media file.'),
-          title: z.string().optional().describe('Media title.'),
-          license: z.string().optional().describe('License for the media.'),
-        }),
+        z
+          .object({
+            type: z.string().optional().describe('Media type (StillImage, Sound, etc.).'),
+            format: z.string().optional().describe('MIME format of the media.'),
+            identifier: z.string().optional().describe('URL to the media file.'),
+            title: z.string().optional().describe('Media title.'),
+            license: z.string().optional().describe('License for the media.'),
+          })
+          .describe('A media item (image, audio, video) associated with the occurrence.'),
       )
       .optional()
       .describe('Associated media (images, audio, video). May be absent.'),

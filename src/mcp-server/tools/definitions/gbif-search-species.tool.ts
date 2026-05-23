@@ -13,7 +13,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     'and higher-taxon constraints. Useful for exploring what species exist under a higher taxon ' +
     '(e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when ' +
     'gbif_match_species returns too narrow a result. Paginated — use limit and offset to walk through results.',
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     q: z
       .string()
@@ -45,23 +45,25 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
   output: z.object({
     taxa: z
       .array(
-        z.object({
-          key: z.number().optional().describe('GBIF backbone taxon key.'),
-          scientificName: z.string().optional().describe('Full scientific name with authorship.'),
-          canonicalName: z.string().optional().describe('Scientific name without authorship.'),
-          rank: z.string().optional().describe('Taxonomic rank.'),
-          taxonomicStatus: z.string().optional().describe('ACCEPTED, SYNONYM, DOUBTFUL, etc.'),
-          kingdom: z.string().optional().describe('Kingdom classification.'),
-          phylum: z.string().optional().describe('Phylum classification.'),
-          class: z.string().optional().describe('Class classification.'),
-          order: z.string().optional().describe('Order classification.'),
-          family: z.string().optional().describe('Family classification.'),
-          genus: z.string().optional().describe('Genus classification.'),
-          vernacularName: z.string().optional().describe('Common name when available.'),
-          numOccurrences: z.number().optional().describe('Occurrence record count in GBIF.'),
-          numDescendants: z.number().optional().describe('Count of child taxa in the backbone.'),
-          extinct: z.boolean().optional().describe('True when explicitly flagged as extinct.'),
-        }),
+        z
+          .object({
+            key: z.number().optional().describe('GBIF backbone taxon key.'),
+            scientificName: z.string().optional().describe('Full scientific name with authorship.'),
+            canonicalName: z.string().optional().describe('Scientific name without authorship.'),
+            rank: z.string().optional().describe('Taxonomic rank.'),
+            taxonomicStatus: z.string().optional().describe('ACCEPTED, SYNONYM, DOUBTFUL, etc.'),
+            kingdom: z.string().optional().describe('Kingdom classification.'),
+            phylum: z.string().optional().describe('Phylum classification.'),
+            class: z.string().optional().describe('Class classification.'),
+            order: z.string().optional().describe('Order classification.'),
+            family: z.string().optional().describe('Family classification.'),
+            genus: z.string().optional().describe('Genus classification.'),
+            vernacularName: z.string().optional().describe('Common name when available.'),
+            numOccurrences: z.number().optional().describe('Occurrence record count in GBIF.'),
+            numDescendants: z.number().optional().describe('Count of child taxa in the backbone.'),
+            extinct: z.boolean().optional().describe('True when explicitly flagged as extinct.'),
+          })
+          .describe('A backbone taxon with classification, status, and occurrence counts.'),
       )
       .describe('Matching taxa.'),
     totalCount: z.number().describe('Total matches before pagination.'),

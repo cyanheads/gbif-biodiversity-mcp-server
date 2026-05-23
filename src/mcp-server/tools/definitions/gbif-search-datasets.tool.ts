@@ -13,7 +13,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     'Returns dataset title, description, license, record count, and DOI. ' +
     'Use to find the source dataset behind a set of records, or to explore what data collections ' +
     'are available for a taxon, country, or organization.',
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     q: z.string().optional().describe('Free-text search across dataset title and description.'),
     type: z
@@ -41,16 +41,18 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
   output: z.object({
     datasets: z
       .array(
-        z.object({
-          key: z.string().optional().describe('Dataset UUID for gbif_get_dataset chaining.'),
-          title: z.string().optional().describe('Dataset title.'),
-          type: z.string().optional().describe('Dataset type (OCCURRENCE, CHECKLIST, etc.).'),
-          description: z.string().optional().describe('Brief description. May be absent.'),
-          license: z.string().optional().describe('License identifier. May be absent.'),
-          doi: z.string().optional().describe('DOI for citation. May be absent.'),
-          publishingCountry: z.string().optional().describe('Country code of the publisher.'),
-          recordCount: z.number().optional().describe('Number of records in the dataset.'),
-        }),
+        z
+          .object({
+            key: z.string().optional().describe('Dataset UUID for gbif_get_dataset chaining.'),
+            title: z.string().optional().describe('Dataset title.'),
+            type: z.string().optional().describe('Dataset type (OCCURRENCE, CHECKLIST, etc.).'),
+            description: z.string().optional().describe('Brief description. May be absent.'),
+            license: z.string().optional().describe('License identifier. May be absent.'),
+            doi: z.string().optional().describe('DOI for citation. May be absent.'),
+            publishingCountry: z.string().optional().describe('Country code of the publisher.'),
+            recordCount: z.number().optional().describe('Number of records in the dataset.'),
+          })
+          .describe('A GBIF dataset with key, title, type, license, and record count.'),
       )
       .describe('Matching datasets.'),
     totalCount: z.number().describe('Total matching datasets before pagination.'),

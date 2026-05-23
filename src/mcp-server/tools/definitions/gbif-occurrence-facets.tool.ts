@@ -41,7 +41,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
     'Scope the aggregation with taxonKey, country, year, geometry, or basisOfRecord filters.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     facet: z
       .enum(FACET_VALUES)
@@ -77,10 +77,12 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     totalOccurrences: z.number().describe('Total matching occurrences across all facet values.'),
     counts: z
       .array(
-        z.object({
-          name: z.string().describe('Facet value (country code, year, basisOfRecord, etc.).'),
-          count: z.number().describe('Occurrence count for this facet value.'),
-        }),
+        z
+          .object({
+            name: z.string().describe('Facet value (country code, year, basisOfRecord, etc.).'),
+            count: z.number().describe('Occurrence count for this facet value.'),
+          })
+          .describe('A facet value with its occurrence count.'),
       )
       .describe('Facet values ranked by count descending (top facetLimit entries).'),
   }),

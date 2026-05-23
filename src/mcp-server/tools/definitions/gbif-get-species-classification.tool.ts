@@ -14,7 +14,7 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
     'itself — as an ordered array. Each entry has its rank, canonical name, and taxon key. ' +
     'The array is returned root-first (kingdom → phylum → class → … → parent of given taxon). ' +
     'Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     taxonKey: z
       .number()
@@ -23,12 +23,14 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
   output: z.object({
     classification: z
       .array(
-        z.object({
-          key: z.number().optional().describe('Backbone taxon key for this rank.'),
-          rank: z.string().optional().describe('Taxonomic rank (KINGDOM, PHYLUM, CLASS, etc.).'),
-          name: z.string().optional().describe('Canonical name at this rank.'),
-          scientificName: z.string().optional().describe('Full scientific name with authorship.'),
-        }),
+        z
+          .object({
+            key: z.number().optional().describe('Backbone taxon key for this rank.'),
+            rank: z.string().optional().describe('Taxonomic rank (KINGDOM, PHYLUM, CLASS, etc.).'),
+            name: z.string().optional().describe('Canonical name at this rank.'),
+            scientificName: z.string().optional().describe('Full scientific name with authorship.'),
+          })
+          .describe('A single rank entry in the classification chain.'),
       )
       .describe(
         'Classification chain ordered from root (kingdom) to the immediate parent of the queried taxon.',

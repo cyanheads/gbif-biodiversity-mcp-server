@@ -15,7 +15,7 @@ export const gbifGetSpecies = tool('gbif_get_species', {
     'Use after gbif_match_species when you need the complete record rather than the match summary. ' +
     'When taxonomicStatus is SYNONYM, acceptedKey and accepted fields identify the accepted taxon. ' +
     'The extinct field is absent (not false) on most records — only present on explicitly flagged taxa.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     taxonKey: z
       .number()

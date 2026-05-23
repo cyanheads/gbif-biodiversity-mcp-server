@@ -12,7 +12,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
     'List direct children of a backbone taxon — genera within a family, species within a genus, ' +
     'subspecies within a species. Paginated. Use gbif_match_species to get the taxonKey first, ' +
     'then iterate with offset for large groups.',
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     taxonKey: z
       .number()
@@ -28,16 +28,18 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   output: z.object({
     children: z
       .array(
-        z.object({
-          key: z.number().optional().describe('GBIF backbone taxon key.'),
-          scientificName: z.string().optional().describe('Full scientific name with authorship.'),
-          canonicalName: z.string().optional().describe('Scientific name without authorship.'),
-          rank: z.string().optional().describe('Taxonomic rank.'),
-          taxonomicStatus: z.string().optional().describe('ACCEPTED, SYNONYM, DOUBTFUL, etc.'),
-          vernacularName: z.string().optional().describe('Common name when available.'),
-          numOccurrences: z.number().optional().describe('Occurrence record count.'),
-          numDescendants: z.number().optional().describe('Count of child taxa under this node.'),
-        }),
+        z
+          .object({
+            key: z.number().optional().describe('GBIF backbone taxon key.'),
+            scientificName: z.string().optional().describe('Full scientific name with authorship.'),
+            canonicalName: z.string().optional().describe('Scientific name without authorship.'),
+            rank: z.string().optional().describe('Taxonomic rank.'),
+            taxonomicStatus: z.string().optional().describe('ACCEPTED, SYNONYM, DOUBTFUL, etc.'),
+            vernacularName: z.string().optional().describe('Common name when available.'),
+            numOccurrences: z.number().optional().describe('Occurrence record count.'),
+            numDescendants: z.number().optional().describe('Count of child taxa under this node.'),
+          })
+          .describe('A direct child taxon with key, name, rank, and status.'),
       )
       .describe('Direct child taxa.'),
     totalCount: z.number().describe('Total children before pagination.'),

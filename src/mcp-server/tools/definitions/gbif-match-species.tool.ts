@@ -16,7 +16,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     'the backbone taxonKey required by gbif_search_occurrences, gbif_count_occurrences, and ' +
     'gbif_occurrence_facets. Below confidence 80, the match should be reviewed. ' +
     'matchType NONE means no usable match was found — try removing the strict flag or broadening the name.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     name: z
       .string()
@@ -101,9 +101,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
 
     if (raw.matchType === 'NONE' || !raw.usageKey) {
       throw ctx.fail('no_match', `No backbone match for "${input.name}"`, {
-        recovery: {
-          hint: `Try a broader name or use gbif_search_species to browse. Remove strict=true if set.`,
-        },
+        ...ctx.recoveryFor('no_match'),
       });
     }
 

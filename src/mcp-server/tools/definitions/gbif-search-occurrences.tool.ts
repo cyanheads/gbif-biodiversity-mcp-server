@@ -17,7 +17,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     'bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon geometry, year range, month, ' +
     'basis of record, and coordinate filter. Pagination is capped at approximately offset+limit=100,000 — ' +
     'use gbif_occurrence_facets for aggregate counts across large result sets.',
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
       .number()
@@ -109,55 +109,68 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   output: z.object({
     occurrences: z
       .array(
-        z.object({
-          key: z
-            .number()
-            .optional()
-            .describe('GBIF occurrence key for gbif_get_occurrence chaining.'),
-          taxonKey: z.number().optional().describe('Backbone taxon key.'),
-          scientificName: z.string().optional().describe('Scientific name from occurrence record.'),
-          canonicalName: z.string().optional().describe('Canonical name without authorship.'),
-          rank: z.string().optional().describe('Taxonomic rank of the identified taxon.'),
-          decimalLatitude: z
-            .number()
-            .optional()
-            .describe('Latitude in decimal degrees (WGS84). May be absent.'),
-          decimalLongitude: z
-            .number()
-            .optional()
-            .describe('Longitude in decimal degrees (WGS84). May be absent.'),
-          coordinateUncertaintyInMeters: z
-            .number()
-            .optional()
-            .describe('Coordinate uncertainty radius in meters. May be absent.'),
-          country: z.string().optional().describe('Country name. May be absent.'),
-          countryCode: z
-            .string()
-            .optional()
-            .describe('ISO 3166-1 alpha-2 country code. May be absent.'),
-          stateProvince: z.string().optional().describe('State or province name. May be absent.'),
-          locality: z.string().optional().describe('Locality description. May be absent.'),
-          eventDate: z
-            .string()
-            .optional()
-            .describe('Observation date as ISO 8601 string. May be absent.'),
-          year: z.number().optional().describe('Observation year. May be absent.'),
-          month: z.number().optional().describe('Observation month (1–12). May be absent.'),
-          day: z.number().optional().describe('Observation day. May be absent.'),
-          basisOfRecord: z.string().optional().describe('How the occurrence was recorded.'),
-          individualCount: z.number().optional().describe('Number of individuals. May be absent.'),
-          datasetKey: z.string().optional().describe('UUID of the source dataset.'),
-          datasetName: z.string().optional().describe('Name of the source dataset. May be absent.'),
-          publishingCountry: z
-            .string()
-            .optional()
-            .describe('Country code of the publishing organization.'),
-          recordedBy: z.string().optional().describe('Collector name(s). May be absent.'),
-          issues: z
-            .array(z.string())
-            .optional()
-            .describe('GBIF data quality issue flags for this record.'),
-        }),
+        z
+          .object({
+            key: z
+              .number()
+              .optional()
+              .describe('GBIF occurrence key for gbif_get_occurrence chaining.'),
+            taxonKey: z.number().optional().describe('Backbone taxon key.'),
+            scientificName: z
+              .string()
+              .optional()
+              .describe('Scientific name from occurrence record.'),
+            canonicalName: z.string().optional().describe('Canonical name without authorship.'),
+            rank: z.string().optional().describe('Taxonomic rank of the identified taxon.'),
+            decimalLatitude: z
+              .number()
+              .optional()
+              .describe('Latitude in decimal degrees (WGS84). May be absent.'),
+            decimalLongitude: z
+              .number()
+              .optional()
+              .describe('Longitude in decimal degrees (WGS84). May be absent.'),
+            coordinateUncertaintyInMeters: z
+              .number()
+              .optional()
+              .describe('Coordinate uncertainty radius in meters. May be absent.'),
+            country: z.string().optional().describe('Country name. May be absent.'),
+            countryCode: z
+              .string()
+              .optional()
+              .describe('ISO 3166-1 alpha-2 country code. May be absent.'),
+            stateProvince: z.string().optional().describe('State or province name. May be absent.'),
+            locality: z.string().optional().describe('Locality description. May be absent.'),
+            eventDate: z
+              .string()
+              .optional()
+              .describe('Observation date as ISO 8601 string. May be absent.'),
+            year: z.number().optional().describe('Observation year. May be absent.'),
+            month: z.number().optional().describe('Observation month (1–12). May be absent.'),
+            day: z.number().optional().describe('Observation day. May be absent.'),
+            basisOfRecord: z.string().optional().describe('How the occurrence was recorded.'),
+            individualCount: z
+              .number()
+              .optional()
+              .describe('Number of individuals. May be absent.'),
+            datasetKey: z.string().optional().describe('UUID of the source dataset.'),
+            datasetName: z
+              .string()
+              .optional()
+              .describe('Name of the source dataset. May be absent.'),
+            publishingCountry: z
+              .string()
+              .optional()
+              .describe('Country code of the publishing organization.'),
+            recordedBy: z.string().optional().describe('Collector name(s). May be absent.'),
+            issues: z
+              .array(z.string())
+              .optional()
+              .describe('GBIF data quality issue flags for this record.'),
+          })
+          .describe(
+            'A single occurrence record with location, taxon, date, and provenance fields.',
+          ),
       )
       .describe('Occurrence records matching the filters.'),
     totalCount: z.number().describe('Total matching occurrences before pagination.'),

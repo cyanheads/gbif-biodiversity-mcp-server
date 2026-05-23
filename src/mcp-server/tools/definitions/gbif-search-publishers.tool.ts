@@ -12,7 +12,7 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
     'Search organizations registered with GBIF by name fragment or country. ' +
     'Returns organization key, title, and country — sufficient to chain into gbif_search_datasets ' +
     'with hostingOrg, or to understand who publishes data for a region.',
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     q: z.string().optional().describe('Name fragment to search for. Matches organization names.'),
     country: z
@@ -30,15 +30,17 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
   output: z.object({
     publishers: z
       .array(
-        z.object({
-          key: z
-            .string()
-            .optional()
-            .describe('Organization UUID for gbif_search_datasets hostingOrg parameter.'),
-          title: z.string().optional().describe('Organization name.'),
-          country: z.string().optional().describe('ISO 3166-1 alpha-2 country code.'),
-          city: z.string().optional().describe('City. May be absent.'),
-        }),
+        z
+          .object({
+            key: z
+              .string()
+              .optional()
+              .describe('Organization UUID for gbif_search_datasets hostingOrg parameter.'),
+            title: z.string().optional().describe('Organization name.'),
+            country: z.string().optional().describe('ISO 3166-1 alpha-2 country code.'),
+            city: z.string().optional().describe('City. May be absent.'),
+          })
+          .describe('A GBIF-registered publishing organization.'),
       )
       .describe('Matching organizations.'),
     totalCount: z.number().describe('Total matching organizations before pagination.'),

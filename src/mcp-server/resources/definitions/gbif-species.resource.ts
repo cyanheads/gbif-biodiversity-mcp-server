@@ -39,7 +39,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
 
   async handler(params, ctx) {
     const taxonKey = parseInt(params.taxonKey, 10);
-    if (isNaN(taxonKey)) {
+    if (Number.isNaN(taxonKey)) {
       throw notFound(`Invalid taxon key: "${params.taxonKey}". Must be a numeric backbone key.`);
     }
     ctx.log.debug('Fetching species resource', { taxonKey });

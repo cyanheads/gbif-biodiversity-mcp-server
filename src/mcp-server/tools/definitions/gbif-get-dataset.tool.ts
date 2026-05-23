@@ -14,7 +14,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     'DOI, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
     "or when an occurrence record's datasetKey needs provenance detail. " +
     'citation.text is the citable reference for academic use.',
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     datasetKey: z
       .string()
@@ -42,16 +42,21 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .describe('Number of constituent sub-datasets. May be absent.'),
     contacts: z
       .array(
-        z.object({
-          type: z
-            .string()
-            .optional()
-            .describe('Contact type (e.g., ADMINISTRATIVE_POINT_OF_CONTACT).'),
-          firstName: z.string().optional().describe('First name. May be absent.'),
-          lastName: z.string().optional().describe('Last name. May be absent.'),
-          organization: z.string().optional().describe('Organization name. May be absent.'),
-          email: z.array(z.string()).optional().describe('Contact email addresses. May be absent.'),
-        }),
+        z
+          .object({
+            type: z
+              .string()
+              .optional()
+              .describe('Contact type (e.g., ADMINISTRATIVE_POINT_OF_CONTACT).'),
+            firstName: z.string().optional().describe('First name. May be absent.'),
+            lastName: z.string().optional().describe('Last name. May be absent.'),
+            organization: z.string().optional().describe('Organization name. May be absent.'),
+            email: z
+              .array(z.string())
+              .optional()
+              .describe('Contact email addresses. May be absent.'),
+          })
+          .describe('A dataset contact with role, name, organization, and email.'),
       )
       .optional()
       .describe('Dataset contacts. May be absent.'),

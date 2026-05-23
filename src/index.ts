@@ -6,8 +6,8 @@
 
 import { createApp } from '@cyanheads/mcp-ts-core';
 import { getServerConfig } from './config/server-config.js';
-import { gbifDatasetResource } from './mcp-server/resources/definitions/gbif-dataset.resource.js';
 // Resources
+import { gbifDatasetResource } from './mcp-server/resources/definitions/gbif-dataset.resource.js';
 import { gbifSpeciesResource } from './mcp-server/resources/definitions/gbif-species.resource.js';
 import { gbifCountOccurrences } from './mcp-server/tools/definitions/gbif-count-occurrences.tool.js';
 import { gbifGetDataset } from './mcp-server/tools/definitions/gbif-get-dataset.tool.js';
@@ -18,7 +18,6 @@ import { gbifGetSpeciesClassification } from './mcp-server/tools/definitions/gbi
 // Taxonomy tools
 import { gbifMatchSpecies } from './mcp-server/tools/definitions/gbif-match-species.tool.js';
 import { gbifOccurrenceFacets } from './mcp-server/tools/definitions/gbif-occurrence-facets.tool.js';
-
 // Dataset and publisher tools
 import { gbifSearchDatasets } from './mcp-server/tools/definitions/gbif-search-datasets.tool.js';
 // Occurrence tools
