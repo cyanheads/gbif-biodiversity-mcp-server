@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "gbif-mcp-server",
-  "description": "",
+  "name": "cyanheads/gbif-mcp-server",
+  "description": "MCP server for the Global Biodiversity Information Facility (GBIF) API — species taxonomy, occurrence records, datasets, and publishers.",
   "repository": {
-    "url": "",
+    "url": "https://github.com/cyanheads/gbif-mcp-server",
     "source": "github"
   },
   "version": "0.1.0",
