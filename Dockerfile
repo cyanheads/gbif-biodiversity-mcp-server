@@ -37,10 +37,10 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
-LABEL org.opencontainers.image.title="gbif-mcp-server"
-LABEL org.opencontainers.image.description="MCP server for the GBIF API — species taxonomy, occurrence records, datasets, and publishers."
-LABEL org.opencontainers.image.source="https://github.com/cyanheads/gbif-mcp-server"
+LABEL org.opencontainers.image.title="@cyanheads/gbif-mcp-server"
+LABEL org.opencontainers.image.description="Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/cyanheads/gbif-mcp-server"
 
 # Copy dependency manifests
 COPY package.json bun.lock ./
