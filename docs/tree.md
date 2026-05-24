@@ -1,6 +1,6 @@
 # gbif-mcp-server - Directory Structure
 
-Generated on: 2026-05-23 18:11:02
+Generated on: 2026-05-24 04:57:27
 
 ```text
 gbif-mcp-server/
@@ -153,6 +153,7 @@ gbif-mcp-server/
 ├── .mcpbignore
 ├── biome.json
 ├── bun.lock
+├── bunfig.toml
 ├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
