@@ -27,7 +27,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
       .boolean()
       .default(false)
       .describe(
-        'When true, only return an exact match. When false (default), GBIF applies fuzzy matching — useful for misspellings and vernacular names.',
+        'When true, only return an exact match. When false (default), GBIF applies fuzzy matching — useful for minor spelling variations and abbreviated names.',
       ),
     kingdom: z
       .string()
@@ -92,7 +92,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     const raw = await getGbifService().matchSpecies(
       {
         name: input.name,
-        ...(input.strict !== undefined && { strict: input.strict }),
+        strict: input.strict,
         ...(input.kingdom?.trim() && { kingdom: input.kingdom }),
         ...(input.rank && { rank: input.rank }),
       },

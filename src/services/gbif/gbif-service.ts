@@ -68,8 +68,9 @@ export class GbifService {
       async () => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-        // Propagate ctx.signal if the outer request was cancelled
-        ctx.signal.addEventListener('abort', () => controller.abort());
+        // Propagate ctx.signal cancellation; once:true cleans up after each attempt
+        const onAbort = () => controller.abort();
+        ctx.signal.addEventListener('abort', onAbort, { once: true });
         try {
           const response = await fetch(url, {
             headers: this.buildHeaders(),
@@ -87,6 +88,7 @@ export class GbifService {
           return JSON.parse(text) as T;
         } finally {
           clearTimeout(timeoutId);
+          ctx.signal.removeEventListener('abort', onAbort);
         }
       },
       {

@@ -85,7 +85,7 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
 
   format: (result) => {
     const lines: string[] = [`**Classification chain** (${result.classification.length} ranks):\n`];
-    result.classification.forEach((node, i) => {
+    for (const [i, node] of result.classification.entries()) {
       const indent = '  '.repeat(i);
       const name = node.name ?? 'Unknown';
       const rank = node.rank ?? '';
@@ -93,7 +93,7 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
       const sci =
         node.scientificName && node.scientificName !== name ? ` [${node.scientificName}]` : '';
       lines.push(`${indent}${rank}: **${name}**${sci}${key}`);
-    });
+    }
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

@@ -1,6 +1,6 @@
 # gbif-mcp-server - Directory Structure
 
-Generated on: 2026-05-24 04:57:27
+Generated on: 2026-05-24 21:49:23
 
 ```text
 gbif-mcp-server/
@@ -79,6 +79,8 @@ gbif-mcp-server/
 │   │   └── SKILL.md
 │   ├── field-test/
 │   │   └── SKILL.md
+│   ├── git-wrapup/
+│   │   └── SKILL.md
 │   ├── maintenance/
 │   │   └── SKILL.md
 │   ├── migrate-mcp-ts-template/
@@ -113,19 +115,20 @@ gbif-mcp-server/
 │   │   │       ├── gbif-dataset.resource.ts
 │   │   │       └── gbif-species.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── gbif-count-occurrences.tool.ts
-│   │           ├── gbif-get-dataset.tool.ts
-│   │           ├── gbif-get-occurrence.tool.ts
-│   │           ├── gbif-get-species-children.tool.ts
-│   │           ├── gbif-get-species-classification.tool.ts
-│   │           ├── gbif-get-species.tool.ts
-│   │           ├── gbif-match-species.tool.ts
-│   │           ├── gbif-occurrence-facets.tool.ts
-│   │           ├── gbif-search-datasets.tool.ts
-│   │           ├── gbif-search-occurrences.tool.ts
-│   │           ├── gbif-search-publishers.tool.ts
-│   │           └── gbif-search-species.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── gbif-count-occurrences.tool.ts
+│   │       │   ├── gbif-get-dataset.tool.ts
+│   │       │   ├── gbif-get-occurrence.tool.ts
+│   │       │   ├── gbif-get-species-children.tool.ts
+│   │       │   ├── gbif-get-species-classification.tool.ts
+│   │       │   ├── gbif-get-species.tool.ts
+│   │       │   ├── gbif-match-species.tool.ts
+│   │       │   ├── gbif-occurrence-facets.tool.ts
+│   │       │   ├── gbif-search-datasets.tool.ts
+│   │       │   ├── gbif-search-occurrences.tool.ts
+│   │       │   ├── gbif-search-publishers.tool.ts
+│   │       │   └── gbif-search-species.tool.ts
+│   │       └── utils.ts
 │   ├── services/
 │   │   └── gbif/
 │   │       ├── gbif-service.ts

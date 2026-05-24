@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-05-24
+
+Event listener fix on retries, stripHtml dedup, mcp-ts-core ^0.9.7 → ^0.9.9
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-05-24
 
 Field-test fixes: 404 error contracts on lookup tools, existence validation in get_species_classification, pre-flight pagination cap guard in search_occurrences, corrected match_species description.

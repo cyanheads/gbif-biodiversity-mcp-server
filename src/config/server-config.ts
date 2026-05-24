@@ -25,12 +25,10 @@ type ServerConfig = z.infer<typeof ServerConfigSchema>;
 let _config: ServerConfig | undefined;
 
 export function getServerConfig(): ServerConfig {
-  if (!_config) {
-    _config = parseEnvConfig(ServerConfigSchema, {
-      apiKey: 'GBIF_API_KEY',
-      baseUrl: 'GBIF_BASE_URL',
-      requestTimeoutMs: 'GBIF_REQUEST_TIMEOUT_MS',
-    });
-  }
+  _config ??= parseEnvConfig(ServerConfigSchema, {
+    apiKey: 'GBIF_API_KEY',
+    baseUrl: 'GBIF_BASE_URL',
+    requestTimeoutMs: 'GBIF_REQUEST_TIMEOUT_MS',
+  });
   return _config;
 }
