@@ -12,14 +12,14 @@
       "url": "https://gbif.caseyjhand.com/mcp"
     }
   ],
-  "version": "0.1.5",
+  "version": "0.1.6",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gbif-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "packageArguments": [
         {
           "type": "positional",
@@ -54,7 +54,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gbif-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "packageArguments": [
         {
           "type": "positional",

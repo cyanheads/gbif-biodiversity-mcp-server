@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-05-24
+
+Field-test fixes: 404 error contracts on lookup tools, existence validation in get_species_classification, pre-flight pagination cap guard in search_occurrences, corrected match_species description.
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-05-23
 
 Adds hosted server endpoint metadata — remotes block in server.json and public URL in README.
