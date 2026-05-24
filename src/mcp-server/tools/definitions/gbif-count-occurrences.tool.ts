@@ -10,10 +10,8 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
   title: 'Count Occurrences',
   description:
     'Count occurrences matching a taxon + location filter without fetching records. ' +
-    'Backed by the lightweight /occurrence/count endpoint — fast single-number response. ' +
     'Use for quick totals ("how many Aves records in Sweden?") or before deciding whether ' +
-    'to paginate a full search. Note: this endpoint supports fewer filters than gbif_search_occurrences — ' +
-    'only taxonKey, country, isGeoreferenced, datasetKey, and year are accepted.',
+    'to paginate a full search. Accepts taxonKey, country, isGeoreferenced, datasetKey, and year.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     taxonKey: z.number().optional().describe('GBIF backbone taxon key from gbif_match_species.'),

@@ -36,8 +36,8 @@ const FACET_VALUES = [
 export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   title: 'Occurrence Facet Aggregation',
   description:
-    'Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, ' +
-    'kingdom, etc.). Returns the top-N facet values ranked by count — no record payloads returned. ' +
+    'Aggregate occurrence counts across a dimension (COUNTRY, YEAR, BASIS_OF_RECORD, DATASET_KEY, ' +
+    'KINGDOM_KEY, etc.). Returns the top-N facet values ranked by count — no record payloads returned. ' +
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
     'Scope the aggregation with taxonKey, country, year, geometry, or basisOfRecord filters.',
