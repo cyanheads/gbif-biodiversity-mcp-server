@@ -177,12 +177,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
-    paginationNote: z
-      .string()
-      .optional()
-      .describe(
-        'Warning when approaching the ~100,000 offset+limit cap. Use gbif_occurrence_facets or refine filters for larger result sets.',
-      ),
   }),
 
   errors: [
@@ -202,6 +196,14 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       limit: input.limit,
       offset: input.offset,
     });
+
+    if (input.offset + input.limit > PAGINATION_CAP) {
+      throw ctx.fail(
+        'upstream_error',
+        `offset + limit (${input.offset + input.limit}) exceeds the GBIF pagination cap of ~100,000. Use gbif_occurrence_facets for aggregate analysis, or reduce offset/limit.`,
+        { ...ctx.recoveryFor('upstream_error') },
+      );
+    }
 
     const raw = await getGbifService().searchOccurrences(
       {
@@ -248,18 +250,12 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       issues: r.issues?.length ? r.issues : undefined,
     }));
 
-    const nearCap = input.offset + input.limit > PAGINATION_CAP;
-    const paginationNote = nearCap
-      ? `Approaching the GBIF ~100,000 offset+limit pagination cap. Use gbif_occurrence_facets for aggregate counts, or refine your filters to get a smaller result set.`
-      : undefined;
-
     return {
       occurrences,
       totalCount: raw.count ?? 0,
       offset: raw.offset ?? input.offset,
       limit: raw.limit ?? input.limit,
       endOfRecords: raw.endOfRecords ?? true,
-      paginationNote,
     };
   },
 
@@ -267,7 +263,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     const lines: string[] = [
       `**Total matches:** ${result.totalCount} | **Showing:** ${result.occurrences.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
     ];
-    if (result.paginationNote) lines.push(`\n> **Note:** ${result.paginationNote}`);
     for (const occ of result.occurrences) {
       const canonical = occ.canonicalName ?? occ.scientificName ?? 'Unknown taxon';
       const sci =

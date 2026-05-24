@@ -106,38 +106,14 @@ describe('gbifSearchOccurrences', () => {
     expect(result.endOfRecords).toBe(true);
   });
 
-  it('adds paginationNote when approaching offset+limit cap', async () => {
-    mockSearchOccurrences.mockResolvedValue({
-      results: [],
-      count: 100000,
-      offset: 99000,
-      limit: 20,
-      endOfRecords: false,
-    });
-
+  it('throws upstream_error when offset+limit exceeds pagination cap', async () => {
     const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-    // offset 99000 + limit 20 > 99000 cap
+    // offset 99000 + limit 20 = 99020 > PAGINATION_CAP (99000)
     const input = gbifSearchOccurrences.input.parse({ offset: 99000, limit: 20 });
-    const result = await gbifSearchOccurrences.handler(input, ctx);
 
-    expect(result.paginationNote).toBeDefined();
-    expect(result.paginationNote).toContain('100,000');
-  });
-
-  it('no paginationNote below the cap', async () => {
-    mockSearchOccurrences.mockResolvedValue({
-      results: [],
-      count: 100,
-      offset: 0,
-      limit: 20,
-      endOfRecords: true,
+    await expect(gbifSearchOccurrences.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'upstream_error' },
     });
-
-    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-    const input = gbifSearchOccurrences.input.parse({ offset: 0, limit: 20 });
-    const result = await gbifSearchOccurrences.handler(input, ctx);
-
-    expect(result.paginationNote).toBeUndefined();
   });
 
   it('handles sparse occurrence records', async () => {
