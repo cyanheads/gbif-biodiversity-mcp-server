@@ -310,7 +310,7 @@ export class GbifService {
     if (params.country) queryParams.country = params.country;
     if (params.limit !== undefined) queryParams.limit = params.limit;
     if (params.offset !== undefined) queryParams.offset = params.offset;
-    const url = this.buildUrl('/organization/search', queryParams);
+    const url = this.buildUrl('/organization', queryParams);
     ctx.log.debug('Searching publishers', { q: params.q, country: params.country });
     return this.getJson<RawOrganizationSearchResponse>(url, ctx);
   }
