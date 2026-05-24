@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import type { RawDatasetRecord } from '@/services/gbif/types.js';
 
 function stripHtml(html: string): string {
   return html
@@ -88,7 +89,17 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching dataset record', { datasetKey: input.datasetKey });
-    const raw = await getGbifService().getDataset(input.datasetKey, ctx);
+    let raw: RawDatasetRecord;
+    try {
+      raw = await getGbifService().getDataset(input.datasetKey, ctx);
+    } catch (err) {
+      if (err instanceof McpError && err.code === -32001) {
+        throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
+      }
+      throw err;
+    }
 
     if (!raw.key) {
       throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`, {

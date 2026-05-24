@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import type { RawOccurrenceRecord } from '@/services/gbif/types.js';
 
 export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   title: 'Get Occurrence Record',
@@ -105,7 +106,17 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching occurrence record', { occurrenceKey: input.occurrenceKey });
-    const raw = await getGbifService().getOccurrence(input.occurrenceKey, ctx);
+    let raw: RawOccurrenceRecord;
+    try {
+      raw = await getGbifService().getOccurrence(input.occurrenceKey, ctx);
+    } catch (err) {
+      if (err instanceof McpError && err.code === -32001) {
+        throw ctx.fail('not_found', `Occurrence key ${input.occurrenceKey} not found in GBIF.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
+      }
+      throw err;
+    }
 
     if (!raw.key) {
       throw ctx.fail('not_found', `Occurrence key ${input.occurrenceKey} not found in GBIF.`, {

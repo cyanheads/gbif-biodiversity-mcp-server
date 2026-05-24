@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import type { RawSpeciesRecord } from '@/services/gbif/types.js';
 
 export const gbifGetSpecies = tool('gbif_get_species', {
   title: 'Get Species Record',
@@ -82,7 +83,17 @@ export const gbifGetSpecies = tool('gbif_get_species', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching species record', { taxonKey: input.taxonKey });
-    const raw = await getGbifService().getSpecies(input.taxonKey, ctx);
+    let raw: RawSpeciesRecord;
+    try {
+      raw = await getGbifService().getSpecies(input.taxonKey, ctx);
+    } catch (err) {
+      if (err instanceof McpError && err.code === -32001) {
+        throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
+      }
+      throw err;
+    }
 
     if (!raw.key) {
       throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
