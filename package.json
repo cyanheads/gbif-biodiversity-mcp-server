@@ -35,8 +35,6 @@
     "model-context-protocol",
     "typescript",
     "bun",
-    "stdio",
-    "streamable-http",
     "gbif",
     "biodiversity",
     "species",

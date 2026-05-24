@@ -10,7 +10,7 @@ import { getGbifService } from '@/services/gbif/gbif-service.js';
 export const gbifMatchSpecies = tool('gbif_match_species', {
   title: 'Match Species Name',
   description:
-    'Match a species name (scientific or common) against the GBIF backbone taxonomy. ' +
+    'Match a scientific name against the GBIF backbone taxonomy. ' +
     'Returns the best-matching taxon with full classification and a confidence score (0–100). ' +
     'This is the mandatory first step for any GBIF workflow — it resolves synonyms and returns ' +
     'the backbone taxonKey required by gbif_search_occurrences, gbif_count_occurrences, and ' +
@@ -21,7 +21,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     name: z
       .string()
       .describe(
-        'Scientific or common name to match. Examples: "Parus major", "Great Tit", "Homo sapiens". Fuzzy matching handles minor typos.',
+        'Scientific name to match. Examples: "Parus major", "Agaricus bisporus", "Homo sapiens". Fuzzy matching handles minor spelling variations. Common names are not supported — use gbif_search_species for vernacular name searches.',
       ),
     strict: z
       .boolean()
