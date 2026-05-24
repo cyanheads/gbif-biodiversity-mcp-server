@@ -163,7 +163,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
 
   format: (result) => {
     const lines: string[] = [];
-    const canonical = result.canonicalName ?? 'Unknown taxon';
+    const canonical = result.canonicalName ?? result.scientificName ?? 'Unknown taxon';
     const sci =
       result.scientificName && result.scientificName !== canonical
         ? ` [${result.scientificName}]`

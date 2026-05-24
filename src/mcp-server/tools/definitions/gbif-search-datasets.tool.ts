@@ -6,6 +6,21 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#61;/g, '=')
+    .replace(/&#43;/g, '+')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export const gbifSearchDatasets = tool('gbif_search_datasets', {
   title: 'Search Datasets',
   description:
@@ -79,7 +94,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       key: r.key,
       title: r.title,
       type: r.type,
-      description: r.description?.slice(0, 300),
+      description: r.description ? stripHtml(r.description).slice(0, 300) : undefined,
       license: r.license,
       doi: r.doi,
       publishingCountry: r.publishingCountry,

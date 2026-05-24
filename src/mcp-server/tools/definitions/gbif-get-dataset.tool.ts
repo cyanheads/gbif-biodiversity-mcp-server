@@ -7,13 +7,27 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#61;/g, '=')
+    .replace(/&#43;/g, '+')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export const gbifGetDataset = tool('gbif_get_dataset', {
   title: 'Get Dataset',
   description:
     'Fetch full dataset metadata by UUID key — title, description, citation text, contacts, license, ' +
     'DOI, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
-    "or when an occurrence record's datasetKey needs provenance detail. " +
-    'citation.text is the citable reference for academic use.',
+    "or when an occurrence record's datasetKey needs provenance detail.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     datasetKey: z
@@ -94,7 +108,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       key: raw.key,
       title: raw.title,
       type: raw.type,
-      description: raw.description,
+      description: raw.description ? stripHtml(raw.description) : undefined,
       license: raw.license,
       doi: raw.doi,
       citationText: raw.citation?.text,

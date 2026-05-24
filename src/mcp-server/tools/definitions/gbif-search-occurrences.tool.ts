@@ -269,7 +269,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     ];
     if (result.paginationNote) lines.push(`\n> **Note:** ${result.paginationNote}`);
     for (const occ of result.occurrences) {
-      const canonical = occ.canonicalName ?? 'Unknown taxon';
+      const canonical = occ.canonicalName ?? occ.scientificName ?? 'Unknown taxon';
       const sci =
         occ.scientificName && occ.scientificName !== canonical ? ` [${occ.scientificName}]` : '';
       lines.push(`\n## ${canonical}${sci}`);
