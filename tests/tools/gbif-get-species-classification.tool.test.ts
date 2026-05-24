@@ -15,11 +15,13 @@ import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 describe('gbifGetSpeciesClassification', () => {
   const mockGetSpeciesParents = vi.fn();
+  const mockGetSpecies = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getGbifService).mockReturnValue({
       getSpeciesParents: mockGetSpeciesParents,
+      getSpecies: mockGetSpecies,
     } as never);
   });
 
@@ -66,8 +68,10 @@ describe('gbifGetSpeciesClassification', () => {
     });
   });
 
-  it('returns empty classification for root taxon', async () => {
+  it('returns empty classification for root taxon (kingdom-level)', async () => {
     mockGetSpeciesParents.mockResolvedValue([]);
+    // Root/kingdom-level taxa have no parents but the taxon itself exists
+    mockGetSpecies.mockResolvedValue({ key: 1, rank: 'KINGDOM', canonicalName: 'Animalia' });
 
     const ctx = createMockContext({ errors: gbifGetSpeciesClassification.errors });
     const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 1 });

@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 export const gbifGetSpeciesClassification = tool('gbif_get_species_classification', {
@@ -54,6 +54,23 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
       throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
         ...ctx.recoveryFor('not_found'),
       });
+    }
+
+    // GBIF /species/{key}/parents returns [] for both nonexistent keys and kingdom-level taxa.
+    // When empty, verify the taxon exists to distinguish the two cases.
+    if (raw.length === 0) {
+      try {
+        await getGbifService().getSpecies(input.taxonKey, ctx);
+      } catch (err) {
+        if (err instanceof McpError && err.code === -32001) {
+          throw ctx.fail(
+            'not_found',
+            `Taxon key ${input.taxonKey} not found in the GBIF backbone.`,
+            { ...ctx.recoveryFor('not_found') },
+          );
+        }
+        throw err;
+      }
     }
 
     const classification = raw.map((node) => ({
