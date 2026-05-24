@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "gbif-mcp-server",
-  "version": "0.1.1",
-  "description": "MCP server for the GBIF API — species taxonomy, occurrence records, datasets, and publishers.",
+  "version": "0.1.3",
+  "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
   "author": { "name": "cyanheads" },
   "server": {
     "type": "node",

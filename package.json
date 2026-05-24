@@ -1,8 +1,8 @@
 {
   "name": "@cyanheads/gbif-mcp-server",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "mcpName": "io.github.cyanheads/gbif-mcp-server",
-  "description": "MCP server for the GBIF API — species taxonomy, occurrence records, datasets, and publishers.",
+  "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
