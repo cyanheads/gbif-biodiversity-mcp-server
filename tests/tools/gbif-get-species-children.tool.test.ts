@@ -55,7 +55,6 @@ describe('gbifGetSpeciesChildren', () => {
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 
     expect(result.children).toHaveLength(2);
-    expect(result.totalCount).toBe(2);
     expect(result.endOfRecords).toBe(true);
     expect(result.children[0].key).toBe(5231190);
     expect(result.children[0].canonicalName).toBe('Parus major');
@@ -77,7 +76,6 @@ describe('gbifGetSpeciesChildren', () => {
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 
     expect(result.children).toHaveLength(0);
-    expect(result.totalCount).toBe(0);
   });
 
   it('passes limit and offset to service', async () => {
@@ -132,7 +130,6 @@ describe('gbifGetSpeciesChildren', () => {
           numDescendants: 12,
         },
       ],
-      totalCount: 2,
       offset: 0,
       limit: 20,
       endOfRecords: true,
@@ -141,6 +138,5 @@ describe('gbifGetSpeciesChildren', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('5231190');
     expect(text).toContain('Parus major');
-    expect(text).toContain('2');
   });
 });

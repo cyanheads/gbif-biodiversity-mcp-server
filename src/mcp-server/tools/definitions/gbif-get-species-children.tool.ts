@@ -42,7 +42,6 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
           .describe('A direct child taxon with key, name, rank, and status.'),
       )
       .describe('Direct child taxa.'),
-    totalCount: z.number().describe('Total children before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
@@ -69,7 +68,6 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
 
     return {
       children,
-      totalCount: raw.count ?? 0,
       offset: raw.offset ?? input.offset,
       limit: raw.limit ?? input.limit,
       endOfRecords: raw.endOfRecords ?? true,
@@ -78,7 +76,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
 
   format: (result) => {
     const lines: string[] = [
-      `**Total children:** ${result.totalCount} | **Showing:** ${result.children.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
+      `**Showing:** ${result.children.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
     ];
     for (const child of result.children) {
       const name = child.canonicalName ?? 'Unknown';
