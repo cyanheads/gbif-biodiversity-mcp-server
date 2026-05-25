@@ -136,4 +136,29 @@ describe('gbifOccurrenceFacets', () => {
     expect(text).toContain('YEAR');
     expect(text).toContain('0');
   });
+
+  // #10: percentages use totalOccurrences, not maxCount, and label is "% of total"
+  it('formats percentages as share of total, not share of top', () => {
+    const output = {
+      facet: 'YEAR',
+      totalOccurrences: 1609491,
+      counts: [
+        { name: '2025', count: 117329 },
+        { name: '2006', count: 51955 },
+      ],
+    };
+    const blocks = gbifOccurrenceFacets.format!(output);
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    // 117329 / 1609491 ≈ 7.3%, not 100%
+    expect(text).not.toContain('100%');
+    expect(text).toContain('% of total');
+    expect(text).not.toContain('% of top');
+    // 51955 / 1609491 ≈ 3.2%, not 44%
+    expect(text).not.toContain('44%');
+  });
+
+  // #11: STATE_PROVINCE is a valid facet dimension
+  it('accepts STATE_PROVINCE as a facet dimension', () => {
+    expect(() => gbifOccurrenceFacets.input.parse({ facet: 'STATE_PROVINCE' })).not.toThrow();
+  });
 });

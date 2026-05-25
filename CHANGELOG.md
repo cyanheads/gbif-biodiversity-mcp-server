@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-05-24
+
+Fix facet percentage calculation; add STATE_PROVINCE facet and coordinateUncertaintyInMeters filter; document year range inclusivity, taxonKey descendant matching, and isInCluster limitation.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-05-24 · ⚠️ Breaking
 
 Rename: repo and npm package renamed from gbif-mcp-server to gbif-biodiversity-mcp-server (tool prefix gbif_* unchanged).

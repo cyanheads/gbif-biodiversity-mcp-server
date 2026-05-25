@@ -1,9 +1,9 @@
-# gbif-biodiversity-mcp-server - Directory Structure
+# gbif-mcp-server - Directory Structure
 
-Generated on: 2026-05-25 04:06:15
+Generated on: 2026-05-25 06:08:51
 
 ```text
-gbif-biodiversity-mcp-server/
+gbif-mcp-server/
 ├── .claude/
 ├── .github/
 │   └── ISSUE_TEMPLATE/

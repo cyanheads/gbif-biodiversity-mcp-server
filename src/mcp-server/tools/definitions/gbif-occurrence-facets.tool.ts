@@ -20,6 +20,7 @@ const BASIS_OF_RECORD_VALUES = [
 const FACET_VALUES = [
   'BASIS_OF_RECORD',
   'COUNTRY',
+  'STATE_PROVINCE',
   'YEAR',
   'DATASET_KEY',
   'KINGDOM_KEY',
@@ -36,7 +37,7 @@ const FACET_VALUES = [
 export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   title: 'Occurrence Facet Aggregation',
   description:
-    'Aggregate occurrence counts across a dimension (COUNTRY, YEAR, BASIS_OF_RECORD, DATASET_KEY, ' +
+    'Aggregate occurrence counts across a dimension (COUNTRY, STATE_PROVINCE, YEAR, BASIS_OF_RECORD, DATASET_KEY, ' +
     'KINGDOM_KEY, etc.). Returns the top-N facet values ranked by count — no record payloads returned. ' +
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
@@ -46,7 +47,12 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     facet: z
       .enum(FACET_VALUES)
       .describe('Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY).'),
-    taxonKey: z.number().optional().describe('Backbone taxon key to scope the aggregation.'),
+    taxonKey: z
+      .number()
+      .optional()
+      .describe(
+        'Backbone taxon key to scope the aggregation. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
+      ),
     country: z
       .string()
       .optional()
@@ -54,7 +60,9 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     year: z
       .string()
       .optional()
-      .describe('Year or year range (e.g., "2020,2024") to scope the aggregation.'),
+      .describe(
+        'Year or year range (e.g., "2020,2024") to scope the aggregation. Both endpoints inclusive.',
+      ),
     basisOfRecord: z
       .enum(BASIS_OF_RECORD_VALUES)
       .optional()
@@ -121,10 +129,10 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       `**Total occurrences in scope:** ${result.totalOccurrences}`,
       `**Top ${result.counts.length} values:**`,
     ];
-    const maxCount = result.counts[0]?.count ?? 1;
+    const total = result.totalOccurrences || 1;
     for (const entry of result.counts) {
-      const pct = ((entry.count / maxCount) * 100).toFixed(0);
-      lines.push(`- **${entry.name}**: ${entry.count.toLocaleString()} (${pct}% of top)`);
+      const pct = ((entry.count / total) * 100).toFixed(1);
+      lines.push(`- **${entry.name}**: ${entry.count.toLocaleString()} (${pct}% of total)`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

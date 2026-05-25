@@ -188,6 +188,7 @@ export class GbifService {
       basisOfRecord?: BasisOfRecord;
       hasCoordinate?: boolean;
       isInCluster?: boolean;
+      coordinateUncertaintyInMeters?: string;
       datasetKey?: string;
       limit?: number;
       offset?: number;
@@ -206,6 +207,8 @@ export class GbifService {
     if (params.basisOfRecord) queryParams.basisOfRecord = params.basisOfRecord;
     if (params.hasCoordinate !== undefined) queryParams.hasCoordinate = params.hasCoordinate;
     if (params.isInCluster !== undefined) queryParams.isInCluster = params.isInCluster;
+    if (params.coordinateUncertaintyInMeters)
+      queryParams.coordinateUncertaintyInMeters = params.coordinateUncertaintyInMeters;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
     if (params.limit !== undefined) queryParams.limit = params.limit;
     if (params.offset !== undefined) queryParams.offset = params.offset;

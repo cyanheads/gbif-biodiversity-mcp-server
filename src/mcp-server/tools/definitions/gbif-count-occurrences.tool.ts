@@ -14,7 +14,12 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     'to paginate a full search. Accepts taxonKey, country, isGeoreferenced, datasetKey, and year.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    taxonKey: z.number().optional().describe('GBIF backbone taxon key from gbif_match_species.'),
+    taxonKey: z
+      .number()
+      .optional()
+      .describe(
+        'GBIF backbone taxon key from gbif_match_species. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
+      ),
     country: z.string().optional().describe('ISO 3166-1 alpha-2 country code (e.g., "GB", "US").'),
     isGeoreferenced: z
       .boolean()
@@ -23,7 +28,10 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
         'When true, count only georeferenced records. When false, count only non-georeferenced records.',
       ),
     datasetKey: z.string().optional().describe('Filter to a specific dataset UUID.'),
-    year: z.string().optional().describe('Year or year range (e.g., "2024" or "2020,2024").'),
+    year: z
+      .string()
+      .optional()
+      .describe('Year or year range (e.g., "2024" or "2020,2024"). Both endpoints inclusive.'),
   }),
   output: z.object({
     count: z.number().describe('Total occurrences matching the supplied filters.'),

@@ -23,7 +23,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .number()
       .optional()
       .describe(
-        'GBIF backbone taxon key from gbif_match_species. Preferred over scientificName — matches all synonyms automatically.',
+        'GBIF backbone taxon key from gbif_match_species. Preferred over scientificName — matches all synonyms automatically. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
       ),
     scientificName: z
       .string()
@@ -57,7 +57,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Year or year range. Single year: "2024". Range: "2020,2024". Filters by observation year.',
+        'Year or year range. Single year: "2024". Range: "2020,2024". Filters by observation year. Both endpoints inclusive.',
       ),
     month: z
       .number()
@@ -90,7 +90,15 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .boolean()
       .optional()
       .describe(
-        'Filter to records flagged as likely duplicates (true) or exclude them (false). Omit to include all.',
+        'Filter to records flagged as likely duplicates (true) or exclude them (false). Omit to include all. ' +
+          'Note: GBIF does not expose a cluster identifier — only the membership flag. To de-duplicate, set ' +
+          'isInCluster: false to exclude all clustered records.',
+      ),
+    coordinateUncertaintyInMeters: z
+      .string()
+      .optional()
+      .describe(
+        'Filter by coordinate uncertainty radius in meters. Range format: "min,max" (e.g., "0,1000" for sub-kilometer precision). Both endpoints inclusive.',
       ),
     limit: z
       .number()
@@ -218,6 +226,9 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
         ...(input.basisOfRecord && { basisOfRecord: input.basisOfRecord }),
         ...(input.hasCoordinate !== undefined && { hasCoordinate: input.hasCoordinate }),
         ...(input.isInCluster !== undefined && { isInCluster: input.isInCluster }),
+        ...(input.coordinateUncertaintyInMeters?.trim() && {
+          coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
+        }),
         limit: input.limit,
         offset: input.offset,
       },

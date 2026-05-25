@@ -199,4 +199,45 @@ describe('gbifSearchOccurrences', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('Not available');
   });
+
+  // #12: coordinateUncertaintyInMeters filter is accepted and passed to service
+  it('passes coordinateUncertaintyInMeters to the service', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({
+      coordinateUncertaintyInMeters: '0,100',
+    });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ coordinateUncertaintyInMeters: '0,100' }),
+      ctx,
+    );
+  });
+
+  it('omits coordinateUncertaintyInMeters when not provided', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 5231190 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ coordinateUncertaintyInMeters: expect.anything() }),
+      ctx,
+    );
+  });
 });
