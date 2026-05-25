@@ -1,4 +1,4 @@
-# gbif-mcp-server
+# gbif-biodiversity-mcp-server
 
 Global biodiversity occurrence records, taxonomy, and species data via the GBIF API.
 

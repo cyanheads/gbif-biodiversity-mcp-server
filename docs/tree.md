@@ -1,9 +1,9 @@
-# gbif-mcp-server - Directory Structure
+# gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-05-24 21:49:23
+Generated on: 2026-05-25 04:06:15
 
 ```text
-gbif-mcp-server/
+gbif-biodiversity-mcp-server/
 ├── .claude/
 ├── .github/
 │   └── ISSUE_TEMPLATE/
@@ -15,6 +15,7 @@ gbif-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -158,6 +159,7 @@ gbif-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

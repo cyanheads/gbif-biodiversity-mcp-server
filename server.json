@@ -1,25 +1,25 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.cyanheads/gbif-mcp-server",
+  "name": "io.github.cyanheads/gbif-biodiversity-mcp-server",
   "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers.",
   "repository": {
-    "url": "https://github.com/cyanheads/gbif-mcp-server",
+    "url": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
     "source": "github"
   },
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://gbif.caseyjhand.com/mcp"
+      "url": "https://gbif-biodiversity.caseyjhand.com/mcp"
     }
   ],
-  "version": "0.1.7",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "@cyanheads/gbif-mcp-server",
+      "identifier": "@cyanheads/gbif-biodiversity-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.7",
+      "version": "0.2.0",
       "packageArguments": [
         {
           "type": "positional",
@@ -52,9 +52,9 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "@cyanheads/gbif-mcp-server",
+      "identifier": "@cyanheads/gbif-biodiversity-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.7",
+      "version": "0.2.0",
       "packageArguments": [
         {
           "type": "positional",

@@ -1,5 +1,5 @@
 /**
- * @fileoverview Server-specific configuration for gbif-mcp-server.
+ * @fileoverview Server-specific configuration for gbif-biodiversity-mcp-server.
  * @module config/server-config
  */
 

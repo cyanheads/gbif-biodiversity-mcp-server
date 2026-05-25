@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @fileoverview gbif-mcp-server MCP server entry point.
+ * @fileoverview gbif-biodiversity-mcp-server MCP server entry point.
  * @module index
  */
 

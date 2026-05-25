@@ -1,13 +1,13 @@
 {
-  "name": "@cyanheads/gbif-mcp-server",
-  "version": "0.1.7",
-  "mcpName": "io.github.cyanheads/gbif-mcp-server",
+  "name": "@cyanheads/gbif-biodiversity-mcp-server",
+  "version": "0.2.0",
+  "mcpName": "io.github.cyanheads/gbif-biodiversity-mcp-server",
   "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "gbif-mcp-server": "dist/index.js"
+    "gbif-biodiversity-mcp-server": "dist/index.js"
   },
   "files": ["dist/", "README.md", "LICENSE", "CLAUDE.md", "Dockerfile", "server.json"],
   "scripts": {
@@ -22,10 +22,11 @@
     "list-skills": "bun run scripts/list-skills.ts",
     "lint:mcp": "bun run scripts/lint-mcp.ts",
     "lint:packaging": "bun run scripts/lint-packaging.ts",
-    "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/gbif-mcp-server.mcpb",
+    "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/gbif-biodiversity-mcp-server.mcpb",
     "changelog:build": "bun run scripts/build-changelog.ts",
     "changelog:check": "bun run scripts/build-changelog.ts --check",
     "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish",
+    "publish:compat": "cd dist && jq '.name = \"@cyanheads/gbif-mcp-server\"' package.json > tmp.json && mv tmp.json package.json && npm publish --access public && jq '.name = \"@cyanheads/gbif-biodiversity-mcp-server\"' package.json > tmp.json && mv tmp.json package.json",
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio bun ./dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http bun ./dist/index.js"
   },
@@ -47,13 +48,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cyanheads/gbif-mcp-server.git"
+    "url": "git+https://github.com/cyanheads/gbif-biodiversity-mcp-server.git"
   },
   "bugs": {
-    "url": "https://github.com/cyanheads/gbif-mcp-server/issues"
+    "url": "https://github.com/cyanheads/gbif-biodiversity-mcp-server/issues"
   },
-  "homepage": "https://github.com/cyanheads/gbif-mcp-server#readme",
-  "author": "cyanheads <casey@caseyjhand.com> (https://github.com/cyanheads/gbif-mcp-server#readme)",
+  "homepage": "https://github.com/cyanheads/gbif-biodiversity-mcp-server#readme",
+  "author": "cyanheads <casey@caseyjhand.com> (https://github.com/cyanheads/gbif-biodiversity-mcp-server#readme)",
   "funding": [
     {
       "type": "github",

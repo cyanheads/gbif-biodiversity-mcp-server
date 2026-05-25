@@ -1,4 +1,4 @@
-# gbif-mcp-server — Design
+# gbif-biodiversity-mcp-server — Design
 
 ## MCP Surface
 
@@ -34,7 +34,7 @@ None for v1. The server's data surface is facts-and-records, not templated reaso
 
 ## Overview
 
-gbif-mcp-server exposes the Global Biodiversity Information Facility API (api.gbif.org/v1) as an MCP surface. GBIF aggregates 2.4 billion+ species occurrence records from natural history museums, citizen science platforms (eBird, iNaturalist), and research institutions worldwide. The backbone taxonomy covers all known species with hierarchical classification from kingdom through subspecies.
+gbif-biodiversity-mcp-server exposes the Global Biodiversity Information Facility API (api.gbif.org/v1) as an MCP surface. GBIF aggregates 2.4 billion+ species occurrence records from natural history museums, citizen science platforms (eBird, iNaturalist), and research institutions worldwide. The backbone taxonomy covers all known species with hierarchical classification from kingdom through subspecies.
 
 Primary users are ecologists, conservation biologists, environmental assessors, and researchers who need to query where a species has been observed, how observation volumes vary by geography or time, or what the accepted taxonomy is for a given name.
 

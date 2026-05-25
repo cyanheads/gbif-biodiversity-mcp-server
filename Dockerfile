@@ -37,10 +37,10 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
-LABEL org.opencontainers.image.title="@cyanheads/gbif-mcp-server"
+LABEL org.opencontainers.image.title="@cyanheads/gbif-biodiversity-mcp-server"
 LABEL org.opencontainers.image.description="Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
-LABEL org.opencontainers.image.source="https://github.com/cyanheads/gbif-mcp-server"
+LABEL org.opencontainers.image.source="https://github.com/cyanheads/gbif-biodiversity-mcp-server"
 
 # Copy dependency manifests
 COPY package.json bun.lock ./
@@ -73,7 +73,7 @@ COPY --from=build /usr/src/app/dist ./dist
 # We will use this existing user for enhanced security.
 
 # Create and set permissions for the log directory, assigning ownership to the 'bun' user.
-RUN mkdir -p /var/log/gbif-mcp-server && chown -R bun:bun /var/log/gbif-mcp-server
+RUN mkdir -p /var/log/gbif-biodiversity-mcp-server && chown -R bun:bun /var/log/gbif-biodiversity-mcp-server
 
 # Switch to the non-root user
 USER bun
@@ -89,7 +89,7 @@ ENV MCP_HTTP_HOST="0.0.0.0"
 ENV MCP_TRANSPORT_TYPE="http"
 ENV MCP_SESSION_MODE="stateless"
 ENV MCP_LOG_LEVEL="info"
-ENV LOGS_DIR="/var/log/gbif-mcp-server"
+ENV LOGS_DIR="/var/log/gbif-biodiversity-mcp-server"
 ENV MCP_FORCE_CONSOLE_LOGGING="true"
 
 # Expose the port the server listens on
