@@ -43,6 +43,8 @@ await createApp({
   ],
   resources: [gbifSpeciesResource, gbifDatasetResource],
   prompts: [],
+  // Public catalog — serve the full landing inventory regardless of auth mode.
+  landing: { requireAuth: false },
   setup(core) {
     const cfg = getServerConfig();
     initGbifService(core.config, core.storage, {

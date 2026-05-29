@@ -4,7 +4,7 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { notFound, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
@@ -40,7 +40,9 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
   async handler(params, ctx) {
     const taxonKey = parseInt(params.taxonKey, 10);
     if (Number.isNaN(taxonKey)) {
-      throw notFound(`Invalid taxon key: "${params.taxonKey}". Must be a numeric backbone key.`);
+      throw validationError(
+        `Invalid taxon key: "${params.taxonKey}". Must be a numeric backbone key.`,
+      );
     }
     ctx.log.debug('Fetching species resource', { taxonKey });
     const raw = await getGbifService().getSpecies(taxonKey, ctx);

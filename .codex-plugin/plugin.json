@@ -1,0 +1,25 @@
+{
+  "name": "@cyanheads/gbif-biodiversity-mcp-server",
+  "version": "0.2.2",
+  "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/gbif-biodiversity-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "gbif", "biodiversity", "species", "taxonomy"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "@cyanheads/gbif-biodiversity-mcp-server",
+    "shortDescription": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP.",
+    "longDescription": "Provides tools for querying the Global Biodiversity Information Facility (GBIF) — species taxonomy, occurrence records, dataset metadata, and publisher information.",
+    "developerName": "cyanheads",
+    "category": "science",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
+    "defaultPrompt": []
+  }
+}

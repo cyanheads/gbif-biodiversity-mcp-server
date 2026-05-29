@@ -106,13 +106,13 @@ describe('gbifSearchOccurrences', () => {
     expect(result.endOfRecords).toBe(true);
   });
 
-  it('throws upstream_error when offset+limit exceeds pagination cap', async () => {
+  it('throws pagination_cap_exceeded when offset+limit exceeds pagination cap', async () => {
     const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
     // offset 99000 + limit 20 = 99020 > PAGINATION_CAP (99000)
     const input = gbifSearchOccurrences.input.parse({ offset: 99000, limit: 20 });
 
     await expect(gbifSearchOccurrences.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'upstream_error' },
+      data: { reason: 'pagination_cap_exceeded' },
     });
   });
 

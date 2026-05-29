@@ -189,6 +189,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
 
   errors: [
     {
+      reason: 'pagination_cap_exceeded',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'offset + limit exceeds the GBIF API pagination cap of ~100,000.',
+      recovery:
+        'Reduce offset or limit so their sum stays under 100,000. Use gbif_occurrence_facets for aggregate analysis across large result sets.',
+    },
+    {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.InternalError,
       when: 'The GBIF occurrence search API returned an unexpected error.',
@@ -207,9 +214,9 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
 
     if (input.offset + input.limit > PAGINATION_CAP) {
       throw ctx.fail(
-        'upstream_error',
+        'pagination_cap_exceeded',
         `offset + limit (${input.offset + input.limit}) exceeds the GBIF pagination cap of ~100,000. Use gbif_occurrence_facets for aggregate analysis, or reduce offset/limit.`,
-        { ...ctx.recoveryFor('upstream_error') },
+        { ...ctx.recoveryFor('pagination_cap_exceeded') },
       );
     }
 
