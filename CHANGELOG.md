@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.3](changelog/0.2.x/0.2.3.md) — 2026-05-28
+
+Stop sending Basic auth to keyless GBIF API; remove GBIF_API_KEY
+
 ## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-05-28
 
 mcp-ts-core ^0.9.13: HTTP 413 body cap, session-init gate, quieter auth error logging, GET /mcp keywords; ValidationError reclassifications for pagination cap and invalid taxon key

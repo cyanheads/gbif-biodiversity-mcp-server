@@ -1,5 +1,5 @@
 /**
- * @fileoverview GBIF API v1 service — wraps api.gbif.org/v1 with retry, auth, and response parsing.
+ * @fileoverview GBIF API v1 service — wraps api.gbif.org/v1 with retry and response parsing.
  * @module services/gbif/gbif-service
  */
 
@@ -27,28 +27,17 @@ import type {
 export class GbifService {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
-  private readonly authHeader: string | undefined;
 
   constructor(
     _config: AppConfig,
     _storage: StorageService,
-    opts: { baseUrl: string; timeoutMs: number; apiKey?: string },
+    opts: { baseUrl: string; timeoutMs: number },
   ) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.timeoutMs = opts.timeoutMs;
-    if (opts.apiKey) {
-      // GBIF auth: Basic base64(apiKey + ':')
-      this.authHeader = `Basic ${btoa(`${opts.apiKey}:`)}`;
-    }
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
-
-  private buildHeaders(): Record<string, string> {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (this.authHeader) headers.Authorization = this.authHeader;
-    return headers;
-  }
 
   private buildUrl(path: string, params: Record<string, unknown> = {}): string {
     const url = new URL(`${this.baseUrl}${path}`);
@@ -73,7 +62,7 @@ export class GbifService {
         ctx.signal.addEventListener('abort', onAbort, { once: true });
         try {
           const response = await fetch(url, {
-            headers: this.buildHeaders(),
+            headers: { Accept: 'application/json' },
             signal: controller.signal,
           });
           if (!response.ok) {
@@ -328,7 +317,7 @@ let _service: GbifService | undefined;
 export function initGbifService(
   config: AppConfig,
   storage: StorageService,
-  opts: { baseUrl: string; timeoutMs: number; apiKey?: string },
+  opts: { baseUrl: string; timeoutMs: number },
 ): void {
   _service = new GbifService(config, storage, opts);
 }

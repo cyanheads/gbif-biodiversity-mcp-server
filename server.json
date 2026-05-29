@@ -12,14 +12,14 @@
       "url": "https://gbif-biodiversity.caseyjhand.com/mcp"
     }
   ],
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gbif-biodiversity-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "packageArguments": [
         {
           "type": "positional",
@@ -31,12 +31,6 @@
         }
       ],
       "environmentVariables": [
-        {
-          "name": "GBIF_API_KEY",
-          "description": "GBIF API key for higher rate limits. Sent as HTTP Basic Auth username.",
-          "format": "string",
-          "isRequired": false
-        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -54,7 +48,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gbif-biodiversity-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "packageArguments": [
         {
           "type": "positional",
@@ -66,12 +60,6 @@
         }
       ],
       "environmentVariables": [
-        {
-          "name": "GBIF_API_KEY",
-          "description": "GBIF API key for higher rate limits. Sent as HTTP Basic Auth username.",
-          "format": "string",
-          "isRequired": false
-        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",

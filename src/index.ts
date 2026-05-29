@@ -50,7 +50,6 @@ await createApp({
     initGbifService(core.config, core.storage, {
       baseUrl: cfg.baseUrl,
       timeoutMs: cfg.requestTimeoutMs,
-      ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
     });
   },
 });

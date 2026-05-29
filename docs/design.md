@@ -55,7 +55,6 @@ The server is read-only. All endpoints are public with no auth required for basi
 - Search and fetch dataset metadata, including citation and license
 - Search publishing organizations by name or country
 - Communicate pagination state clearly — GBIF caps offset+limit at ~100,000; deep pagination requires the download API (out of scope)
-- Optional: `GBIF_API_KEY` env var for higher rate limits (anonymous access works but is lower-throttle)
 
 ---
 
@@ -73,7 +72,6 @@ One service handles all API communication. The GBIF REST API is a single base UR
 
 | Env Var | Required | Description |
 |:--------|:---------|:------------|
-| `GBIF_API_KEY` | No | Free GBIF API key for higher rate limits. Sent as HTTP Basic Auth username (empty password). Anonymous access is permitted but may be throttled under heavy load. Get one at gbif.org/user/profile. |
 | `GBIF_BASE_URL` | No | Override the GBIF API base URL. Defaults to `https://api.gbif.org/v1`. |
 | `GBIF_REQUEST_TIMEOUT_MS` | No | HTTP request timeout in milliseconds. Defaults to `10000`. |
 
@@ -81,7 +79,7 @@ One service handles all API communication. The GBIF REST API is a single base UR
 
 ## Implementation Order
 
-1. Config — `src/config/server-config.ts` with optional `GBIF_API_KEY` and base URL
+1. Config — `src/config/server-config.ts` with base URL and request timeout
 2. `GbifService` — base HTTP client, retry/backoff, response parsing, shared fetch utility
 3. Taxonomy tools: `gbif_match_species`, `gbif_get_species`, `gbif_search_species`, `gbif_get_species_classification`, `gbif_get_species_children`
 4. Occurrence tools: `gbif_search_occurrences`, `gbif_count_occurrences`, `gbif_get_occurrence`, `gbif_occurrence_facets`

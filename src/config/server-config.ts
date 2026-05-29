@@ -7,12 +7,6 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
-  apiKey: z
-    .string()
-    .optional()
-    .describe(
-      'GBIF API key for higher rate limits. Sent as HTTP Basic Auth username with empty password.',
-    ),
   baseUrl: z.string().default('https://api.gbif.org/v1').describe('GBIF API base URL.'),
   requestTimeoutMs: z.coerce
     .number()
@@ -26,7 +20,6 @@ let _config: ServerConfig | undefined;
 
 export function getServerConfig(): ServerConfig {
   _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'GBIF_API_KEY',
     baseUrl: 'GBIF_BASE_URL',
     requestTimeoutMs: 'GBIF_REQUEST_TIMEOUT_MS',
   });
