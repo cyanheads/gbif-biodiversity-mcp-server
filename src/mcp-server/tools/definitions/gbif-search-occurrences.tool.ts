@@ -7,6 +7,22 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Empty-result and pagination-overshoot guidance. */
+function buildNotice(args: {
+  totalCount: number;
+  occurrenceCount: number;
+  offset: number;
+}): string | undefined {
+  const { totalCount, occurrenceCount, offset } = args;
+  if (totalCount === 0) {
+    return 'No occurrences matched the filters. Try broadening the taxon (use gbif_match_species for a reliable taxonKey), relaxing geographic filters, expanding the year range, or removing basisOfRecord.';
+  }
+  if (occurrenceCount === 0 && offset > 0 && offset >= totalCount) {
+    return `Offset ${offset} exceeds totalCount (${totalCount}). Reset offset to 0 or reduce it below ${totalCount} to page through results.`;
+  }
+  return;
+}
+
 const PAGINATION_CAP = 99_000;
 
 export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
@@ -181,11 +197,21 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
           ),
       )
       .describe('Occurrence records matching the filters.'),
+  }),
+
+  // Pagination context and recovery guidance — reaches both structuredContent and content[].
+  enrichment: {
     totalCount: z.number().describe('Total matching occurrences before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
-  }),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+      ),
+  },
 
   errors: [
     {
@@ -268,19 +294,20 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       issues: r.issues?.length ? r.issues : undefined,
     }));
 
-    return {
-      occurrences,
-      totalCount: raw.count ?? 0,
-      offset: raw.offset ?? input.offset,
-      limit: raw.limit ?? input.limit,
-      endOfRecords: raw.endOfRecords ?? true,
-    };
+    const totalCount = raw.count ?? 0;
+    const offset = raw.offset ?? input.offset;
+    const limit = raw.limit ?? input.limit;
+    const endOfRecords = raw.endOfRecords ?? true;
+
+    ctx.enrich({ totalCount, offset, limit, endOfRecords });
+    const notice = buildNotice({ totalCount, occurrenceCount: occurrences.length, offset });
+    if (notice) ctx.enrich.notice(notice);
+
+    return { occurrences };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `**Total matches:** ${result.totalCount} | **Showing:** ${result.occurrences.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
-    ];
+    const lines: string[] = [`**Results:** ${result.occurrences.length}`];
     for (const occ of result.occurrences) {
       const canonical = occ.canonicalName ?? occ.scientificName ?? 'Unknown taxon';
       const sci =
@@ -318,9 +345,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       if (occ.datasetKey)
         lines.push(`**Dataset:** ${occ.datasetName ?? occ.datasetKey} (key: ${occ.datasetKey})`);
       if (occ.issues?.length) lines.push(`**Issues:** ${occ.issues.join(', ')}`);
-    }
-    if (!result.endOfRecords) {
-      lines.push(`\n*More results — use offset ${result.offset + result.limit} to continue.*`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

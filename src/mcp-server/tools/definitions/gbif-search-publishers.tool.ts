@@ -6,6 +6,22 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Empty-result and pagination-overshoot guidance. */
+function buildNotice(args: {
+  totalCount: number;
+  publisherCount: number;
+  offset: number;
+}): string | undefined {
+  const { totalCount, publisherCount, offset } = args;
+  if (totalCount === 0) {
+    return 'No publishers matched. Try a shorter name fragment or remove the country filter.';
+  }
+  if (publisherCount === 0 && offset > 0 && offset >= totalCount) {
+    return `Offset ${offset} exceeds totalCount (${totalCount}). Reset offset to 0 or reduce it below ${totalCount} to page through results.`;
+  }
+  return;
+}
+
 export const gbifSearchPublishers = tool('gbif_search_publishers', {
   title: 'Search Publishers',
   description:
@@ -43,11 +59,21 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
           .describe('A GBIF-registered publishing organization.'),
       )
       .describe('Matching organizations.'),
+  }),
+
+  // Pagination context and recovery guidance — reaches both structuredContent and content[].
+  enrichment: {
     totalCount: z.number().describe('Total matching organizations before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Organizations returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
-  }),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+      ),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('Searching publishers', { q: input.q, country: input.country });
@@ -68,19 +94,20 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       city: r.city,
     }));
 
-    return {
-      publishers,
-      totalCount: raw.count ?? 0,
-      offset: raw.offset ?? input.offset,
-      limit: raw.limit ?? input.limit,
-      endOfRecords: raw.endOfRecords ?? true,
-    };
+    const totalCount = raw.count ?? 0;
+    const offset = raw.offset ?? input.offset;
+    const limit = raw.limit ?? input.limit;
+    const endOfRecords = raw.endOfRecords ?? true;
+
+    ctx.enrich({ totalCount, offset, limit, endOfRecords });
+    const notice = buildNotice({ totalCount, publisherCount: publishers.length, offset });
+    if (notice) ctx.enrich.notice(notice);
+
+    return { publishers };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `**Total matches:** ${result.totalCount} | **Showing:** ${result.publishers.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
-    ];
+    const lines: string[] = [`**Results:** ${result.publishers.length}`];
     for (const pub of result.publishers) {
       lines.push(`\n- **${pub.title ?? 'Unknown'}**`);
       if (pub.key) lines.push(`  Key: ${pub.key}`);
@@ -88,9 +115,6 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       if (pub.city) location.push(pub.city);
       if (pub.country) location.push(pub.country);
       if (location.length > 0) lines.push(`  Location: ${location.join(', ')}`);
-    }
-    if (!result.endOfRecords) {
-      lines.push(`\n*More results — use offset ${result.offset + result.limit} to continue.*`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

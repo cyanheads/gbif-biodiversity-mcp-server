@@ -6,6 +6,22 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Empty-result and pagination-overshoot guidance. */
+function buildNotice(args: {
+  totalCount: number;
+  taxaCount: number;
+  offset: number;
+}): string | undefined {
+  const { totalCount, taxaCount, offset } = args;
+  if (totalCount === 0) {
+    return 'No taxa matched the query. Try a shorter name fragment, remove rank/kingdom filters, or use gbif_match_species for exact name lookup.';
+  }
+  if (taxaCount === 0 && offset > 0 && offset >= totalCount) {
+    return `Offset ${offset} exceeds totalCount (${totalCount}). Reset offset to 0 or reduce it below ${totalCount} to page through results.`;
+  }
+  return;
+}
+
 export const gbifSearchSpecies = tool('gbif_search_species', {
   title: 'Search Species Taxonomy',
   description:
@@ -66,11 +82,21 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
           .describe('A backbone taxon with classification, status, and occurrence counts.'),
       )
       .describe('Matching taxa.'),
+  }),
+
+  // Pagination context and recovery guidance — reaches both structuredContent and content[].
+  enrichment: {
     totalCount: z.number().describe('Total matches before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
-  }),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+      ),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('Searching species taxonomy', { q: input.q, rank: input.rank });
@@ -107,19 +133,20 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       ...(typeof r.extinct === 'boolean' && { extinct: r.extinct }),
     }));
 
-    return {
-      taxa,
-      totalCount: raw.count ?? 0,
-      offset: raw.offset ?? input.offset,
-      limit: raw.limit ?? input.limit,
-      endOfRecords: raw.endOfRecords ?? true,
-    };
+    const totalCount = raw.count ?? 0;
+    const offset = raw.offset ?? input.offset;
+    const limit = raw.limit ?? input.limit;
+    const endOfRecords = raw.endOfRecords ?? true;
+
+    ctx.enrich({ totalCount, offset, limit, endOfRecords });
+    const notice = buildNotice({ totalCount, taxaCount: taxa.length, offset });
+    if (notice) ctx.enrich.notice(notice);
+
+    return { taxa };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `**Total matches:** ${result.totalCount} | **Showing:** ${result.taxa.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
-    ];
+    const lines: string[] = [`**Results:** ${result.taxa.length}`];
     for (const t of result.taxa) {
       const name = t.canonicalName ?? 'Unknown';
       const sci = t.scientificName && t.scientificName !== name ? ` [${t.scientificName}]` : '';
@@ -140,11 +167,6 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       if (t.numOccurrences != null) lines.push(`**Occurrences:** ${t.numOccurrences}`);
       if (t.numDescendants != null) lines.push(`**Descendants:** ${t.numDescendants}`);
       if (typeof t.extinct === 'boolean') lines.push(`**Extinct:** ${t.extinct ? 'Yes' : 'No'}`);
-    }
-    if (!result.endOfRecords) {
-      lines.push(
-        `\n*More results available — use offset ${result.offset + result.limit} to continue.*`,
-      );
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

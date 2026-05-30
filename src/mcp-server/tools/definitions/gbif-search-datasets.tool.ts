@@ -7,6 +7,22 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { stripHtml } from '../utils.js';
 
+/** Empty-result and pagination-overshoot guidance. */
+function buildNotice(args: {
+  totalCount: number;
+  datasetCount: number;
+  offset: number;
+}): string | undefined {
+  const { totalCount, datasetCount, offset } = args;
+  if (totalCount === 0) {
+    return 'No datasets matched. Try a shorter keyword, remove the type or country filter, or omit hostingOrg.';
+  }
+  if (datasetCount === 0 && offset > 0 && offset >= totalCount) {
+    return `Offset ${offset} exceeds totalCount (${totalCount}). Reset offset to 0 or reduce it below ${totalCount} to page through results.`;
+  }
+  return;
+}
+
 export const gbifSearchDatasets = tool('gbif_search_datasets', {
   title: 'Search Datasets',
   description:
@@ -56,11 +72,21 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
           .describe('A GBIF dataset with key, title, type, license, and record count.'),
       )
       .describe('Matching datasets.'),
+  }),
+
+  // Pagination context and recovery guidance — reaches both structuredContent and content[].
+  enrichment: {
     totalCount: z.number().describe('Total matching datasets before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Datasets returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
-  }),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+      ),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('Searching datasets', { q: input.q, type: input.type });
@@ -87,19 +113,20 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       recordCount: r.numRecords ?? r.recordCount,
     }));
 
-    return {
-      datasets,
-      totalCount: raw.count ?? 0,
-      offset: raw.offset ?? input.offset,
-      limit: raw.limit ?? input.limit,
-      endOfRecords: raw.endOfRecords ?? true,
-    };
+    const totalCount = raw.count ?? 0;
+    const offset = raw.offset ?? input.offset;
+    const limit = raw.limit ?? input.limit;
+    const endOfRecords = raw.endOfRecords ?? true;
+
+    ctx.enrich({ totalCount, offset, limit, endOfRecords });
+    const notice = buildNotice({ totalCount, datasetCount: datasets.length, offset });
+    if (notice) ctx.enrich.notice(notice);
+
+    return { datasets };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `**Total matches:** ${result.totalCount} | **Showing:** ${result.datasets.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
-    ];
+    const lines: string[] = [`**Results:** ${result.datasets.length}`];
     for (const ds of result.datasets) {
       lines.push(`\n## ${ds.title ?? 'Untitled dataset'}`);
       if (ds.key) lines.push(`**Key:** ${ds.key}`);
@@ -109,9 +136,6 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       if (ds.publishingCountry) lines.push(`**Publishing country:** ${ds.publishingCountry}`);
       if (ds.recordCount != null) lines.push(`**Records:** ${ds.recordCount.toLocaleString()}`);
       if (ds.description) lines.push(`${ds.description}${ds.description.length >= 300 ? '…' : ''}`);
-    }
-    if (!result.endOfRecords) {
-      lines.push(`\n*More results — use offset ${result.offset + result.limit} to continue.*`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

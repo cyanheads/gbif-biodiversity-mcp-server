@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-search-datasets.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchDatasets } from '@/mcp-server/tools/definitions/gbif-search-datasets.tool.js';
 
@@ -33,7 +33,7 @@ describe('gbifSearchDatasets', () => {
     vi.mocked(getGbifService).mockReturnValue({ searchDatasets: mockSearchDatasets } as never);
   });
 
-  it('returns datasets and pagination metadata', async () => {
+  it('returns datasets and enrichment with pagination metadata', async () => {
     mockSearchDatasets.mockResolvedValue({
       results: [makeDataset()],
       count: 50000,
@@ -47,13 +47,16 @@ describe('gbifSearchDatasets', () => {
     const result = await gbifSearchDatasets.handler(input, ctx);
 
     expect(result.datasets).toHaveLength(1);
-    expect(result.totalCount).toBe(50000);
-    expect(result.endOfRecords).toBe(false);
     const ds = result.datasets[0];
     expect(ds.key).toBe('abc-def-123');
     expect(ds.title).toBe('eBird Basic Dataset');
     expect(ds.type).toBe('OCCURRENCE');
     expect(ds.recordCount).toBe(1500000000);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(50000);
+    expect(enrichment.endOfRecords).toBe(false);
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('uses numRecords over recordCount when both present', async () => {
@@ -105,7 +108,7 @@ describe('gbifSearchDatasets', () => {
     expect(result.datasets[0].description).toHaveLength(300);
   });
 
-  it('returns empty datasets array for no matches', async () => {
+  it('enriches with notice on empty results', async () => {
     mockSearchDatasets.mockResolvedValue({
       results: [],
       count: 0,
@@ -119,7 +122,10 @@ describe('gbifSearchDatasets', () => {
     const result = await gbifSearchDatasets.handler(input, ctx);
 
     expect(result.datasets).toHaveLength(0);
-    expect(result.totalCount).toBe(0);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('No datasets matched');
   });
 
   it('passes type and publishingCountry filters', async () => {
@@ -177,16 +183,11 @@ describe('gbifSearchDatasets', () => {
           recordCount: 1500000000,
         },
       ],
-      totalCount: 50000,
-      offset: 0,
-      limit: 20,
-      endOfRecords: true,
     };
     const blocks = gbifSearchDatasets.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('abc-def-123');
     expect(text).toContain('eBird Basic Dataset');
     expect(text).toContain('OCCURRENCE');
-    expect(text).toContain('50000');
   });
 });

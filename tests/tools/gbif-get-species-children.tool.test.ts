@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-get-species-children.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpeciesChildren } from '@/mcp-server/tools/definitions/gbif-get-species-children.tool.js';
 
@@ -23,7 +23,7 @@ describe('gbifGetSpeciesChildren', () => {
     } as never);
   });
 
-  it('returns children and pagination metadata', async () => {
+  it('returns children and enrichment with pagination metadata', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [
         {
@@ -55,14 +55,19 @@ describe('gbifGetSpeciesChildren', () => {
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 
     expect(result.children).toHaveLength(2);
-    expect(result.endOfRecords).toBe(true);
     expect(result.children[0].key).toBe(5231190);
     expect(result.children[0].canonicalName).toBe('Parus major');
     expect(result.children[0].vernacularName).toBe('Great Tit');
     expect(result.children[0].numOccurrences).toBe(5000000);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.endOfRecords).toBe(true);
+    expect(enrichment.offset).toBe(0);
+    expect(enrichment.limit).toBe(20);
+    expect(enrichment.notice).toBeUndefined();
   });
 
-  it('returns empty children for leaf taxon', async () => {
+  it('enriches with notice when no children returned', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [],
       count: 0,
@@ -76,6 +81,9 @@ describe('gbifGetSpeciesChildren', () => {
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 
     expect(result.children).toHaveLength(0);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('no direct children');
   });
 
   it('passes limit and offset to service', async () => {
@@ -130,9 +138,6 @@ describe('gbifGetSpeciesChildren', () => {
           numDescendants: 12,
         },
       ],
-      offset: 0,
-      limit: 20,
-      endOfRecords: true,
     };
     const blocks = gbifGetSpeciesChildren.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';

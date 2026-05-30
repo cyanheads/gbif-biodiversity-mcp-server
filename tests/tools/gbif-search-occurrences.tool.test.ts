@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-search-occurrences.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchOccurrences } from '@/mcp-server/tools/definitions/gbif-search-occurrences.tool.js';
 
@@ -49,7 +49,7 @@ describe('gbifSearchOccurrences', () => {
     } as never);
   });
 
-  it('returns occurrences and pagination metadata', async () => {
+  it('returns occurrences and enrichment with pagination metadata', async () => {
     mockSearchOccurrences.mockResolvedValue({
       results: [makeOccurrence()],
       count: 500000,
@@ -63,13 +63,18 @@ describe('gbifSearchOccurrences', () => {
     const result = await gbifSearchOccurrences.handler(input, ctx);
 
     expect(result.occurrences).toHaveLength(1);
-    expect(result.totalCount).toBe(500000);
-    expect(result.endOfRecords).toBe(false);
     const occ = result.occurrences[0];
     expect(occ.key).toBe(1000000001);
     expect(occ.taxonKey).toBe(5231190);
     expect(occ.rank).toBe('SPECIES'); // normalized from taxonRank
     expect(occ.country).toBe('United Kingdom');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(500000);
+    expect(enrichment.endOfRecords).toBe(false);
+    expect(enrichment.offset).toBe(0);
+    expect(enrichment.limit).toBe(20);
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('normalizes taxonRank to rank', async () => {
@@ -88,7 +93,7 @@ describe('gbifSearchOccurrences', () => {
     expect(result.occurrences[0].rank).toBe('GENUS');
   });
 
-  it('returns empty occurrences array when results is empty', async () => {
+  it('enriches with notice on empty results', async () => {
     mockSearchOccurrences.mockResolvedValue({
       results: [],
       count: 0,
@@ -102,8 +107,28 @@ describe('gbifSearchOccurrences', () => {
     const result = await gbifSearchOccurrences.handler(input, ctx);
 
     expect(result.occurrences).toHaveLength(0);
-    expect(result.totalCount).toBe(0);
-    expect(result.endOfRecords).toBe(true);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('No occurrences matched');
+  });
+
+  it('enriches with notice on pagination overshoot', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 5,
+      offset: 10,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ offset: 10 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('Offset 10 exceeds totalCount');
   });
 
   it('throws pagination_cap_exceeded when offset+limit exceeds pagination cap', async () => {
@@ -173,14 +198,9 @@ describe('gbifSearchOccurrences', () => {
           datasetName: 'eBird',
         },
       ],
-      totalCount: 500000,
-      offset: 0,
-      limit: 20,
-      endOfRecords: false,
     };
     const blocks = gbifSearchOccurrences.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
-    expect(text).toContain('500000');
     expect(text).toContain('1000000001');
     expect(text).toContain('5231190');
     expect(text).toContain('Parus major');
@@ -190,10 +210,6 @@ describe('gbifSearchOccurrences', () => {
   it('formats coordinates as Not available when absent', () => {
     const output = {
       occurrences: [{ key: 1, canonicalName: 'Parus major' }],
-      totalCount: 1,
-      offset: 0,
-      limit: 1,
-      endOfRecords: true,
     };
     const blocks = gbifSearchOccurrences.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';

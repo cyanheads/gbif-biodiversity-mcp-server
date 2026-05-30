@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-search-species.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 
@@ -21,7 +21,7 @@ describe('gbifSearchSpecies', () => {
     vi.mocked(getGbifService).mockReturnValue({ searchSpecies: mockSearchSpecies } as never);
   });
 
-  it('returns taxa and pagination metadata', async () => {
+  it('returns taxa and enrichment with pagination metadata', async () => {
     mockSearchSpecies.mockResolvedValue({
       results: [
         {
@@ -52,13 +52,18 @@ describe('gbifSearchSpecies', () => {
     const result = await gbifSearchSpecies.handler(input, ctx);
 
     expect(result.taxa).toHaveLength(1);
-    expect(result.totalCount).toBe(1000);
-    expect(result.endOfRecords).toBe(false);
     const taxon = result.taxa[0];
     expect(taxon.key).toBe(5231190);
     expect(taxon.canonicalName).toBe('Parus major');
     expect(taxon.vernacularName).toBe('Great Tit');
     expect(taxon.class).toBe('Aves'); // normalized from clazz
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(1000);
+    expect(enrichment.endOfRecords).toBe(false);
+    expect(enrichment.offset).toBe(0);
+    expect(enrichment.limit).toBe(20);
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('normalizes clazz to class', async () => {
@@ -93,7 +98,7 @@ describe('gbifSearchSpecies', () => {
     expect(result.taxa[0].extinct).toBe(true);
   });
 
-  it('returns empty taxa for no matches', async () => {
+  it('enriches with notice on empty results', async () => {
     mockSearchSpecies.mockResolvedValue({
       results: [],
       count: 0,
@@ -107,7 +112,28 @@ describe('gbifSearchSpecies', () => {
     const result = await gbifSearchSpecies.handler(input, ctx);
 
     expect(result.taxa).toHaveLength(0);
-    expect(result.totalCount).toBe(0);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('No taxa matched');
+  });
+
+  it('enriches with notice on pagination overshoot', async () => {
+    mockSearchSpecies.mockResolvedValue({
+      results: [],
+      count: 5,
+      offset: 10,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext();
+    const input = gbifSearchSpecies.input.parse({ offset: 10 });
+    await gbifSearchSpecies.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('Offset 10 exceeds totalCount');
   });
 
   it('passes rank and kingdom filters', async () => {
@@ -161,16 +187,11 @@ describe('gbifSearchSpecies', () => {
           numOccurrences: 5000000,
         },
       ],
-      totalCount: 1000,
-      offset: 0,
-      limit: 20,
-      endOfRecords: true,
     };
     const blocks = gbifSearchSpecies.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('5231190');
     expect(text).toContain('Parus major');
     expect(text).toContain('Great Tit');
-    expect(text).toContain('1000');
   });
 });

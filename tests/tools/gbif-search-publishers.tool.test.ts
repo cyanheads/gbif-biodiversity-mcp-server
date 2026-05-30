@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-search-publishers.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchPublishers } from '@/mcp-server/tools/definitions/gbif-search-publishers.tool.js';
 
@@ -21,7 +21,7 @@ describe('gbifSearchPublishers', () => {
     vi.mocked(getGbifService).mockReturnValue({ searchPublishers: mockSearchPublishers } as never);
   });
 
-  it('returns publishers and pagination metadata', async () => {
+  it('returns publishers and enrichment with pagination metadata', async () => {
     mockSearchPublishers.mockResolvedValue({
       results: [
         {
@@ -48,15 +48,18 @@ describe('gbifSearchPublishers', () => {
     const result = await gbifSearchPublishers.handler(input, ctx);
 
     expect(result.publishers).toHaveLength(2);
-    expect(result.totalCount).toBe(200);
-    expect(result.endOfRecords).toBe(false);
     expect(result.publishers[0].key).toBe('org-uuid-1');
     expect(result.publishers[0].title).toBe('Cornell Lab of Ornithology');
     expect(result.publishers[0].country).toBe('US');
     expect(result.publishers[0].city).toBe('Ithaca');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(200);
+    expect(enrichment.endOfRecords).toBe(false);
+    expect(enrichment.notice).toBeUndefined();
   });
 
-  it('returns empty publishers for no matches', async () => {
+  it('enriches with notice on empty results', async () => {
     mockSearchPublishers.mockResolvedValue({
       results: [],
       count: 0,
@@ -70,7 +73,10 @@ describe('gbifSearchPublishers', () => {
     const result = await gbifSearchPublishers.handler(input, ctx);
 
     expect(result.publishers).toHaveLength(0);
-    expect(result.totalCount).toBe(0);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('No publishers matched');
   });
 
   it('passes country filter', async () => {
@@ -140,16 +146,11 @@ describe('gbifSearchPublishers', () => {
           city: 'Ithaca',
         },
       ],
-      totalCount: 200,
-      offset: 0,
-      limit: 20,
-      endOfRecords: true,
     };
     const blocks = gbifSearchPublishers.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('org-uuid-1');
     expect(text).toContain('Cornell Lab of Ornithology');
     expect(text).toContain('US');
-    expect(text).toContain('200');
   });
 });

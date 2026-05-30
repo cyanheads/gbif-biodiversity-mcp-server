@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.4](changelog/0.2.x/0.2.4.md) — 2026-05-30
+
+Enrichment adoption — search/facet tools surface query echoes, true totals, and empty-result guidance via typed enrichment block
+
 ## [0.2.3](changelog/0.2.x/0.2.3.md) — 2026-05-28
 
 Stop sending Basic auth to keyless GBIF API; remove GBIF_API_KEY

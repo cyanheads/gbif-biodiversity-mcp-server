@@ -95,6 +95,15 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .describe('Facet values ranked by count descending (top facetLimit entries).'),
   }),
 
+  // Agent-facing context — reaches both structuredContent and content[].
+  enrichment: {
+    facetLimit: z.number().describe('Maximum facet values requested.'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Guidance when no facet values were returned. Absent when counts are non-empty.'),
+  },
+
   async handler(input, ctx) {
     ctx.log.info('Fetching occurrence facets', { facet: input.facet, taxonKey: input.taxonKey });
     const raw = await getGbifService().getOccurrenceFacets(
@@ -115,6 +124,13 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       name: c.name ?? '',
       count: c.count ?? 0,
     }));
+
+    ctx.enrich({ facetLimit: input.facetLimit });
+    if (counts.length === 0) {
+      ctx.enrich.notice(
+        'No facet values returned. The filter combination may match zero occurrences, or the facet dimension has no data for the given scope.',
+      );
+    }
 
     return {
       facet: input.facet,

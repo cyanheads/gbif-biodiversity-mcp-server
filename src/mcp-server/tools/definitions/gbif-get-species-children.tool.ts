@@ -6,6 +6,15 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Pagination guidance when end of records is reached. */
+function buildNotice(args: { childCount: number; endOfRecords: boolean }): string | undefined {
+  const { childCount, endOfRecords } = args;
+  if (childCount === 0 && endOfRecords) {
+    return 'This taxon has no direct children in the GBIF backbone at this rank, or the taxonKey does not exist. Verify the key with gbif_get_species.';
+  }
+  return;
+}
+
 export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   title: 'Get Species Children',
   description:
@@ -42,10 +51,20 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
           .describe('A direct child taxon with key, name, rank, and status.'),
       )
       .describe('Direct child taxa.'),
+  }),
+
+  // Pagination context and recovery guidance — reaches both structuredContent and content[].
+  enrichment: {
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
-  }),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no children are found (empty taxon or invalid key). Absent on successful result pages.',
+      ),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('Fetching species children', { taxonKey: input.taxonKey });
@@ -66,18 +85,19 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       numDescendants: r.numDescendants,
     }));
 
-    return {
-      children,
-      offset: raw.offset ?? input.offset,
-      limit: raw.limit ?? input.limit,
-      endOfRecords: raw.endOfRecords ?? true,
-    };
+    const offset = raw.offset ?? input.offset;
+    const limit = raw.limit ?? input.limit;
+    const endOfRecords = raw.endOfRecords ?? true;
+
+    ctx.enrich({ offset, limit, endOfRecords });
+    const notice = buildNotice({ childCount: children.length, endOfRecords });
+    if (notice) ctx.enrich.notice(notice);
+
+    return { children };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `**Showing:** ${result.children.length} | **Limit:** ${result.limit} | **End of records:** ${result.endOfRecords} (offset ${result.offset})`,
-    ];
+    const lines: string[] = [`**Results:** ${result.children.length}`];
     for (const child of result.children) {
       const name = child.canonicalName ?? 'Unknown';
       const sci =
@@ -89,11 +109,6 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       if (child.vernacularName) lines.push(`  Common name: ${child.vernacularName}`);
       if (child.numOccurrences != null) lines.push(`  Occurrences: ${child.numOccurrences}`);
       if (child.numDescendants != null) lines.push(`  Descendants: ${child.numDescendants}`);
-    }
-    if (!result.endOfRecords) {
-      lines.push(
-        `\n*More results available — use offset ${result.offset + result.limit} to continue.*`,
-      );
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

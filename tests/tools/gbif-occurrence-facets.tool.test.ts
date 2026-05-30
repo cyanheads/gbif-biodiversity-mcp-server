@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-occurrence-facets.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifOccurrenceFacets } from '@/mcp-server/tools/definitions/gbif-occurrence-facets.tool.js';
 
@@ -23,7 +23,7 @@ describe('gbifOccurrenceFacets', () => {
     } as never);
   });
 
-  it('returns facet counts ranked by count', async () => {
+  it('returns facet counts ranked by count and enriches facetLimit', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({
       count: 5000000,
       facets: [
@@ -47,9 +47,13 @@ describe('gbifOccurrenceFacets', () => {
     expect(result.counts).toHaveLength(3);
     expect(result.counts[0]).toEqual({ name: 'GB', count: 1200000 });
     expect(result.counts[1]).toEqual({ name: 'DE', count: 900000 });
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.facetLimit).toBe(10); // default
+    expect(enrichment.notice).toBeUndefined();
   });
 
-  it('returns empty counts when no facet data', async () => {
+  it('enriches with notice when no facet data returned', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
 
     const ctx = createMockContext();
@@ -58,6 +62,10 @@ describe('gbifOccurrenceFacets', () => {
 
     expect(result.counts).toHaveLength(0);
     expect(result.totalOccurrences).toBe(0);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeDefined();
+    expect(enrichment.notice).toContain('No facet values returned');
   });
 
   it('case-insensitive facet field matching', async () => {
