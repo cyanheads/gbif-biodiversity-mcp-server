@@ -1,10 +1,15 @@
-# gbif-mcp-server - Directory Structure
+# gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-05-25 06:08:51
+Generated on: 2026-06-02 14:23:50
 
 ```text
-gbif-mcp-server/
+gbif-biodiversity-mcp-server/
 ├── .claude/
+├── .claude-plugin/
+│   └── plugin.json
+├── .codex-plugin/
+│   ├── mcp.json
+│   └── plugin.json
 ├── .github/
 │   └── ISSUE_TEMPLATE/
 │       ├── bug_report.yml
@@ -25,12 +30,14 @@ gbif-mcp-server/
 │   ├── build.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
@@ -58,6 +65,8 @@ gbif-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-linter/
 │   │   └── SKILL.md
+│   ├── api-mirror/
+│   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
 │   │   │   ├── graph.md
@@ -76,6 +85,8 @@ gbif-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-workers/
 │   │   └── SKILL.md
+│   ├── code-simplifier/
+│   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
 │   ├── field-test/
@@ -84,7 +95,12 @@ gbif-mcp-server/
 │   │   └── SKILL.md
 │   ├── maintenance/
 │   │   └── SKILL.md
-│   ├── migrate-mcp-ts-template/
+│   ├── orchestrations/
+│   │   ├── workflows/
+│   │   │   ├── field-test-fix.md
+│   │   │   ├── fix-wrapup-release.md
+│   │   │   ├── greenfield-build.md
+│   │   │   └── maintenance-release.md
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
@@ -138,6 +154,8 @@ gbif-mcp-server/
 ├── tests/
 │   ├── prompts/
 │   ├── resources/
+│   │   ├── gbif-dataset.resource.test.ts
+│   │   └── gbif-species.resource.test.ts
 │   └── tools/
 │       ├── gbif-count-occurrences.tool.test.ts
 │       ├── gbif-get-dataset.tool.test.ts
@@ -150,7 +168,9 @@ gbif-mcp-server/
 │       ├── gbif-search-datasets.tool.test.ts
 │       ├── gbif-search-occurrences.tool.test.ts
 │       ├── gbif-search-publishers.tool.test.ts
-│       └── gbif-search-species.tool.test.ts
+│       ├── gbif-search-species.tool.test.ts
+│       ├── security.test.ts
+│       └── utils.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
