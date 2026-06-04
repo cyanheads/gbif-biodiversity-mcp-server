@@ -15,11 +15,13 @@ import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 describe('gbifGetSpeciesChildren', () => {
   const mockGetSpeciesChildren = vi.fn();
+  const mockGetSpecies = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getGbifService).mockReturnValue({
       getSpeciesChildren: mockGetSpeciesChildren,
+      getSpecies: mockGetSpecies,
     } as never);
   });
 
@@ -50,7 +52,7 @@ describe('gbifGetSpeciesChildren', () => {
       endOfRecords: true,
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
     const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 2492278 });
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 
@@ -67,7 +69,7 @@ describe('gbifGetSpeciesChildren', () => {
     expect(enrichment.notice).toBeUndefined();
   });
 
-  it('enriches with notice when no children returned', async () => {
+  it('enriches with notice when valid taxon has no children', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [],
       count: 0,
@@ -75,8 +77,14 @@ describe('gbifGetSpeciesChildren', () => {
       limit: 20,
       endOfRecords: true,
     });
+    // Existence check succeeds — taxon exists but has no children
+    mockGetSpecies.mockResolvedValue({
+      key: 5231190,
+      rank: 'SPECIES',
+      canonicalName: 'Parus major',
+    });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
     const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 5231190 });
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 
@@ -84,6 +92,26 @@ describe('gbifGetSpeciesChildren', () => {
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeDefined();
     expect(enrichment.notice).toContain('no direct children');
+  });
+
+  it('throws not_found when empty results and taxon does not exist', async () => {
+    mockGetSpeciesChildren.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+    // Existence check fails — key does not exist in the backbone
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetSpecies.mockRejectedValue(new McpError(JsonRpcErrorCode.NotFound, 'Not found'));
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
+    const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 999999999 });
+
+    await expect(gbifGetSpeciesChildren.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'not_found' },
+    });
   });
 
   it('passes limit and offset to service', async () => {
@@ -94,8 +122,10 @@ describe('gbifGetSpeciesChildren', () => {
       limit: 10,
       endOfRecords: true,
     });
+    // Existence check succeeds
+    mockGetSpecies.mockResolvedValue({ key: 100, rank: 'GENUS', canonicalName: 'TestGenus' });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
     const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 100, limit: 10, offset: 40 });
     await gbifGetSpeciesChildren.handler(input, ctx);
 
@@ -115,7 +145,7 @@ describe('gbifGetSpeciesChildren', () => {
       endOfRecords: true,
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
     const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 100 });
     const result = await gbifGetSpeciesChildren.handler(input, ctx);
 

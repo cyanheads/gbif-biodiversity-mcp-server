@@ -68,6 +68,20 @@ describe('gbifGetSpeciesClassification', () => {
     });
   });
 
+  it('throws not_found when getSpeciesParents rejects with McpError NotFound', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetSpeciesParents.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.NotFound, 'Taxon not found'),
+    );
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesClassification.errors });
+    const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 999999999 });
+
+    await expect(gbifGetSpeciesClassification.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'not_found' },
+    });
+  });
+
   it('returns empty classification for root taxon (kingdom-level)', async () => {
     mockGetSpeciesParents.mockResolvedValue([]);
     // Root/kingdom-level taxa have no parents but the taxon itself exists

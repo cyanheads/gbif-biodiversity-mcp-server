@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import type { RawParentNode } from '@/services/gbif/types.js';
 
 export const gbifGetSpeciesClassification = tool('gbif_get_species_classification', {
   title: 'Get Species Classification',
@@ -48,7 +49,18 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
 
   async handler(input, ctx) {
     ctx.log.info('Fetching species classification', { taxonKey: input.taxonKey });
-    const raw = await getGbifService().getSpeciesParents(input.taxonKey, ctx);
+
+    let raw: RawParentNode[];
+    try {
+      raw = await getGbifService().getSpeciesParents(input.taxonKey, ctx);
+    } catch (err) {
+      if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
+        throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
+      }
+      throw err;
+    }
 
     if (!Array.isArray(raw)) {
       throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
@@ -62,7 +74,7 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
       try {
         await getGbifService().getSpecies(input.taxonKey, ctx);
       } catch (err) {
-        if (err instanceof McpError && err.code === -32001) {
+        if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
           throw ctx.fail(
             'not_found',
             `Taxon key ${input.taxonKey} not found in the GBIF backbone.`,

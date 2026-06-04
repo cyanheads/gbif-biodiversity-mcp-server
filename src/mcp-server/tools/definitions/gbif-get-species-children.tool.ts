@@ -4,13 +4,14 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 /** Pagination guidance when end of records is reached. */
 function buildNotice(args: { childCount: number; endOfRecords: boolean }): string | undefined {
   const { childCount, endOfRecords } = args;
   if (childCount === 0 && endOfRecords) {
-    return 'This taxon has no direct children in the GBIF backbone at this rank, or the taxonKey does not exist. Verify the key with gbif_get_species.';
+    return 'This taxon has no direct children in the GBIF backbone at this rank.';
   }
   return;
 }
@@ -62,9 +63,18 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       .string()
       .optional()
       .describe(
-        'Guidance when no children are found (empty taxon or invalid key). Absent on successful result pages.',
+        'Guidance when no children are found for a valid taxon. Absent on successful result pages.',
       ),
   },
+
+  errors: [
+    {
+      reason: 'not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The taxonKey does not exist in the GBIF backbone.',
+      recovery: 'Use gbif_match_species to resolve a name to a valid backbone taxon key.',
+    },
+  ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching species children', { taxonKey: input.taxonKey });
@@ -88,6 +98,23 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
     const offset = raw.offset ?? input.offset;
     const limit = raw.limit ?? input.limit;
     const endOfRecords = raw.endOfRecords ?? true;
+
+    // GBIF /species/{key}/children returns [] for both nonexistent keys and taxa with no children.
+    // When empty and end of records, verify the taxon exists to distinguish the two cases.
+    if (children.length === 0 && endOfRecords) {
+      try {
+        await getGbifService().getSpecies(input.taxonKey, ctx);
+      } catch (err) {
+        if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
+          throw ctx.fail(
+            'not_found',
+            `Taxon key ${input.taxonKey} not found in the GBIF backbone.`,
+            { ...ctx.recoveryFor('not_found') },
+          );
+        }
+        throw err;
+      }
+    }
 
     ctx.enrich({ offset, limit, endOfRecords });
     const notice = buildNotice({ childCount: children.length, endOfRecords });
