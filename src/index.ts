@@ -27,6 +27,8 @@ import { gbifSearchSpecies } from './mcp-server/tools/definitions/gbif-search-sp
 import { initGbifService } from './services/gbif/gbif-service.js';
 
 await createApp({
+  name: 'gbif-biodiversity-mcp-server',
+  title: 'gbif-biodiversity-mcp-server',
   tools: [
     gbifMatchSpecies,
     gbifGetSpecies,
