@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.7](changelog/0.2.x/0.2.7.md) — 2026-06-12
+
+Adopt @cyanheads/mcp-ts-core ^0.10.6: server identity name/title, totalCount in species-children enrichment, post-pack bundle cleaner, expanded packaging linter, Docker HEALTHCHECK and version label.
+
 ## [0.2.6](changelog/0.2.x/0.2.6.md) — 2026-06-04
 
 gbif_get_species_children: proper not_found on invalid taxonKey (#19); gbif_get_species_classification: guard getSpeciesParents against McpError NotFound (#20)
