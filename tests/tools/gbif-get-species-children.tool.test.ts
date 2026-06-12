@@ -63,6 +63,7 @@ describe('gbifGetSpeciesChildren', () => {
     expect(result.children[0].numOccurrences).toBe(5000000);
 
     const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(2);
     expect(enrichment.endOfRecords).toBe(true);
     expect(enrichment.offset).toBe(0);
     expect(enrichment.limit).toBe(20);

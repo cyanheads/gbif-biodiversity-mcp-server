@@ -56,6 +56,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
 
   // Pagination context and recovery guidance — reaches both structuredContent and content[].
   enrichment: {
+    totalCount: z.number().describe('Total direct children before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
@@ -95,6 +96,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       numDescendants: r.numDescendants,
     }));
 
+    const totalCount = raw.count ?? 0;
     const offset = raw.offset ?? input.offset;
     const limit = raw.limit ?? input.limit;
     const endOfRecords = raw.endOfRecords ?? true;
@@ -116,7 +118,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       }
     }
 
-    ctx.enrich({ offset, limit, endOfRecords });
+    ctx.enrich({ totalCount, offset, limit, endOfRecords });
     const notice = buildNotice({ childCount: children.length, endOfRecords });
     if (notice) ctx.enrich.notice(notice);
 
