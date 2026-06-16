@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.8](changelog/0.2.x/0.2.8.md) — 2026-06-15
+
+Server-level instructions sent on initialize; plugin display identity unscoped to the bare package name across the Claude and Codex manifests.
+
 ## [0.2.7](changelog/0.2.x/0.2.7.md) — 2026-06-12
 
 Adopt @cyanheads/mcp-ts-core ^0.10.6: server identity name/title, totalCount in species-children enrichment, post-pack bundle cleaner, expanded packaging linter, Docker HEALTHCHECK and version label.
