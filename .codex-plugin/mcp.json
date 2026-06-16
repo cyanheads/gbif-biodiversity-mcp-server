@@ -1,5 +1,5 @@
 {
-  "@cyanheads/gbif-biodiversity-mcp-server": {
+  "gbif-biodiversity-mcp-server": {
     "command": "npx",
     "args": ["-y", "@cyanheads/gbif-biodiversity-mcp-server"],
     "env": {

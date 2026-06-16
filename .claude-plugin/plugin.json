@@ -1,6 +1,6 @@
 {
-  "name": "@cyanheads/gbif-biodiversity-mcp-server",
-  "version": "0.2.7",
+  "name": "gbif-biodiversity-mcp-server",
+  "version": "0.2.8",
   "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads"
@@ -9,7 +9,7 @@
   "repository": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
   "license": "Apache-2.0",
   "mcpServers": {
-    "@cyanheads/gbif-biodiversity-mcp-server": {
+    "gbif-biodiversity-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/gbif-biodiversity-mcp-server"],
       "env": {
