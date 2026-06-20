@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.9](changelog/0.2.x/0.2.9.md) — 2026-06-20
+
+Adopt @cyanheads/mcp-ts-core ^0.10.9: two new devcheck guards (floating dependency specifiers, plugin marketplace manifest correctness), ctx.content collector, Canvas SQL gate invalid_sql classification, DuckdbProvider.describe() filter fix; biome 2.5 + re-synced skills and scripts
+
 ## [0.2.8](changelog/0.2.x/0.2.8.md) — 2026-06-15
 
 Server-level instructions sent on initialize; plugin display identity unscoped to the bare package name across the Claude and Codex manifests.
