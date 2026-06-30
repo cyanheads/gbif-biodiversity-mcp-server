@@ -16,7 +16,7 @@
 | `gbif_get_occurrence` | Fetch a single occurrence record by GBIF occurrence key — full Darwin Core fields, coordinates, date, collector, media, dataset provenance. | `occurrenceKey` | `readOnlyHint: true` |
 | `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns the top-N facet values for a given filter. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | `taxonKey`, `country`, `geometry`, `facet`, `facetLimit`, `year`, `basisOfRecord` | `readOnlyHint: true` |
 | `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, or publishing organization. Returns dataset title, description, license, record count, and DOI. | `q`, `type`, `publishingCountry`, `hostingOrg`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, and record count. | `datasetKey` | `readOnlyHint: true` |
+| `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, and record count. | `datasetKey`, `contactLimit` | `readOnlyHint: true` |
 | `gbif_search_publishers` | Search organizations (publishers/institutions) that contribute data to GBIF by name or country. Returns organization name, country, and key for chaining into dataset and occurrence queries. | `q`, `country`, `limit`, `offset` | `readOnlyHint: true` |
 
 ### Resources
@@ -354,9 +354,9 @@ Searches GBIF datasets. Useful for locating the specific dataset behind a set of
 
 Full dataset metadata including title, description, citation text, contacts, license, DOI, `numConstituents`, and temporal coverage. Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail.
 
-**Input:** `datasetKey: z.string().uuid()`
+**Input:** `datasetKey: z.string().uuid()`, `contactLimit` (default 10, max 100; `0` suppresses contact detail while still reporting the count)
 
-**Output:** Full dataset record. `citation.text` is the citable reference.
+**Output:** Full dataset record. `citation.text` is the citable reference. Contacts are capped at `contactLimit`, with `contactsTotal`/`contactsReturned` reporting the full count.
 
 **Errors:** `not_found` when the UUID doesn't match any dataset.
 

@@ -13,6 +13,17 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Build N synthetic dataset contacts mirroring GBIF's flat contact shape. */
+function makeContacts(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    type: 'ADMINISTRATIVE_POINT_OF_CONTACT',
+    firstName: `First${i}`,
+    lastName: `Last${i}`,
+    organization: 'Cornell Lab of Ornithology',
+    email: [`contact${i}@example.org`],
+  }));
+}
+
 describe('gbifGetDataset', () => {
   const mockGetDataset = vi.fn();
 
@@ -110,6 +121,81 @@ describe('gbifGetDataset', () => {
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts![0].email).toBeUndefined();
+  });
+
+  it('caps contacts at the default contactLimit and reports full counts', async () => {
+    // eBird returns 42 contacts; the default cap of 10 keeps the response compact.
+    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'ebird' });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.contacts).toHaveLength(10);
+    expect(result.contactsTotal).toBe(42);
+    expect(result.contactsReturned).toBe(10);
+    expect(result.contacts![0].firstName).toBe('First0');
+    expect(result.contacts![9].firstName).toBe('First9');
+  });
+
+  it('honors an explicit contactLimit', async () => {
+    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'ebird', contactLimit: 3 });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.contacts).toHaveLength(3);
+    expect(result.contactsTotal).toBe(42);
+    expect(result.contactsReturned).toBe(3);
+  });
+
+  it('suppresses contact detail when contactLimit is 0 but preserves the count', async () => {
+    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'ebird', contactLimit: 0 });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.contacts).toBeUndefined();
+    expect(result.contactsTotal).toBe(42);
+    expect(result.contactsReturned).toBe(0);
+  });
+
+  it('returns every contact when contactLimit exceeds the total', async () => {
+    mockGetDataset.mockResolvedValue({ key: 'small', contacts: makeContacts(4) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'small', contactLimit: 100 });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.contacts).toHaveLength(4);
+    expect(result.contactsTotal).toBe(4);
+    expect(result.contactsReturned).toBe(4);
+  });
+
+  it('omits contact counts when the dataset has no contacts', async () => {
+    mockGetDataset.mockResolvedValue({ key: 'none', contacts: [] });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'none' });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.contacts).toBeUndefined();
+    expect(result.contactsTotal).toBeUndefined();
+    expect(result.contactsReturned).toBeUndefined();
+  });
+
+  it('formats the contact count summary', () => {
+    const blocks = gbifGetDataset.format!({
+      key: 'ebird',
+      title: 'eBird',
+      contactsTotal: 42,
+      contactsReturned: 10,
+      contacts: makeContacts(10),
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('10 of 42');
   });
 
   it('handles sparse dataset record', async () => {

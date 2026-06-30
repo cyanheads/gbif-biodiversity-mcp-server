@@ -14,12 +14,22 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
   description:
     'Fetch full dataset metadata by UUID key — title, description, citation text, contacts, license, ' +
     'DOI, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
-    "or when an occurrence record's datasetKey needs provenance detail.",
+    "or when an occurrence record's datasetKey needs provenance detail. " +
+    'Contacts are capped by contactLimit (default 10); contactsTotal and contactsReturned report the full count.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     datasetKey: z
       .string()
       .describe('Dataset UUID from gbif_search_datasets or an occurrence record.'),
+    contactLimit: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .default(10)
+      .describe(
+        'Maximum number of contacts to include (default 10, max 100). Set to 0 to omit contact detail while still reporting contactsTotal — useful when citation, license, and record count are all you need from a high-contact dataset like eBird.',
+      ),
   }),
   output: z.object({
     key: z.string().optional().describe('Dataset UUID.'),
@@ -60,7 +70,21 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
           .describe('A dataset contact with role, name, organization, and email.'),
       )
       .optional()
-      .describe('Dataset contacts. May be absent.'),
+      .describe(
+        'Dataset contacts, capped at contactLimit. Absent when the dataset has no contacts or contactLimit is 0.',
+      ),
+    contactsTotal: z
+      .number()
+      .optional()
+      .describe(
+        'Total contacts on the dataset before applying contactLimit. Present when the dataset has any contacts.',
+      ),
+    contactsReturned: z
+      .number()
+      .optional()
+      .describe(
+        'Number of contacts included in this response (≤ contactLimit). Present when the dataset has any contacts.',
+      ),
   }),
 
   errors: [
@@ -93,7 +117,9 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       });
     }
 
-    const contacts = raw.contacts?.map((c) => ({
+    const allContacts = raw.contacts ?? [];
+    const contactsTotal = allContacts.length;
+    const contacts = allContacts.slice(0, input.contactLimit).map((c) => ({
       type: c.type,
       firstName: c.firstName,
       lastName: c.lastName,
@@ -112,7 +138,10 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       publishingCountry: raw.publishingCountry,
       recordCount: raw.numRecords ?? raw.recordCount,
       numConstituents: raw.numConstituents,
-      contacts: contacts?.length ? contacts : undefined,
+      contacts: contacts.length ? contacts : undefined,
+      // Report the full count whenever the dataset has contacts, so contactLimit: 0
+      // suppresses the detail while preserving how many exist.
+      ...(contactsTotal > 0 && { contactsTotal, contactsReturned: contacts.length }),
     };
   },
 
@@ -130,9 +159,9 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       lines.push(`**Constituent datasets:** ${result.numConstituents}`);
     if (result.citationText) lines.push(`\n**Citation:**\n> ${result.citationText}`);
     if (result.description) lines.push(`\n${result.description}`);
-    if (result.contacts?.length) {
-      lines.push('\n**Contacts:**');
-      for (const c of result.contacts) {
+    if (result.contactsTotal != null) {
+      lines.push(`\n**Contacts:** ${result.contactsReturned ?? 0} of ${result.contactsTotal}`);
+      for (const c of result.contacts ?? []) {
         const name = [c.firstName, c.lastName].filter(Boolean).join(' ');
         const typeLabel = c.type ? ` [${c.type}]` : '';
         lines.push(`- ${name || '(unnamed)'}${typeLabel}`);
