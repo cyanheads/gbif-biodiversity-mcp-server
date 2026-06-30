@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/gbif-biodiversity-mcp-server</h1>
   <p><b>Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.</b>
-  <div>12 Tools • 2 Resources</div>
+  <div>13 Tools • 2 Resources</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -25,11 +25,12 @@
 
 ## Tools
 
-12 tools for working with GBIF species taxonomy, occurrence records, datasets, and publishers:
+13 tools for working with GBIF species taxonomy, occurrence records, datasets, and publishers:
 
 | Tool | Description |
 |:---|:---|
 | `gbif_match_species` | Match a species name against the GBIF backbone taxonomy — returns taxonKey, confidence score, and full classification |
+| `gbif_bulk_match_species` | Match up to 50 scientific names to backbone taxon keys in one call — results in input order, per-name NONE/ERROR isolation |
 | `gbif_get_species` | Fetch a single backbone taxon by key — full classification, authorship, synonymy, vernacular name, descendant count |
 | `gbif_search_species` | Search or browse the GBIF backbone taxonomy by name fragment, rank, kingdom, family, or genus |
 | `gbif_get_species_classification` | Return the complete parent chain for a taxon — root-first ordered array from kingdom to immediate parent |
@@ -52,6 +53,17 @@ Match a scientific or common name against the GBIF backbone taxonomy.
 - Full classification hierarchy with keys at each rank: kingdom, phylum, class, order, family, genus, species
 - `matchType NONE` indicates no usable match — try removing strict mode or broadening the name
 - Resolves synonyms: always returns the accepted backbone key regardless of which name form was queried
+
+---
+
+### `gbif_bulk_match_species`
+
+Match up to 50 scientific names against the GBIF backbone taxonomy in a single call.
+
+- The batch counterpart to `gbif_match_species` — built for checklist, inventory, and species-list workflows that would otherwise need one round trip per name
+- Returns one result per input name, in input order; each carries `taxonKey`, `matchType`, and confidence
+- Per-name isolation: an unmatched name yields `matchType NONE` and a per-name lookup failure yields `matchType ERROR` — neither sinks the rest of the batch
+- `strict: true` requires an exact match for every name; common names are not supported (use `gbif_search_species`)
 
 ---
 
@@ -338,7 +350,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 
 | Directory | Purpose |
 |:---|:---|
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Twelve tools across species taxonomy, occurrences, datasets, and publishers. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Thirteen tools across species taxonomy, occurrences, datasets, and publishers. |
 | `src/mcp-server/resources` | Resource definitions. Species and dataset stable-URI resources. |
 | `src/services/gbif` | GBIF REST API service layer — client, request handling, type definitions. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |

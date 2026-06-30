@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-06-30 20:41:36
+Generated on: 2026-06-30 21:27:40
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -23,6 +23,7 @@ gbif-biodiversity-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -141,6 +142,7 @@ gbif-biodiversity-mcp-server/
 │   │   │       └── gbif-species.resource.ts
 │   │   └── tools/
 │   │       ├── definitions/
+│   │       │   ├── gbif-bulk-match-species.tool.ts
 │   │       │   ├── gbif-count-occurrences.tool.ts
 │   │       │   ├── gbif-get-dataset.tool.ts
 │   │       │   ├── gbif-get-occurrence.tool.ts
@@ -165,6 +167,7 @@ gbif-biodiversity-mcp-server/
 │   │   ├── gbif-dataset.resource.test.ts
 │   │   └── gbif-species.resource.test.ts
 │   └── tools/
+│       ├── gbif-bulk-match-species.tool.test.ts
 │       ├── gbif-count-occurrences.tool.test.ts
 │       ├── gbif-get-dataset.tool.test.ts
 │       ├── gbif-get-occurrence.tool.test.ts

@@ -9,6 +9,7 @@ import { getServerConfig } from './config/server-config.js';
 // Resources
 import { gbifDatasetResource } from './mcp-server/resources/definitions/gbif-dataset.resource.js';
 import { gbifSpeciesResource } from './mcp-server/resources/definitions/gbif-species.resource.js';
+import { gbifBulkMatchSpecies } from './mcp-server/tools/definitions/gbif-bulk-match-species.tool.js';
 import { gbifCountOccurrences } from './mcp-server/tools/definitions/gbif-count-occurrences.tool.js';
 import { gbifGetDataset } from './mcp-server/tools/definitions/gbif-get-dataset.tool.js';
 import { gbifGetOccurrence } from './mcp-server/tools/definitions/gbif-get-occurrence.tool.js';
@@ -33,6 +34,7 @@ await createApp({
     'Use the gbif_* tools to query species taxonomy, occurrences, datasets, and publishers via the GBIF API. Keyless; an optional API key only raises rate limits. Resolve any name with gbif_match_species first — it returns the backbone taxonKey the occurrence tools expect and resolves synonyms, unlike the raw scientificName filter. Countries use ISO 3166-1 alpha-2; datasets and publishers are keyed by UUID, occurrences by integer key. Occurrence paging caps at offset+limit ≈ 100,000 — switch to gbif_occurrence_facets for larger aggregate analysis.',
   tools: [
     gbifMatchSpecies,
+    gbifBulkMatchSpecies,
     gbifGetSpecies,
     gbifSearchSpecies,
     gbifGetSpeciesClassification,
