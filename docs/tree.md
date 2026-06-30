@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-06-30 19:51:47
+Generated on: 2026-06-30 20:41:36
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -22,6 +22,7 @@ gbif-biodiversity-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md

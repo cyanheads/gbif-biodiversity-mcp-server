@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-06-30 · 🛡️ Security
+
+gbif_search_occurrences and gbif_occurrence_facets gain an optional datasetKey filter for dataset-scoped retrieval and aggregation; hasCoordinate description corrected. Adopts mcp-ts-core ^0.10.10, whose lockfile re-resolve clears a transitive js-yaml DoS advisory.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-06-30
 
 gbif_get_dataset gains a contactLimit control (default 10) with contactsTotal/contactsReturned counts; species and dataset resource reads now return clean not_found errors; HTML stripped from species publishedIn and dataset descriptions.
