@@ -46,7 +46,6 @@ describe('gbifGetSpeciesChildren', () => {
           taxonomicStatus: 'ACCEPTED',
         },
       ],
-      count: 2,
       offset: 0,
       limit: 20,
       endOfRecords: true,
@@ -63,17 +62,53 @@ describe('gbifGetSpeciesChildren', () => {
     expect(result.children[0].numOccurrences).toBe(5000000);
 
     const enrichment = getEnrichment(ctx);
-    expect(enrichment.totalCount).toBe(2);
+    // GBIF's /children response carries no total count, so none is surfaced (issue #3).
+    expect(enrichment.totalCount).toBeUndefined();
     expect(enrichment.endOfRecords).toBe(true);
     expect(enrichment.offset).toBe(0);
     expect(enrichment.limit).toBe(20);
     expect(enrichment.notice).toBeUndefined();
+    // Final page — no truncation disclosed.
+    expect(enrichment.truncated).toBeUndefined();
+  });
+
+  // Regression for #3: the handler must not fabricate a totalCount from a `count` field
+  // the /species/{key}/children endpoint never returns. Fixture mirrors the real GBIF
+  // response shape exactly — results, offset, limit, endOfRecords; no count.
+  it('omits totalCount and surfaces only genuine paging fields (issue #3)', async () => {
+    mockGetSpeciesChildren.mockResolvedValue({
+      results: [
+        { key: 2487924, scientificName: 'Parus afer Linnaeus, 1766', canonicalName: 'Parus afer' },
+        { key: 2487925, canonicalName: 'Parus albiventris' },
+        { key: 2487926, canonicalName: 'Parus alpinus' },
+      ],
+      offset: 0,
+      limit: 3,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
+    const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 2487923, limit: 3 });
+    const result = await gbifGetSpeciesChildren.handler(input, ctx);
+
+    expect(result.children).toHaveLength(3);
+    expect(result.children[0].canonicalName).toBe('Parus afer');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment).not.toHaveProperty('totalCount');
+    expect(enrichment.totalCount).toBeUndefined();
+    expect(enrichment.offset).toBe(0);
+    expect(enrichment.limit).toBe(3);
+    expect(enrichment.endOfRecords).toBe(false);
+    // More pages exist — disclose truncation honestly, without fabricating a total.
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(3);
+    expect(enrichment.cap).toBe(3);
   });
 
   it('enriches with notice when valid taxon has no children', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [],
-      count: 0,
       offset: 0,
       limit: 20,
       endOfRecords: true,
@@ -98,7 +133,6 @@ describe('gbifGetSpeciesChildren', () => {
   it('throws not_found when empty results and taxon does not exist', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [],
-      count: 0,
       offset: 0,
       limit: 20,
       endOfRecords: true,
@@ -118,7 +152,6 @@ describe('gbifGetSpeciesChildren', () => {
   it('passes limit and offset to service', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [],
-      count: 0,
       offset: 40,
       limit: 10,
       endOfRecords: true,
@@ -140,7 +173,6 @@ describe('gbifGetSpeciesChildren', () => {
   it('handles sparse child records', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [{ key: 999 }],
-      count: 1,
       offset: 0,
       limit: 1,
       endOfRecords: true,

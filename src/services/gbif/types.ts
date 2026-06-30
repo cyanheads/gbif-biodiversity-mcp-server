@@ -117,12 +117,15 @@ export type RawParentNode = {
   nameKey?: number;
 };
 
-/** Raw children response from /species/{key}/children */
+/**
+ * Raw children response from /species/{key}/children.
+ * GBIF omits any `count` field here (unlike /species/search) — the endpoint returns
+ * only results, offset, limit, and endOfRecords. See issue #3.
+ */
 export type RawChildrenResponse = {
   offset?: number;
   limit?: number;
   endOfRecords?: boolean;
-  count?: number;
   results?: RawSpeciesRecord[];
 };
 

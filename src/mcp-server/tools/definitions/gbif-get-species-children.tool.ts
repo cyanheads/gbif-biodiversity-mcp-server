@@ -55,16 +55,29 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   }),
 
   // Pagination context and recovery guidance — reaches both structuredContent and content[].
+  // GBIF's /species/{key}/children response carries no total count (only results, offset,
+  // limit, endOfRecords), so no totalCount is surfaced — see issue #3.
   enrichment: {
-    totalCount: z.number().describe('Total direct children before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when more children exist beyond this page. Absent on the final page.'),
+    shown: z
+      .number()
+      .optional()
+      .describe('Children returned in this page when the result was truncated.'),
+    cap: z
+      .number()
+      .optional()
+      .describe('Limit applied when the result was truncated. Re-call with offset to page on.'),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no children are found for a valid taxon. Absent on successful result pages.',
+        'Agent guidance — a no-children note for a valid taxon, or a pagination note when the page was capped. Absent on a complete single page.',
       ),
   },
 
@@ -96,7 +109,6 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       numDescendants: r.numDescendants,
     }));
 
-    const totalCount = raw.count ?? 0;
     const offset = raw.offset ?? input.offset;
     const limit = raw.limit ?? input.limit;
     const endOfRecords = raw.endOfRecords ?? true;
@@ -118,7 +130,10 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       }
     }
 
-    ctx.enrich({ totalCount, offset, limit, endOfRecords });
+    ctx.enrich({ offset, limit, endOfRecords });
+    // No upstream total exists for this endpoint (issue #3); disclose page truncation from
+    // the authoritative endOfRecords flag instead of fabricating a count.
+    if (!endOfRecords) ctx.enrich.truncated({ shown: children.length, cap: limit });
     const notice = buildNotice({ childCount: children.length, endOfRecords });
     if (notice) ctx.enrich.notice(notice);
 
