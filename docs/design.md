@@ -245,9 +245,11 @@ z.object({
   basisOfRecord: z.enum(['HUMAN_OBSERVATION','MACHINE_OBSERVATION','PRESERVED_SPECIMEN','LIVING_SPECIMEN','MATERIAL_SAMPLE','MATERIAL_CITATION','OCCURRENCE','LITERATURE']).optional()
     .describe('Filter by how the occurrence was recorded. HUMAN_OBSERVATION covers citizen science (eBird, iNaturalist). PRESERVED_SPECIMEN covers natural history collections.'),
   hasCoordinate: z.boolean().optional()
-    .describe('When true, return only georeferenced records. When false, include records without coordinates. Defaults to unfiltered (both).'),
+    .describe('When true, return only georeferenced records (those with coordinates). When false, return ONLY records without coordinates. Omit the parameter entirely to include all records regardless of coordinate presence.'),
   isInCluster: z.boolean().optional()
     .describe('Filter to records flagged as likely duplicates (true) or exclude them (false). Omit to include all.'),
+  datasetKey: z.string().optional()
+    .describe('Restrict results to a single dataset by its GBIF dataset UUID.'),
   limit: z.number().min(1).max(300).default(20)
     .describe('Number of records to return (default 20, max 300).'),
   offset: z.number().min(0).default(0)
@@ -316,6 +318,7 @@ z.object({
   year: z.string().optional().describe('Year or year range (e.g., "2020,2024").'),
   basisOfRecord: z.enum([...]).optional().describe('Scope to a specific basis of record.'),
   geometry: z.string().optional().describe('WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Same format as gbif_search_occurrences.'),
+  datasetKey: z.string().optional().describe('Scope the aggregation to a single dataset by its GBIF dataset UUID.'),
   facet: z.enum(['BASIS_OF_RECORD','COUNTRY','YEAR','DATASET_KEY','KINGDOM_KEY','PHYLUM_KEY','CLASS_KEY','ORDER_KEY','FAMILY_KEY','GENUS_KEY','SPECIES_KEY','PUBLISHING_COUNTRY','MONTH']).describe('Dimension to aggregate by.'),
   facetLimit: z.number().min(1).max(100).default(10).describe('Maximum number of facet values to return (default 10, max 100).'),
 })

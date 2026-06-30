@@ -256,4 +256,55 @@ describe('gbifSearchOccurrences', () => {
       ctx,
     );
   });
+
+  // #25: datasetKey filter is accepted and passed to the service
+  it('passes datasetKey to the service', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({
+      taxonKey: 9705453,
+      datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+    });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e' }),
+      ctx,
+    );
+  });
+
+  it('omits datasetKey when not provided', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 9705453 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ datasetKey: expect.anything() }),
+      ctx,
+    );
+  });
+
+  // #24: hasCoordinate=false means records-without-coordinates only; omit (not false) returns all
+  it('documents hasCoordinate false as records-without-coordinates only', () => {
+    const desc = gbifSearchOccurrences.input.shape.hasCoordinate.description ?? '';
+    expect(desc).toContain('ONLY records without coordinates');
+    expect(desc).toContain('Omit the parameter');
+    // guard against the prior misleading wording (false claimed to include such records)
+    expect(desc).not.toContain('When false, include records without coordinates');
+  });
 });

@@ -31,7 +31,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     'Search 2.4B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
     'for reliable results — it resolves synonyms automatically. Accepts country (ISO 3166-1 alpha-2), ' +
     'bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon geometry, year range, month, ' +
-    'basis of record, and coordinate filter. Pagination is capped at approximately offset+limit=100,000 — ' +
+    'basis of record, coordinate filter, and dataset key. Pagination is capped at approximately offset+limit=100,000 — ' +
     'use gbif_occurrence_facets for aggregate counts across large result sets.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
@@ -100,7 +100,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .boolean()
       .optional()
       .describe(
-        'When true, return only georeferenced records. When false, include records without coordinates.',
+        'When true, return only georeferenced records (those with coordinates). When false, return ONLY records without coordinates. Omit the parameter entirely to include all records regardless of coordinate presence.',
       ),
     isInCluster: z
       .boolean()
@@ -115,6 +115,12 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .optional()
       .describe(
         'Filter by coordinate uncertainty radius in meters. Range format: "min,max" (e.g., "0,1000" for sub-kilometer precision). Both endpoints inclusive.',
+      ),
+    datasetKey: z
+      .string()
+      .optional()
+      .describe(
+        'Restrict results to a single dataset by its GBIF dataset UUID. Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet (gbif_occurrence_facets), or the datasetKey field on an occurrence record.',
       ),
     limit: z
       .number()
@@ -262,6 +268,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
         ...(input.coordinateUncertaintyInMeters?.trim() && {
           coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
         }),
+        ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
         limit: input.limit,
         offset: input.offset,
       },

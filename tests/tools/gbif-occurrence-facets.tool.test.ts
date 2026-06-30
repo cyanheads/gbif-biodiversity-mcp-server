@@ -169,4 +169,38 @@ describe('gbifOccurrenceFacets', () => {
   it('accepts STATE_PROVINCE as a facet dimension', () => {
     expect(() => gbifOccurrenceFacets.input.parse({ facet: 'STATE_PROVINCE' })).not.toThrow();
   });
+
+  // #25: datasetKey scopes the aggregation and is passed to the service
+  it('passes datasetKey to the service', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 3112676,
+      facets: [{ field: 'COUNTRY', counts: [{ name: 'GB', count: 815887 }] }],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'COUNTRY',
+      taxonKey: 9705453,
+      datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+    });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.objectContaining({ datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e' }),
+      ctx,
+    );
+  });
+
+  it('omits datasetKey when not provided', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY' });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.not.objectContaining({ datasetKey: expect.anything() }),
+      ctx,
+    );
+  });
 });

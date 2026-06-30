@@ -41,7 +41,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'KINGDOM_KEY, etc.). Returns the top-N facet values ranked by count — no record payloads returned. ' +
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
-    'Scope the aggregation with taxonKey, country, year, geometry, or basisOfRecord filters.',
+    'Scope the aggregation with taxonKey, country, year, geometry, basisOfRecord, or datasetKey filters.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
     facet: z
@@ -72,6 +72,12 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .optional()
       .describe(
         'WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude.',
+      ),
+    datasetKey: z
+      .string()
+      .optional()
+      .describe(
+        'Scope the aggregation to a single dataset by its GBIF dataset UUID. Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet, or the datasetKey field on an occurrence record.',
       ),
     facetLimit: z
       .number()
@@ -114,6 +120,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
         ...(input.year?.trim() && { year: input.year }),
         ...(input.basisOfRecord && { basisOfRecord: input.basisOfRecord }),
         ...(input.geometry?.trim() && { geometry: input.geometry }),
+        ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
         facetLimit: input.facetLimit,
       },
       ctx,

@@ -240,6 +240,7 @@ export class GbifService {
       year?: string;
       basisOfRecord?: BasisOfRecord;
       geometry?: string;
+      datasetKey?: string;
       facet: string;
       facetLimit?: number;
     },
@@ -251,6 +252,7 @@ export class GbifService {
     if (params.year) queryParams.year = params.year;
     if (params.basisOfRecord) queryParams.basisOfRecord = params.basisOfRecord;
     if (params.geometry) queryParams.geometry = params.geometry;
+    if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
     if (params.facetLimit !== undefined) queryParams.facetLimit = params.facetLimit;
     const url = this.buildUrl('/occurrence/search', queryParams);
     ctx.log.debug('Fetching occurrence facets', { facet: params.facet });
