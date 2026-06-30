@@ -4,8 +4,9 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound, validationError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import type { RawSpeciesRecord } from '@/services/gbif/types.js';
 
 export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
   name: 'gbif-species',
@@ -37,6 +38,16 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
     accepted: z.string().optional().describe('Accepted name when synonym.'),
   }),
 
+  errors: [
+    {
+      reason: 'not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The taxonKey does not exist in the GBIF backbone.',
+      recovery:
+        'Use gbif_match_species to resolve a name to a valid backbone key, or gbif_search_species to browse.',
+    },
+  ],
+
   async handler(params, ctx) {
     const taxonKey = parseInt(params.taxonKey, 10);
     if (Number.isNaN(taxonKey)) {
@@ -45,10 +56,24 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       );
     }
     ctx.log.debug('Fetching species resource', { taxonKey });
-    const raw = await getGbifService().getSpecies(taxonKey, ctx);
+    let raw: RawSpeciesRecord;
+    try {
+      raw = await getGbifService().getSpecies(taxonKey, ctx);
+    } catch (err) {
+      // Map the upstream GBIF 404 envelope to a clean domain not_found, mirroring
+      // gbif_get_species — the service throws before the !raw.key check can run.
+      if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
+        throw ctx.fail('not_found', `Taxon key ${taxonKey} not found in the GBIF backbone.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
+      }
+      throw err;
+    }
 
     if (!raw.key) {
-      throw notFound(`Taxon key ${taxonKey} not found in the GBIF backbone.`);
+      throw ctx.fail('not_found', `Taxon key ${taxonKey} not found in the GBIF backbone.`, {
+        ...ctx.recoveryFor('not_found'),
+      });
     }
 
     return {

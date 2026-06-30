@@ -148,6 +148,26 @@ describe('gbifGetSpecies', () => {
     expect(result.extinct).toBeUndefined();
   });
 
+  it('strips HTML from publishedIn', async () => {
+    // GBIF embeds <em> tags in the original-description citation (Parus major / 9705453).
+    mockGetSpecies.mockResolvedValue({
+      key: 9705453,
+      canonicalName: 'Parus major',
+      publishedIn:
+        'Linnaeus, C. (1758). Systema Naturae. <em>Editio decima, reformata, vol. 1: 824 pp. Laurentius Salvius: Holmiae.</em>',
+    });
+
+    const ctx = createMockContext({ errors: gbifGetSpecies.errors });
+    const input = gbifGetSpecies.input.parse({ taxonKey: 9705453 });
+    const result = await gbifGetSpecies.handler(input, ctx);
+
+    expect(result.publishedIn).toBe(
+      'Linnaeus, C. (1758). Systema Naturae. Editio decima, reformata, vol. 1: 824 pp. Laurentius Salvius: Holmiae.',
+    );
+    expect(result.publishedIn).not.toContain('<em>');
+    expect(result.publishedIn).not.toContain('</em>');
+  });
+
   it('formats output with key fields', () => {
     const output = {
       key: 5231190,

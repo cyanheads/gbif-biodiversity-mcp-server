@@ -4,8 +4,10 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { stripHtml } from '@/mcp-server/tools/utils.js';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import type { RawDatasetRecord } from '@/services/gbif/types.js';
 
 export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
   name: 'gbif-dataset',
@@ -31,19 +33,43 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
     numConstituents: z.number().optional().describe('Number of sub-datasets. May be absent.'),
   }),
 
+  errors: [
+    {
+      reason: 'not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The datasetKey UUID does not match any dataset in GBIF.',
+      recovery:
+        "Use gbif_search_datasets to find valid dataset keys, or check the UUID from an occurrence record's datasetKey field.",
+    },
+  ],
+
   async handler(params, ctx) {
     ctx.log.debug('Fetching dataset resource', { datasetKey: params.datasetKey });
-    const raw = await getGbifService().getDataset(params.datasetKey, ctx);
+    let raw: RawDatasetRecord;
+    try {
+      raw = await getGbifService().getDataset(params.datasetKey, ctx);
+    } catch (err) {
+      // Map the upstream GBIF 404 envelope to a clean domain not_found, mirroring
+      // gbif_get_dataset — the service throws before the !raw.key check can run.
+      if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
+        throw ctx.fail('not_found', `Dataset ${params.datasetKey} not found in GBIF.`, {
+          ...ctx.recoveryFor('not_found'),
+        });
+      }
+      throw err;
+    }
 
     if (!raw.key) {
-      throw notFound(`Dataset ${params.datasetKey} not found in GBIF.`);
+      throw ctx.fail('not_found', `Dataset ${params.datasetKey} not found in GBIF.`, {
+        ...ctx.recoveryFor('not_found'),
+      });
     }
 
     return {
       key: raw.key,
       title: raw.title,
       type: raw.type,
-      description: raw.description,
+      description: raw.description ? stripHtml(raw.description) : undefined,
       license: raw.license,
       doi: raw.doi,
       citationText: raw.citation?.text,

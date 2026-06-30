@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawSpeciesRecord } from '@/services/gbif/types.js';
+import { stripHtml } from '../utils.js';
 
 export const gbifGetSpecies = tool('gbif_get_species', {
   title: 'Get Species Record',
@@ -111,7 +112,8 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       taxonomicStatus: raw.taxonomicStatus,
       numDescendants: raw.numDescendants,
       numOccurrences: raw.numOccurrences,
-      publishedIn: raw.publishedIn,
+      // GBIF embeds HTML (e.g. <em>) in the original-description citation; strip to plain text.
+      publishedIn: raw.publishedIn ? stripHtml(raw.publishedIn) : undefined,
       kingdom: raw.kingdom,
       phylum: raw.phylum,
       // GBIF API uses 'clazz' to avoid reserved word; we normalize to 'class'

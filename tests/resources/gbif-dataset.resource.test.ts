@@ -3,6 +3,7 @@
  * @module tests/resources/gbif-dataset.resource.test
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifDatasetResource } from '@/mcp-server/resources/definitions/gbif-dataset.resource.js';
@@ -35,7 +36,7 @@ describe('gbifDatasetResource', () => {
       numConstituents: 0,
     });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'abc-def-123' });
     const result = await gbifDatasetResource.handler(params, ctx);
 
@@ -50,19 +51,74 @@ describe('gbifDatasetResource', () => {
     expect(result.numConstituents).toBe(0);
   });
 
-  it('throws NotFound when key is missing from response', async () => {
+  it('throws not_found when key is missing from response', async () => {
     mockGetDataset.mockResolvedValue({ key: undefined });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'nonexistent-uuid' });
 
-    await expect(gbifDatasetResource.handler(params, ctx)).rejects.toThrow(/not found/);
+    await expect(gbifDatasetResource.handler(params, ctx)).rejects.toMatchObject({
+      data: { reason: 'not_found' },
+    });
+  });
+
+  it('maps an upstream GBIF 404 to a clean domain not_found', async () => {
+    // GBIF returns a plain-text 404 body for missing datasets; the service still
+    // throws an McpError NotFound, which the resource must normalize like the tool.
+    mockGetDataset.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.NotFound, 'GBIF API returned HTTP 404 Not Found.', {
+        url: 'https://api.gbif.org/v1/dataset/00000000-0000-0000-0000-000000000000',
+        status: 404,
+      }),
+    );
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const params = gbifDatasetResource.params.parse({
+      datasetKey: '00000000-0000-0000-0000-000000000000',
+    });
+
+    const err = await gbifDatasetResource.handler(params, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'not_found' } });
+    expect((err as McpError).message).toMatch(/not found in GBIF/);
+    expect((err as McpError).message).not.toContain('HTTP 404');
+  });
+
+  it('re-throws non-NotFound service errors unchanged', async () => {
+    const upstream = new McpError(JsonRpcErrorCode.ServiceUnavailable, 'GBIF API unavailable.');
+    mockGetDataset.mockRejectedValue(upstream);
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const params = gbifDatasetResource.params.parse({ datasetKey: 'abc-def-123' });
+
+    await expect(gbifDatasetResource.handler(params, ctx)).rejects.toBe(upstream);
+  });
+
+  it('strips HTML from the dataset description', async () => {
+    // Mirrors the real eBird dataset shape — GBIF wraps the abstract in <p> tags.
+    mockGetDataset.mockResolvedValue({
+      key: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+      title: 'EOD – eBird Observation Dataset',
+      description:
+        '<p>eBird is a collective enterprise that takes a novel approach to citizen science.</p>',
+    });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const params = gbifDatasetResource.params.parse({
+      datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+    });
+    const result = await gbifDatasetResource.handler(params, ctx);
+
+    expect(result.description).toBe(
+      'eBird is a collective enterprise that takes a novel approach to citizen science.',
+    );
+    expect(result.description).not.toContain('<p>');
+    expect(result.description).not.toContain('</p>');
   });
 
   it('uses numRecords over recordCount', async () => {
     mockGetDataset.mockResolvedValue({ key: 'abc', numRecords: 999, recordCount: 111 });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'abc' });
     const result = await gbifDatasetResource.handler(params, ctx);
 
@@ -72,7 +128,7 @@ describe('gbifDatasetResource', () => {
   it('falls back to recordCount when numRecords absent', async () => {
     mockGetDataset.mockResolvedValue({ key: 'abc', recordCount: 777 });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'abc' });
     const result = await gbifDatasetResource.handler(params, ctx);
 
@@ -85,7 +141,7 @@ describe('gbifDatasetResource', () => {
       citation: { text: 'Some author 2024.' },
     });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'abc' });
     const result = await gbifDatasetResource.handler(params, ctx);
 
@@ -95,7 +151,7 @@ describe('gbifDatasetResource', () => {
   it('handles sparse upstream response', async () => {
     mockGetDataset.mockResolvedValue({ key: 'sparse' });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'sparse' });
     const result = await gbifDatasetResource.handler(params, ctx);
 
@@ -109,7 +165,7 @@ describe('gbifDatasetResource', () => {
   it('passes the datasetKey to service unchanged', async () => {
     mockGetDataset.mockResolvedValue({ key: 'some-uuid' });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
     const params = gbifDatasetResource.params.parse({ datasetKey: 'some-uuid' });
     await gbifDatasetResource.handler(params, ctx);
 
