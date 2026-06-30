@@ -60,7 +60,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     matchType: z
       .string()
       .optional()
-      .describe('EXACT, FUZZY, HIGHERORDER, or NONE. NONE means no usable match.'),
+      .describe('EXACT, FUZZY, HIGHERRANK, or NONE. NONE means no usable match.'),
     kingdom: z.string().optional().describe('Kingdom of the matched taxon.'),
     phylum: z.string().optional().describe('Phylum of the matched taxon.'),
     class: z.string().optional().describe('Class of the matched taxon.'),
