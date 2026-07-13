@@ -33,7 +33,7 @@ describe('gbifSpeciesResource', () => {
       taxonomicStatus: 'ACCEPTED',
       kingdom: 'Animalia',
       phylum: 'Chordata',
-      clazz: 'Aves',
+      class: 'Aves',
       order: 'Passeriformes',
       family: 'Paridae',
       genus: 'Parus',
@@ -49,9 +49,25 @@ describe('gbifSpeciesResource', () => {
     expect(result.vernacularName).toBe('Great Tit');
     expect(result.rank).toBe('SPECIES');
     expect(result.taxonomicStatus).toBe('ACCEPTED');
-    // clazz → class normalization
+    // Read straight from GBIF's raw `class` field (#34).
     expect(result.class).toBe('Aves');
     expect(result.numDescendants).toBe(12);
+  });
+
+  it('populates the class name from GBIF raw.class (#34)', async () => {
+    // GBIF's /species/{key} returns the class name under `class` (not `clazz`, which is always
+    // null). Homo sapiens (2436436) has class Mammalia; it must reach the resource output.
+    mockGetSpecies.mockResolvedValue({
+      key: 2436436,
+      canonicalName: 'Homo sapiens',
+      class: 'Mammalia',
+    });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifSpeciesResource.errors });
+    const params = gbifSpeciesResource.params.parse({ taxonKey: '2436436' });
+    const result = await gbifSpeciesResource.handler(params, ctx);
+
+    expect(result.class).toBe('Mammalia');
   });
 
   it('throws ValidationError for non-numeric taxon key', async () => {

@@ -86,7 +86,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       taxonomicStatus: raw.taxonomicStatus,
       kingdom: raw.kingdom,
       phylum: raw.phylum,
-      class: raw.clazz,
+      class: raw.class,
       order: raw.order,
       family: raw.family,
       genus: raw.genus,

@@ -34,7 +34,7 @@ describe('gbifGetSpecies', () => {
       numOccurrences: 5000000,
       kingdom: 'Animalia',
       phylum: 'Chordata',
-      clazz: 'Aves',
+      class: 'Aves',
       order: 'Passeriformes',
       family: 'Paridae',
       genus: 'Parus',
@@ -60,7 +60,7 @@ describe('gbifGetSpecies', () => {
     expect(result.rank).toBe('SPECIES');
     expect(result.taxonomicStatus).toBe('ACCEPTED');
     expect(result.numDescendants).toBe(12);
-    // Normalized from raw.clazz
+    // Read straight from GBIF's raw `class` field (#34).
     expect(result.class).toBe('Aves');
     expect(result.parentKey).toBe(2492278);
     expect(result.parent).toBe('Parus');
@@ -77,17 +77,22 @@ describe('gbifGetSpecies', () => {
     });
   });
 
-  it('normalizes clazz to class field', async () => {
+  it('populates the class name from GBIF raw.class (#34)', async () => {
+    // GBIF's /species/{key} returns the class name under `class` (not `clazz`, which is always
+    // null). Panthera leo (5219404) has class Mammalia; it must reach structuredContent.
     mockGetSpecies.mockResolvedValue({
-      key: 100,
-      clazz: 'Mammalia',
+      key: 5219404,
+      canonicalName: 'Panthera leo',
+      class: 'Mammalia',
+      classKey: 359,
     });
 
     const ctx = createMockContext({ errors: gbifGetSpecies.errors });
-    const input = gbifGetSpecies.input.parse({ taxonKey: 100 });
+    const input = gbifGetSpecies.input.parse({ taxonKey: 5219404 });
     const result = await gbifGetSpecies.handler(input, ctx);
 
     expect(result.class).toBe('Mammalia');
+    expect(result.classKey).toBe(359);
   });
 
   it('includes extinct when explicitly true', async () => {
@@ -193,5 +198,52 @@ describe('gbifGetSpecies', () => {
     expect(text).toContain('123');
     expect(text).not.toContain('undefined');
     expect(text).not.toContain('null');
+  });
+
+  it('renders a key-only classification entry when the rank name is absent (#31)', () => {
+    // A record that carries a rank key without its name (a genuine edge case) must still surface
+    // the key in content[], matching what structuredContent carries. format()-only, so the output
+    // object is constructed directly with class omitted and classKey present.
+    const blocks = gbifGetSpecies.format!({
+      key: 5219404,
+      canonicalName: 'Panthera leo',
+      kingdom: 'Animalia',
+      kingdomKey: 1,
+      phylum: 'Chordata',
+      phylumKey: 44,
+      classKey: 359,
+      order: 'Carnivora',
+      orderKey: 732,
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('Class key: 359');
+    expect(text).toContain('Kingdom: Animalia (1)');
+    expect(text).toContain('Order: Carnivora (732)');
+    expect(text).not.toContain('undefined');
+  });
+
+  it('renders key-only fallbacks at every rank when names are absent (#31)', () => {
+    const blocks = gbifGetSpecies.format!({
+      key: 1,
+      kingdomKey: 1,
+      phylumKey: 44,
+      classKey: 359,
+      orderKey: 732,
+      familyKey: 9701,
+      genusKey: 2435098,
+      speciesKey: 5219404,
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    for (const part of [
+      'Kingdom key: 1',
+      'Phylum key: 44',
+      'Class key: 359',
+      'Order key: 732',
+      'Family key: 9701',
+      'Genus key: 2435098',
+      'Species key: 5219404',
+    ]) {
+      expect(text).toContain(part);
+    }
   });
 });

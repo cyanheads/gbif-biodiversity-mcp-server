@@ -14,6 +14,17 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Build N synthetic dataset contacts mirroring GBIF's flat contact shape. */
+function makeContacts(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    type: 'ADMINISTRATIVE_POINT_OF_CONTACT',
+    firstName: `First${i}`,
+    lastName: `Last${i}`,
+    organization: 'Cornell Lab of Ornithology',
+    email: [`contact${i}@example.org`],
+  }));
+}
+
 describe('gbifDatasetResource', () => {
   const mockGetDataset = vi.fn();
 
@@ -160,6 +171,59 @@ describe('gbifDatasetResource', () => {
     expect(result.description).toBeUndefined();
     expect(result.citationText).toBeUndefined();
     expect(result.recordCount).toBeUndefined();
+    expect(result.contacts).toBeUndefined();
+    expect(result.contactsTotal).toBeUndefined();
+    expect(result.contactsReturned).toBeUndefined();
+    expect(result.temporalCoverages).toBeUndefined();
+    expect(result.geographicCoverages).toBeUndefined();
+  });
+
+  it('caps contacts at 10 and reports the full count (#28)', async () => {
+    // eBird returns 42 contacts; the resource has no contactLimit input, so it applies a fixed cap.
+    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const params = gbifDatasetResource.params.parse({ datasetKey: 'ebird' });
+    const result = await gbifDatasetResource.handler(params, ctx);
+
+    expect(result.contacts).toHaveLength(10);
+    expect(result.contactsTotal).toBe(42);
+    expect(result.contactsReturned).toBe(10);
+    expect(result.contacts![0].firstName).toBe('First0');
+    expect(result.contacts![0].email).toEqual(['contact0@example.org']);
+  });
+
+  it('exposes temporal and geographic coverage (#28)', async () => {
+    mockGetDataset.mockResolvedValue({
+      key: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+      temporalCoverages: [
+        { start: '1800-01-01T00:00:00.000+00:00', end: '2024-12-31T00:00:00.000+00:00' },
+      ],
+      geographicCoverages: [{ description: 'Worldwide' }],
+    });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const params = gbifDatasetResource.params.parse({
+      datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+    });
+    const result = await gbifDatasetResource.handler(params, ctx);
+
+    expect(result.temporalCoverages).toEqual([
+      { start: '1800-01-01T00:00:00.000+00:00', end: '2024-12-31T00:00:00.000+00:00' },
+    ]);
+    expect(result.geographicCoverages).toEqual([{ description: 'Worldwide' }]);
+  });
+
+  it('returns every contact and matching counts when under the fixed cap', async () => {
+    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(3) });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const params = gbifDatasetResource.params.parse({ datasetKey: 'ebird' });
+    const result = await gbifDatasetResource.handler(params, ctx);
+
+    expect(result.contacts).toHaveLength(3);
+    expect(result.contactsTotal).toBe(3);
+    expect(result.contactsReturned).toBe(3);
   });
 
   it('passes the datasetKey to service unchanged', async () => {

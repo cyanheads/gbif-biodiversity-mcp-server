@@ -32,7 +32,7 @@ describe('gbifSearchSpecies', () => {
           taxonomicStatus: 'ACCEPTED',
           kingdom: 'Animalia',
           phylum: 'Chordata',
-          clazz: 'Aves',
+          class: 'Aves',
           order: 'Passeriformes',
           family: 'Paridae',
           genus: 'Parus',
@@ -56,7 +56,7 @@ describe('gbifSearchSpecies', () => {
     expect(taxon.key).toBe(5231190);
     expect(taxon.canonicalName).toBe('Parus major');
     expect(taxon.vernacularName).toBe('Great Tit');
-    expect(taxon.class).toBe('Aves'); // normalized from clazz
+    expect(taxon.class).toBe('Aves'); // read straight from GBIF's raw `class` field (#34)
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(1000);
@@ -66,9 +66,11 @@ describe('gbifSearchSpecies', () => {
     expect(enrichment.notice).toBeUndefined();
   });
 
-  it('normalizes clazz to class', async () => {
+  it('populates the class name from GBIF raw.class (#34)', async () => {
+    // GBIF's /species/search returns the class name under `class` (not `clazz`, which is always
+    // null). A mammal result must carry class Mammalia into the taxon output.
     mockSearchSpecies.mockResolvedValue({
-      results: [{ key: 100, clazz: 'Mammalia' }],
+      results: [{ key: 5219404, class: 'Mammalia' }],
       count: 1,
       offset: 0,
       limit: 1,

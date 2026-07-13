@@ -123,7 +123,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       taxonomicStatus: r.taxonomicStatus,
       kingdom: r.kingdom,
       phylum: r.phylum,
-      class: r.clazz,
+      class: r.class,
       order: r.order,
       family: r.family,
       genus: r.genus,

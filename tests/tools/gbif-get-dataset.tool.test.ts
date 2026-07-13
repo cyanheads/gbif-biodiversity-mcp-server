@@ -209,6 +209,59 @@ describe('gbifGetDataset', () => {
     expect(result.title).toBeUndefined();
     expect(result.citationText).toBeUndefined();
     expect(result.contacts).toBeUndefined();
+    expect(result.temporalCoverages).toBeUndefined();
+    expect(result.geographicCoverages).toBeUndefined();
+  });
+
+  it('exposes temporal and geographic coverage (#28)', async () => {
+    mockGetDataset.mockResolvedValue({
+      key: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+      temporalCoverages: [
+        { start: '1800-01-01T00:00:00.000+00:00', end: '2024-12-31T00:00:00.000+00:00' },
+      ],
+      geographicCoverages: [{ description: 'Worldwide' }],
+    });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({
+      datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+    });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.temporalCoverages).toEqual([
+      { start: '1800-01-01T00:00:00.000+00:00', end: '2024-12-31T00:00:00.000+00:00' },
+    ]);
+    expect(result.geographicCoverages).toEqual([{ description: 'Worldwide' }]);
+  });
+
+  it('drops coverage entries that carry no bound or description', async () => {
+    // GBIF also emits verbatim/single-date temporal shapes and boundingBox-only geographic
+    // entries; without a start/end or description they project to nothing and are omitted.
+    mockGetDataset.mockResolvedValue({
+      key: 'cov-empty',
+      temporalCoverages: [{}],
+      geographicCoverages: [{}],
+    });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'cov-empty' });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.temporalCoverages).toBeUndefined();
+    expect(result.geographicCoverages).toBeUndefined();
+  });
+
+  it('formats coverage ranges and descriptions', () => {
+    const blocks = gbifGetDataset.format!({
+      key: 'ebird',
+      title: 'eBird',
+      temporalCoverages: [{ start: '1800-01-01', end: '2024-12-31' }],
+      geographicCoverages: [{ description: 'Worldwide' }],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('1800-01-01');
+    expect(text).toContain('2024-12-31');
+    expect(text).toContain('Worldwide');
   });
 
   it('formats output with key fields', () => {

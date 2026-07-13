@@ -116,8 +116,7 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       publishedIn: raw.publishedIn ? stripHtml(raw.publishedIn) : undefined,
       kingdom: raw.kingdom,
       phylum: raw.phylum,
-      // GBIF API uses 'clazz' to avoid reserved word; we normalize to 'class'
-      class: raw.clazz,
+      class: raw.class,
       order: raw.order,
       family: raw.family,
       genus: raw.genus,
@@ -164,35 +163,48 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       lines.push(`**Extinct:** ${result.extinct ? 'Yes' : 'No'}`);
     }
     if (result.publishedIn) lines.push(`**Published in:** ${result.publishedIn}`);
+    // Each rank renders "Name (key)" when the name is present, and a key-only entry when the
+    // name is absent but GBIF still supplies the key (sparse records, e.g. Panthera leo's classKey
+    // with no class name). Mirrors this file's accepted/parent key-only fallback so text-only
+    // clients never lose the rank key that structuredContent already carries.
     const classificationParts: string[] = [];
     if (result.kingdom)
       classificationParts.push(
         `Kingdom: ${result.kingdom}${result.kingdomKey ? ` (${result.kingdomKey})` : ''}`,
       );
+    else if (result.kingdomKey != null)
+      classificationParts.push(`Kingdom key: ${result.kingdomKey}`);
     if (result.phylum)
       classificationParts.push(
         `Phylum: ${result.phylum}${result.phylumKey ? ` (${result.phylumKey})` : ''}`,
       );
+    else if (result.phylumKey != null) classificationParts.push(`Phylum key: ${result.phylumKey}`);
     if (result.class)
       classificationParts.push(
         `Class: ${result.class}${result.classKey ? ` (${result.classKey})` : ''}`,
       );
+    else if (result.classKey != null) classificationParts.push(`Class key: ${result.classKey}`);
     if (result.order)
       classificationParts.push(
         `Order: ${result.order}${result.orderKey ? ` (${result.orderKey})` : ''}`,
       );
+    else if (result.orderKey != null) classificationParts.push(`Order key: ${result.orderKey}`);
     if (result.family)
       classificationParts.push(
         `Family: ${result.family}${result.familyKey ? ` (${result.familyKey})` : ''}`,
       );
+    else if (result.familyKey != null) classificationParts.push(`Family key: ${result.familyKey}`);
     if (result.genus)
       classificationParts.push(
         `Genus: ${result.genus}${result.genusKey ? ` (${result.genusKey})` : ''}`,
       );
+    else if (result.genusKey != null) classificationParts.push(`Genus key: ${result.genusKey}`);
     if (result.species)
       classificationParts.push(
         `Species: ${result.species}${result.speciesKey ? ` (${result.speciesKey})` : ''}`,
       );
+    else if (result.speciesKey != null)
+      classificationParts.push(`Species key: ${result.speciesKey}`);
     if (classificationParts.length > 0) {
       lines.push(`**Classification:** ${classificationParts.join(' › ')}`);
     }

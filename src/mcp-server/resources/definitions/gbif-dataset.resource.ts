@@ -5,9 +5,20 @@
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { stripHtml } from '@/mcp-server/tools/utils.js';
+import {
+  compactGeographicCoverages,
+  compactTemporalCoverages,
+  projectContacts,
+  stripHtml,
+} from '@/mcp-server/tools/utils.js';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawDatasetRecord } from '@/services/gbif/types.js';
+
+/**
+ * Fixed contact cap for the resource. The resource has no contactLimit input (unlike
+ * gbif_get_dataset), so it applies a constant cap while still reporting the full count.
+ */
+const CONTACT_CAP = 10;
 
 export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
   name: 'gbif-dataset',
@@ -31,6 +42,64 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
     publishingCountry: z.string().optional().describe('Publishing organization country.'),
     recordCount: z.number().optional().describe('Number of records. May be absent.'),
     numConstituents: z.number().optional().describe('Number of sub-datasets. May be absent.'),
+    contacts: z
+      .array(
+        z
+          .object({
+            type: z
+              .string()
+              .optional()
+              .describe('Contact type (e.g., ADMINISTRATIVE_POINT_OF_CONTACT). May be absent.'),
+            firstName: z.string().optional().describe('First name. May be absent.'),
+            lastName: z.string().optional().describe('Last name. May be absent.'),
+            organization: z.string().optional().describe('Organization name. May be absent.'),
+            email: z
+              .array(z.string())
+              .optional()
+              .describe('Contact email addresses. May be absent.'),
+          })
+          .describe('A dataset contact with role, name, organization, and email.'),
+      )
+      .optional()
+      .describe('Dataset contacts, capped at 10. Absent when the dataset has no contacts.'),
+    contactsTotal: z
+      .number()
+      .optional()
+      .describe('Total contacts before the cap. Present when the dataset has any contacts.'),
+    contactsReturned: z
+      .number()
+      .optional()
+      .describe('Number of contacts included (≤ 10). Present when the dataset has any contacts.'),
+    temporalCoverages: z
+      .array(
+        z
+          .object({
+            start: z
+              .string()
+              .optional()
+              .describe('Coverage start as an ISO 8601 date-time. May be absent.'),
+            end: z
+              .string()
+              .optional()
+              .describe('Coverage end as an ISO 8601 date-time. May be absent.'),
+          })
+          .describe('A temporal coverage range.'),
+      )
+      .optional()
+      .describe('Temporal coverage ranges declared by the dataset. May be absent.'),
+    geographicCoverages: z
+      .array(
+        z
+          .object({
+            description: z
+              .string()
+              .optional()
+              .describe('Geographic coverage description (e.g. "Worldwide"). May be absent.'),
+          })
+          .describe('A geographic coverage entry.'),
+      )
+      .optional()
+      .describe('Geographic coverage descriptions declared by the dataset. May be absent.'),
   }),
 
   errors: [
@@ -76,6 +145,9 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       publishingCountry: raw.publishingCountry,
       recordCount: raw.numRecords ?? raw.recordCount,
       numConstituents: raw.numConstituents,
+      ...projectContacts(raw.contacts, CONTACT_CAP),
+      temporalCoverages: compactTemporalCoverages(raw.temporalCoverages),
+      geographicCoverages: compactGeographicCoverages(raw.geographicCoverages),
     };
   },
 });

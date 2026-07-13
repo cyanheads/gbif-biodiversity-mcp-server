@@ -137,6 +137,61 @@ describe('gbifGetOccurrence', () => {
     expect(result.eventDate).toBeUndefined();
     expect(result.issues).toBeUndefined();
     expect(result.media).toBeUndefined();
+    // Newly-exposed advertised fields (#27) are absent on a sparse record.
+    expect(result.occurrenceID).toBeUndefined();
+    expect(result.class).toBeUndefined();
+    expect(result.classKey).toBeUndefined();
+    expect(result.gadm).toBeUndefined();
+    expect(result.identifiers).toBeUndefined();
+  });
+
+  it('exposes occurrenceID, class/classKey, gadm, and identifiers (#27)', async () => {
+    // Mirrors GBIF occurrence 5938044864 (an iNaturalist Aves record from Sweden).
+    mockGetOccurrence.mockResolvedValue({
+      key: 5938044864,
+      class: 'Aves',
+      classKey: 212,
+      occurrenceID: 'https://www.inaturalist.org/observations/333428940',
+      gadm: {
+        level0: { gid: 'SWE', name: 'Sweden' },
+        level1: { gid: 'SWE.2_1', name: 'Norrbotten' },
+      },
+      identifiers: [{ type: 'URL', identifier: '333428940' }],
+    });
+
+    const ctx = createMockContext({ errors: gbifGetOccurrence.errors });
+    const input = gbifGetOccurrence.input.parse({ occurrenceKey: 5938044864 });
+    const result = await gbifGetOccurrence.handler(input, ctx);
+
+    expect(result.occurrenceID).toBe('https://www.inaturalist.org/observations/333428940');
+    expect(result.class).toBe('Aves');
+    expect(result.classKey).toBe(212);
+    expect(result.gadm?.level0).toEqual({ gid: 'SWE', name: 'Sweden' });
+    expect(result.gadm?.level1).toEqual({ gid: 'SWE.2_1', name: 'Norrbotten' });
+    expect(result.gadm?.level2).toBeUndefined();
+    expect(result.identifiers).toEqual([{ type: 'URL', identifier: '333428940' }]);
+  });
+
+  it('drops empty gadm levels and omits gadm entirely when no level carries data', async () => {
+    mockGetOccurrence.mockResolvedValue({
+      key: 301,
+      gadm: { level0: { gid: 'SWE', name: 'Sweden' }, level1: {}, level2: {} },
+    });
+
+    const ctx = createMockContext({ errors: gbifGetOccurrence.errors });
+    const input = gbifGetOccurrence.input.parse({ occurrenceKey: 301 });
+    const result = await gbifGetOccurrence.handler(input, ctx);
+
+    expect(result.gadm?.level0).toEqual({ gid: 'SWE', name: 'Sweden' });
+    expect(result.gadm?.level1).toBeUndefined();
+    expect(result.gadm?.level2).toBeUndefined();
+
+    mockGetOccurrence.mockResolvedValue({ key: 302, gadm: { level0: {}, level1: {} } });
+    const emptyResult = await gbifGetOccurrence.handler(
+      gbifGetOccurrence.input.parse({ occurrenceKey: 302 }),
+      ctx,
+    );
+    expect(emptyResult.gadm).toBeUndefined();
   });
 
   it('formats output with key fields', () => {
@@ -173,5 +228,31 @@ describe('gbifGetOccurrence', () => {
     const blocks = gbifGetOccurrence.format!({ key: 1 });
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('Not available');
+  });
+
+  it('renders occurrenceID, class key, gadm, and identifiers in text (#27)', () => {
+    const blocks = gbifGetOccurrence.format!({
+      key: 5938044864,
+      canonicalName: 'Larus argentatus',
+      kingdom: 'Animalia',
+      phylum: 'Chordata',
+      class: 'Aves',
+      classKey: 212,
+      occurrenceID: 'https://www.inaturalist.org/observations/333428940',
+      gadm: { level0: { gid: 'SWE', name: 'Sweden' } },
+      identifiers: [{ type: 'URL', identifier: '333428940' }],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('Class: Aves (212)');
+    expect(text).toContain('https://www.inaturalist.org/observations/333428940');
+    expect(text).toContain('Sweden');
+    expect(text).toContain('SWE');
+    expect(text).toContain('[URL] 333428940');
+  });
+
+  it('renders a class key when the class name is absent (#27 content parity)', () => {
+    const blocks = gbifGetOccurrence.format!({ key: 1, classKey: 212 });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('Class key: 212');
   });
 });

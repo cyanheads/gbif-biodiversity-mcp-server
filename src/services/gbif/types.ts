@@ -75,7 +75,7 @@ export type RawSpeciesRecord = {
   publishedIn?: string;
   kingdom?: string;
   phylum?: string;
-  clazz?: string; // GBIF uses 'clazz' not 'class' to avoid reserved word
+  class?: string;
   order?: string;
   family?: string;
   genus?: string;
@@ -158,6 +158,7 @@ export type RawOccurrenceRecord = {
   canonicalName?: string;
   kingdom?: string;
   phylum?: string;
+  class?: string;
   order?: string;
   family?: string;
   genus?: string;
@@ -200,7 +201,20 @@ export type RawOccurrenceRecord = {
   issues?: string[];
   media?: RawMedia[];
   identifiers?: RawIdentifier[];
-  gadm?: unknown;
+  gadm?: RawGadm;
+};
+
+/** A single GADM administrative level — stable GID plus the area name. */
+export type RawGadmLevel = {
+  gid?: string;
+  name?: string;
+};
+
+/** GADM administrative geography nested on an occurrence (levels 0–2 used). */
+export type RawGadm = {
+  level0?: RawGadmLevel;
+  level1?: RawGadmLevel;
+  level2?: RawGadmLevel;
 };
 
 export type RawMedia = {
@@ -265,8 +279,8 @@ export type RawDatasetRecord = {
   modified?: string;
   deleted?: string;
   contacts?: RawContact[];
-  temporalCoverages?: unknown[];
-  geographicCoverages?: unknown[];
+  temporalCoverages?: RawTemporalCoverage[];
+  geographicCoverages?: RawGeographicCoverage[];
 };
 
 export type RawContact = {
@@ -275,6 +289,17 @@ export type RawContact = {
   lastName?: string;
   email?: string[];
   organization?: string;
+};
+
+/** A temporal coverage range on a dataset (GBIF's `range`-shaped entry). */
+export type RawTemporalCoverage = {
+  start?: string;
+  end?: string;
+};
+
+/** A geographic coverage entry on a dataset. */
+export type RawGeographicCoverage = {
+  description?: string;
 };
 
 export type RawDatasetSearchResponse = {

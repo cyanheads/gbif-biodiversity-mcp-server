@@ -7,7 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawDatasetRecord } from '@/services/gbif/types.js';
-import { stripHtml } from '../utils.js';
+import {
+  compactGeographicCoverages,
+  compactTemporalCoverages,
+  projectContacts,
+  stripHtml,
+} from '../utils.js';
 
 export const gbifGetDataset = tool('gbif_get_dataset', {
   title: 'Get Dataset',
@@ -85,6 +90,36 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .describe(
         'Number of contacts included in this response (≤ contactLimit). Present when the dataset has any contacts.',
       ),
+    temporalCoverages: z
+      .array(
+        z
+          .object({
+            start: z
+              .string()
+              .optional()
+              .describe('Coverage start as an ISO 8601 date-time. May be absent.'),
+            end: z
+              .string()
+              .optional()
+              .describe('Coverage end as an ISO 8601 date-time. May be absent.'),
+          })
+          .describe('A temporal coverage range.'),
+      )
+      .optional()
+      .describe('Temporal coverage ranges declared by the dataset. May be absent.'),
+    geographicCoverages: z
+      .array(
+        z
+          .object({
+            description: z
+              .string()
+              .optional()
+              .describe('Geographic coverage description (e.g. "Worldwide"). May be absent.'),
+          })
+          .describe('A geographic coverage entry.'),
+      )
+      .optional()
+      .describe('Geographic coverage descriptions declared by the dataset. May be absent.'),
   }),
 
   errors: [
@@ -117,16 +152,6 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       });
     }
 
-    const allContacts = raw.contacts ?? [];
-    const contactsTotal = allContacts.length;
-    const contacts = allContacts.slice(0, input.contactLimit).map((c) => ({
-      type: c.type,
-      firstName: c.firstName,
-      lastName: c.lastName,
-      organization: c.organization,
-      email: c.email?.length ? c.email : undefined,
-    }));
-
     return {
       key: raw.key,
       title: raw.title,
@@ -138,10 +163,11 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       publishingCountry: raw.publishingCountry,
       recordCount: raw.numRecords ?? raw.recordCount,
       numConstituents: raw.numConstituents,
-      contacts: contacts.length ? contacts : undefined,
-      // Report the full count whenever the dataset has contacts, so contactLimit: 0
-      // suppresses the detail while preserving how many exist.
-      ...(contactsTotal > 0 && { contactsTotal, contactsReturned: contacts.length }),
+      // contactLimit: 0 suppresses contact detail while projectContacts still reports
+      // contactsTotal/contactsReturned, so callers learn the dataset has contacts.
+      ...projectContacts(raw.contacts, input.contactLimit),
+      temporalCoverages: compactTemporalCoverages(raw.temporalCoverages),
+      geographicCoverages: compactGeographicCoverages(raw.geographicCoverages),
     };
   },
 
@@ -157,6 +183,14 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       lines.push(`**Records:** ${result.recordCount.toLocaleString()}`);
     if (result.numConstituents != null)
       lines.push(`**Constituent datasets:** ${result.numConstituents}`);
+    if (result.temporalCoverages?.length) {
+      const ranges = result.temporalCoverages.map((t) => `${t.start ?? '?'} → ${t.end ?? '?'}`);
+      lines.push(`**Temporal coverage:** ${ranges.join('; ')}`);
+    }
+    if (result.geographicCoverages?.length) {
+      const descs = result.geographicCoverages.map((g) => g.description).filter(Boolean);
+      if (descs.length > 0) lines.push(`**Geographic coverage:** ${descs.join('; ')}`);
+    }
     if (result.citationText) lines.push(`\n**Citation:**\n> ${result.citationText}`);
     if (result.description) lines.push(`\n${result.description}`);
     if (result.contactsTotal != null) {

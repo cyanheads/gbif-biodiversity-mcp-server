@@ -6,7 +6,33 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import type { RawOccurrenceRecord } from '@/services/gbif/types.js';
+import type { RawGadm, RawGadmLevel, RawOccurrenceRecord } from '@/services/gbif/types.js';
+
+/** Output schema for one GADM administrative level. A fresh instance per call keeps the emitted JSON Schema inline (no $ref). */
+const gadmLevel = () =>
+  z.object({
+    gid: z
+      .string()
+      .optional()
+      .describe(
+        'GADM GID — stable administrative-unit identifier (e.g. SWE, SWE.2_1). May be absent.',
+      ),
+    name: z.string().optional().describe('Administrative-unit name. May be absent.'),
+  });
+
+/** Keep a GADM level only when it carries a gid or name; drop empty placeholders. */
+const compactLevel = (l: RawGadmLevel | undefined) =>
+  l && (l.gid || l.name) ? { gid: l.gid, name: l.name } : undefined;
+
+/** Project the raw GADM object to gid/name at levels 0–2; undefined when no level carries data. */
+const compactGadm = (g: RawGadm | undefined) => {
+  if (!g) return;
+  const level0 = compactLevel(g.level0);
+  const level1 = compactLevel(g.level1);
+  const level2 = compactLevel(g.level2);
+  if (!level0 && !level1 && !level2) return;
+  return { level0, level1, level2 };
+};
 
 export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   title: 'Get Occurrence Record',
@@ -22,11 +48,19 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   output: z.object({
     key: z.number().optional().describe('GBIF occurrence key.'),
     datasetKey: z.string().optional().describe('UUID of the source dataset.'),
+    occurrenceID: z
+      .string()
+      .optional()
+      .describe(
+        'Darwin Core occurrenceID — the source record identifier, often a URL back to the origin record. May be absent.',
+      ),
     taxonKey: z.number().optional().describe('Backbone taxon key.'),
     scientificName: z.string().optional().describe('Scientific name from occurrence record.'),
     canonicalName: z.string().optional().describe('Canonical name without authorship.'),
     kingdom: z.string().optional().describe('Kingdom classification.'),
     phylum: z.string().optional().describe('Phylum classification.'),
+    class: z.string().optional().describe('Class classification. May be absent.'),
+    classKey: z.number().optional().describe('Backbone taxon key for the class. May be absent.'),
     order: z.string().optional().describe('Order classification.'),
     family: z.string().optional().describe('Family classification.'),
     genus: z.string().optional().describe('Genus classification.'),
@@ -49,6 +83,16 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     countryCode: z.string().optional().describe('ISO 3166-1 alpha-2 country code. May be absent.'),
     stateProvince: z.string().optional().describe('State or province. May be absent.'),
     locality: z.string().optional().describe('Locality description. May be absent.'),
+    gadm: z
+      .object({
+        level0: gadmLevel().optional().describe('GADM level 0 — country. May be absent.'),
+        level1: gadmLevel().optional().describe('GADM level 1 — state/province. May be absent.'),
+        level2: gadmLevel().optional().describe('GADM level 2 — county/district. May be absent.'),
+      })
+      .optional()
+      .describe(
+        'GADM administrative geography — stable GIDs and names at levels 0–2. May be absent.',
+      ),
     publishingCountry: z
       .string()
       .optional()
@@ -93,6 +137,20 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       )
       .optional()
       .describe('Associated media (images, audio, video). May be absent.'),
+    identifiers: z
+      .array(
+        z
+          .object({
+            type: z
+              .string()
+              .optional()
+              .describe('Identifier type (e.g. URL, DOI, GBIF_PORTAL). May be absent.'),
+            identifier: z.string().optional().describe('The identifier value. May be absent.'),
+          })
+          .describe('An alternative identifier for the occurrence record.'),
+      )
+      .optional()
+      .describe('Alternative record identifiers from the source. May be absent.'),
   }),
 
   errors: [
@@ -127,11 +185,14 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     return {
       key: raw.key,
       datasetKey: raw.datasetKey,
+      occurrenceID: raw.occurrenceID,
       taxonKey: raw.taxonKey,
       scientificName: raw.scientificName,
       canonicalName: raw.canonicalName,
       kingdom: raw.kingdom,
       phylum: raw.phylum,
+      class: raw.class,
+      classKey: raw.classKey,
       order: raw.order,
       family: raw.family,
       genus: raw.genus,
@@ -145,6 +206,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       countryCode: raw.countryCode,
       stateProvince: raw.stateProvince,
       locality: raw.locality,
+      gadm: compactGadm(raw.gadm),
       publishingCountry: raw.publishingCountry,
       eventDate: raw.eventDate,
       year: raw.year,
@@ -169,6 +231,9 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
             license: m.license,
           }))
         : undefined,
+      identifiers: raw.identifiers?.length
+        ? raw.identifiers.map((id) => ({ type: id.type, identifier: id.identifier }))
+        : undefined,
     };
   },
 
@@ -188,6 +253,11 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     const taxParts: string[] = [];
     if (result.kingdom) taxParts.push(`Kingdom: ${result.kingdom}`);
     if (result.phylum) taxParts.push(`Phylum: ${result.phylum}`);
+    if (result.class)
+      taxParts.push(
+        `Class: ${result.class}${result.classKey != null ? ` (${result.classKey})` : ''}`,
+      );
+    else if (result.classKey != null) taxParts.push(`Class key: ${result.classKey}`);
     if (result.order) taxParts.push(`Order: ${result.order}`);
     if (result.family) taxParts.push(`Family: ${result.family}`);
     if (result.genus) taxParts.push(`Genus: ${result.genus}`);
@@ -219,6 +289,15 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
         `**Location:** ${geo.join(', ')}${result.countryCode ? ` (${result.countryCode})` : ''}`,
       );
     else if (result.countryCode) lines.push(`**Country code:** ${result.countryCode}`);
+    if (result.gadm) {
+      const gadmParts: string[] = [];
+      for (const lvl of [result.gadm.level0, result.gadm.level1, result.gadm.level2]) {
+        if (lvl?.name || lvl?.gid) {
+          gadmParts.push(`${lvl.name ?? ''}${lvl.gid ? ` (${lvl.gid})` : ''}`.trim());
+        }
+      }
+      if (gadmParts.length > 0) lines.push(`**GADM:** ${gadmParts.join(' › ')}`);
+    }
     if (result.recordedBy) lines.push(`**Recorded by:** ${result.recordedBy}`);
     if (result.identifiedBy) lines.push(`**Identified by:** ${result.identifiedBy}`);
     if (result.individualCount != null)
@@ -229,6 +308,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     if (result.institutionCode) lines.push(`**Institution:** ${result.institutionCode}`);
     if (result.collectionCode) lines.push(`**Collection:** ${result.collectionCode}`);
     if (result.catalogNumber) lines.push(`**Catalog number:** ${result.catalogNumber}`);
+    if (result.occurrenceID) lines.push(`**Occurrence ID:** ${result.occurrenceID}`);
     if (result.datasetKey) lines.push(`**Dataset key:** ${result.datasetKey}`);
     if (result.publishingCountry) lines.push(`**Publishing country:** ${result.publishingCountry}`);
     if (result.media?.length) {
@@ -241,6 +321,13 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
         lines.push(
           `  - ${mediaType}${mediaTitle}${mediaFmt}${mediaLicense}${m.identifier ? `: ${m.identifier}` : ''}`,
         );
+      }
+    }
+    if (result.identifiers?.length) {
+      lines.push(`\n**Identifiers:** ${result.identifiers.length} item(s)`);
+      for (const id of result.identifiers) {
+        const idType = id.type ? `[${id.type}] ` : '';
+        lines.push(`  - ${idType}${id.identifier ?? '(no value)'}`);
       }
     }
     if (result.issues?.length) lines.push(`\n**Quality issues:** ${result.issues.join(', ')}`);
