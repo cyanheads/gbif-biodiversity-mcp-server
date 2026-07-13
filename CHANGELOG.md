@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-07-13
+
+gbif_get_occurrence and gbif_get_dataset now return their advertised GADM, coverage, and contact fields; gbif_get_species class-name and key-only classification bugs fixed; mcp-ts-core bumped to ^0.10.14 with Socket install-scanner supply-chain hardening.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-06-30
 
 Adds gbif_bulk_match_species — resolve up to 50 scientific names to GBIF backbone taxon keys in one call with per-name NONE/ERROR isolation. Removes the always-zero totalCount from gbif_get_species_children in favor of honest page-truncation fields, and corrects the gbif_match_species matchType enum to HIGHERRANK.

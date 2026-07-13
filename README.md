@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -138,7 +138,8 @@ Count occurrences matching a filter without fetching any records.
 
 Fetch a single occurrence record by GBIF occurrence key.
 
-- Complete Darwin Core record — all coordinate fields, GADM administrative geography (continent, country, state/province, locality), dates
+- Complete Darwin Core record — all coordinate fields, administrative geography (continent, country, state/province, locality), dates
+- `occurrenceID`, full classification (`class`/`classKey`), GADM administrative units (levels 0–2, each with a stable GID and name), and source `identifiers`
 - Collections metadata: institution code, collection code, catalog number
 - Collector and identifier names, individual count, sex, life stage
 - Associated media (images, audio, video) with URLs and license
@@ -174,6 +175,7 @@ Fetch full dataset metadata by UUID.
 
 - Full description, citation text (for academic reference), license, DOI
 - Contacts with role, name, organization, and email
+- Temporal and geographic coverage ranges when the publisher declares them
 - `numConstituents` for aggregate datasets (e.g. iNaturalist, eBird)
 - Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail
 

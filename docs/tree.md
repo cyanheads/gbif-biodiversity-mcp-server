@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-06-30 21:27:40
+Generated on: 2026-07-13 17:20:59
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -11,10 +11,12 @@ gbif-biodiversity-mcp-server/
 │   ├── mcp.json
 │   └── plugin.json
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -184,6 +186,7 @@ gbif-biodiversity-mcp-server/
 │       └── utils.test.ts
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── biome.json
