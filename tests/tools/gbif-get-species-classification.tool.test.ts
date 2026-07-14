@@ -57,6 +57,28 @@ describe('gbifGetSpeciesClassification', () => {
     expect(result.classification[5].name).toBe('Parus');
   });
 
+  // #29: the chain stops at the immediate parent — the queried taxon is never appended,
+  // and no redundant self-fetch happens on the success path (that's gbif_get_species's job).
+  it('ends at the immediate parent without fetching or appending the queried taxon', async () => {
+    mockGetSpeciesParents.mockResolvedValue([
+      { key: 1, rank: 'KINGDOM', canonicalName: 'Animalia', scientificName: 'Animalia' },
+      {
+        key: 2492278,
+        rank: 'GENUS',
+        canonicalName: 'Parus',
+        scientificName: 'Parus Linnaeus, 1758',
+      },
+    ]);
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesClassification.errors });
+    const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 9705453 });
+    const result = await gbifGetSpeciesClassification.handler(input, ctx);
+
+    expect(result.classification).toHaveLength(2);
+    expect(result.classification.at(-1)).toMatchObject({ key: 2492278, rank: 'GENUS' });
+    expect(mockGetSpecies).not.toHaveBeenCalled();
+  });
+
   it('throws not_found when response is not an array', async () => {
     mockGetSpeciesParents.mockResolvedValue({ error: 'not found' });
 

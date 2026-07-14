@@ -11,9 +11,10 @@ import type { RawParentNode } from '@/services/gbif/types.js';
 export const gbifGetSpeciesClassification = tool('gbif_get_species_classification', {
   title: 'Get Species Classification',
   description:
-    'Return the complete parent chain for a taxon — from kingdom (or domain) down to the taxon ' +
-    'itself — as an ordered array. Each entry has its rank, canonical name, and taxon key. ' +
-    'The array is returned root-first (kingdom → phylum → class → … → parent of given taxon). ' +
+    'Return the parent chain for a taxon — from kingdom (or domain) down to the immediate parent ' +
+    'of the queried taxon — as an ordered array. Each entry has its rank, canonical name, and taxon key. ' +
+    'The array is returned root-first (kingdom → phylum → class → … → immediate parent of the queried taxon); ' +
+    'the queried taxon itself is not included — call gbif_get_species for its own record. ' +
     'Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
@@ -34,7 +35,8 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
           .describe('A single rank entry in the classification chain.'),
       )
       .describe(
-        'Classification chain ordered from root (kingdom) to the immediate parent of the queried taxon.',
+        'Classification chain ordered from root (kingdom) to the immediate parent of the queried taxon. ' +
+          'The queried taxon itself is not included — call gbif_get_species for its own record.',
       ),
   }),
 
