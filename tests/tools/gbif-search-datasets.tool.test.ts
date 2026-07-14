@@ -91,7 +91,7 @@ describe('gbifSearchDatasets', () => {
     expect(result.datasets[0].recordCount).toBe(777);
   });
 
-  it('truncates description to 300 chars', async () => {
+  it('truncates description to 300 chars and flags descriptionTruncated', async () => {
     const longDescription = 'x'.repeat(500);
     mockSearchDatasets.mockResolvedValue({
       results: [makeDataset({ description: longDescription })],
@@ -106,6 +106,24 @@ describe('gbifSearchDatasets', () => {
     const result = await gbifSearchDatasets.handler(input, ctx);
 
     expect(result.datasets[0].description).toHaveLength(300);
+    expect(result.datasets[0].descriptionTruncated).toBe(true);
+  });
+
+  it('does not flag descriptionTruncated for a description under 300 chars', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [makeDataset({ description: 'Short description.' })],
+      count: 1,
+      offset: 0,
+      limit: 1,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext();
+    const input = gbifSearchDatasets.input.parse({});
+    const result = await gbifSearchDatasets.handler(input, ctx);
+
+    expect(result.datasets[0].description).toBe('Short description.');
+    expect(result.datasets[0].descriptionTruncated).toBe(false);
   });
 
   it('enriches with notice on empty results', async () => {
@@ -167,6 +185,7 @@ describe('gbifSearchDatasets', () => {
     expect(ds.key).toBe('sparse-key');
     expect(ds.title).toBeUndefined();
     expect(ds.description).toBeUndefined();
+    expect(ds.descriptionTruncated).toBeUndefined();
     expect(ds.recordCount).toBeUndefined();
   });
 
@@ -189,5 +208,23 @@ describe('gbifSearchDatasets', () => {
     expect(text).toContain('abc-def-123');
     expect(text).toContain('eBird Basic Dataset');
     expect(text).toContain('OCCURRENCE');
+  });
+
+  it('renders the truncation marker in content only when descriptionTruncated', () => {
+    const truncated = gbifSearchDatasets.format!({
+      datasets: [
+        { key: 'a', title: 'A', description: 'x'.repeat(300), descriptionTruncated: true },
+      ],
+    });
+    const truncatedText = truncated[0].type === 'text' ? truncated[0].text : '';
+    expect(truncatedText).toContain('description truncated');
+    expect(truncatedText).toContain('gbif_get_dataset');
+
+    const full = gbifSearchDatasets.format!({
+      datasets: [{ key: 'b', title: 'B', description: 'Short.', descriptionTruncated: false }],
+    });
+    const fullText = full[0].type === 'text' ? full[0].text : '';
+    expect(fullText).toContain('Short.');
+    expect(fullText).not.toContain('description truncated');
   });
 });

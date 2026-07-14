@@ -63,7 +63,16 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
             key: z.string().optional().describe('Dataset UUID for gbif_get_dataset chaining.'),
             title: z.string().optional().describe('Dataset title.'),
             type: z.string().optional().describe('Dataset type (OCCURRENCE, CHECKLIST, etc.).'),
-            description: z.string().optional().describe('Brief description. May be absent.'),
+            description: z
+              .string()
+              .optional()
+              .describe('Brief description, truncated to a 300-character preview. May be absent.'),
+            descriptionTruncated: z
+              .boolean()
+              .optional()
+              .describe(
+                'True when the description was shortened to the 300-char preview; call gbif_get_dataset with this key for the full text. Omitted when the dataset has no description.',
+              ),
             license: z.string().optional().describe('License identifier. May be absent.'),
             doi: z.string().optional().describe('DOI for citation. May be absent.'),
             publishingCountry: z.string().optional().describe('Country code of the publisher.'),
@@ -102,16 +111,20 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       ctx,
     );
 
-    const datasets = (raw.results ?? []).map((r) => ({
-      key: r.key,
-      title: r.title,
-      type: r.type,
-      description: r.description ? stripHtml(r.description).slice(0, 300) : undefined,
-      license: r.license,
-      doi: r.doi,
-      publishingCountry: r.publishingCountry,
-      recordCount: r.numRecords ?? r.recordCount,
-    }));
+    const datasets = (raw.results ?? []).map((r) => {
+      const stripped = r.description ? stripHtml(r.description) : undefined;
+      return {
+        key: r.key,
+        title: r.title,
+        type: r.type,
+        description: stripped?.slice(0, 300),
+        ...(stripped !== undefined && { descriptionTruncated: stripped.length > 300 }),
+        license: r.license,
+        doi: r.doi,
+        publishingCountry: r.publishingCountry,
+        recordCount: r.numRecords ?? r.recordCount,
+      };
+    });
 
     const totalCount = raw.count ?? 0;
     const offset = raw.offset ?? input.offset;
@@ -135,7 +148,12 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       if (ds.doi) lines.push(`**DOI:** ${ds.doi}`);
       if (ds.publishingCountry) lines.push(`**Publishing country:** ${ds.publishingCountry}`);
       if (ds.recordCount != null) lines.push(`**Records:** ${ds.recordCount.toLocaleString()}`);
-      if (ds.description) lines.push(`${ds.description}${ds.description.length >= 300 ? '…' : ''}`);
+      if (ds.description)
+        lines.push(
+          ds.descriptionTruncated
+            ? `${ds.description}… (description truncated — full text via \`gbif_get_dataset\`)`
+            : ds.description,
+        );
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },
