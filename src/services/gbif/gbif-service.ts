@@ -243,6 +243,7 @@ export class GbifService {
       datasetKey?: string;
       facet: string;
       facetLimit?: number;
+      facetOffset?: number;
     },
     ctx: Context,
   ): Promise<RawOccurrenceSearchResponse> {
@@ -254,6 +255,7 @@ export class GbifService {
     if (params.geometry) queryParams.geometry = params.geometry;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
     if (params.facetLimit !== undefined) queryParams.facetLimit = params.facetLimit;
+    if (params.facetOffset !== undefined) queryParams.facetOffset = params.facetOffset;
     const url = this.buildUrl('/occurrence/search', queryParams);
     ctx.log.debug('Fetching occurrence facets', { facet: params.facet });
     return this.getJson<RawOccurrenceSearchResponse>(url, ctx);

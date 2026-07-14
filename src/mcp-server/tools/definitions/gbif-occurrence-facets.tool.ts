@@ -85,6 +85,13 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .max(100)
       .default(10)
       .describe('Maximum number of facet values to return (default 10, max 100).'),
+    facetOffset: z
+      .number()
+      .min(0)
+      .default(0)
+      .describe(
+        'Zero-based offset into the ranked facet values, for paging past the first facetLimit values on high-cardinality dimensions like DATASET_KEY. Advance by facetLimit to fetch the next page (0, then facetLimit, then 2×facetLimit, …).',
+      ),
   }),
   output: z.object({
     facet: z.string().describe('The facet dimension aggregated.'),
@@ -104,6 +111,12 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   // Agent-facing context — reaches both structuredContent and content[].
   enrichment: {
     facetLimit: z.number().describe('Maximum facet values requested.'),
+    facetOffset: z.number().describe('Zero-based offset applied to the ranked facet values.'),
+    moreValuesLikely: z
+      .boolean()
+      .describe(
+        'Heuristic continuation flag: true when this page returned a full facetLimit of values, so more distinct values may exist past facetOffset + facetLimit (re-call with facetOffset advanced by facetLimit). GBIF exposes no total distinct-value count, so this is an estimate, not exact.',
+      ),
     notice: z
       .string()
       .optional()
@@ -122,6 +135,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
         ...(input.geometry?.trim() && { geometry: input.geometry }),
         ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
         facetLimit: input.facetLimit,
+        facetOffset: input.facetOffset,
       },
       ctx,
     );
@@ -132,7 +146,11 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       count: c.count ?? 0,
     }));
 
-    ctx.enrich({ facetLimit: input.facetLimit });
+    ctx.enrich({
+      facetLimit: input.facetLimit,
+      facetOffset: input.facetOffset,
+      moreValuesLikely: counts.length >= input.facetLimit,
+    });
     if (counts.length === 0) {
       ctx.enrich.notice(
         'No facet values returned. The filter combination may match zero occurrences, or the facet dimension has no data for the given scope.',

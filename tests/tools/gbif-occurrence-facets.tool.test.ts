@@ -50,6 +50,8 @@ describe('gbifOccurrenceFacets', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.facetLimit).toBe(10); // default
+    expect(enrichment.facetOffset).toBe(0); // default
+    expect(enrichment.moreValuesLikely).toBe(false); // 3 counts < facetLimit 10
     expect(enrichment.notice).toBeUndefined();
   });
 
@@ -202,5 +204,84 @@ describe('gbifOccurrenceFacets', () => {
       expect.not.objectContaining({ datasetKey: expect.anything() }),
       ctx,
     );
+  });
+
+  // #32: facetOffset pages past the first facetLimit values
+  it('passes facetOffset to the service and echoes it in enrichment', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 3112676,
+      facets: [
+        {
+          field: 'DATASET_KEY',
+          counts: [
+            { name: 'ds-4', count: 4000 },
+            { name: 'ds-5', count: 3000 },
+            { name: 'ds-6', count: 2000 },
+          ],
+        },
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'DATASET_KEY',
+      facetLimit: 3,
+      facetOffset: 3,
+    });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.objectContaining({ facetLimit: 3, facetOffset: 3 }),
+      ctx,
+    );
+    expect(getEnrichment(ctx).facetOffset).toBe(3);
+  });
+
+  it('defaults facetOffset to 0 and passes it to the service', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY' });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.objectContaining({ facetOffset: 0 }),
+      ctx,
+    );
+  });
+
+  it('flags moreValuesLikely when the page fills facetLimit', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 3112676,
+      facets: [
+        {
+          field: 'DATASET_KEY',
+          counts: [
+            { name: 'ds-1', count: 9000 },
+            { name: 'ds-2', count: 8000 },
+            { name: 'ds-3', count: 7000 },
+          ],
+        },
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY', facetLimit: 3 });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(getEnrichment(ctx).moreValuesLikely).toBe(true);
+  });
+
+  it('does not flag moreValuesLikely when the page is not full', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 100,
+      facets: [{ field: 'DATASET_KEY', counts: [{ name: 'ds-1', count: 100 }] }],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY', facetLimit: 3 });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(getEnrichment(ctx).moreValuesLikely).toBe(false);
   });
 });
