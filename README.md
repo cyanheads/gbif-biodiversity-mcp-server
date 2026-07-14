@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -33,7 +33,7 @@
 | `gbif_bulk_match_species` | Match up to 50 scientific names to backbone taxon keys in one call — results in input order, per-name NONE/ERROR isolation |
 | `gbif_get_species` | Fetch a single backbone taxon by key — full classification, authorship, synonymy, vernacular name, descendant count |
 | `gbif_search_species` | Search or browse the GBIF backbone taxonomy by name fragment, rank, kingdom, family, or genus |
-| `gbif_get_species_classification` | Return the complete parent chain for a taxon — root-first ordered array from kingdom to immediate parent |
+| `gbif_get_species_classification` | Return the root-to-parent classification chain for a taxon — root-first ordered array from kingdom to the queried taxon's immediate parent (the taxon itself is not included) |
 | `gbif_get_species_children` | List direct children of a backbone taxon — genera within a family, species within a genus |
 | `gbif_search_occurrences` | Search 2.4B+ GBIF occurrence records with Darwin Core filters — country, bounding box, WKT geometry, year, month, basis of record |
 | `gbif_count_occurrences` | Count occurrences matching a filter without fetching records — fast single-number response |
@@ -93,9 +93,10 @@ Search or browse the GBIF backbone taxonomy.
 
 ### `gbif_get_species_classification`
 
-Return the full parent chain for a taxon as an ordered array.
+Return the root-to-parent classification chain for a taxon as an ordered array.
 
-- Root-first (kingdom → phylum → class → order → family → genus → species → up to parent of queried taxon)
+- Root-first from kingdom down to the immediate parent of the queried taxon (kingdom → phylum → class → … → parent)
+- The queried taxon itself is not included — use `gbif_get_species` for its own record
 - Each entry: rank, canonical name, scientific name, taxon key
 - Useful for building taxonomic trees or placing an unfamiliar taxon in context without manual backbone navigation
 
@@ -153,7 +154,8 @@ Aggregate occurrence counts across a dimension.
 
 - Facets: `COUNTRY`, `YEAR`, `BASIS_OF_RECORD`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`
 - Scope with `taxonKey`, `country`, `year`, `geometry`, or `basisOfRecord` filters
-- Returns top-N values (up to 100) ranked by count — no record payloads
+- Returns top-N values ranked by count (up to `facetLimit`, max 100) — no record payloads
+- Page past the first `facetLimit` with `facetOffset` (advance by `facetLimit` per page) to walk high-cardinality facets like `DATASET_KEY`; enrichment echoes the applied `facetOffset` and sets `moreValuesLikely` when a full page suggests more values remain
 - Core tool for distribution analysis ("which countries have the most records?") and trend queries ("how has observation volume changed since 2010?")
 
 ---
@@ -163,7 +165,7 @@ Aggregate occurrence counts across a dimension.
 Search GBIF datasets by keyword, type, country, or publishing organization.
 
 - Filters: free-text query, dataset type (`OCCURRENCE`, `CHECKLIST`, `METADATA`, `SAMPLING_EVENT`), publishing country, hosting organization UUID
-- Returns title, type, description, license, DOI, and record count
+- Returns title, type, description, license, DOI, and record count. The `description` is a 300-character preview — `descriptionTruncated` flags when it was shortened, and `gbif_get_dataset` returns the full text
 - Use `hostingOrg` from `gbif_search_publishers` to scope to datasets from one organization
 - Paginated — limit up to 1000
 

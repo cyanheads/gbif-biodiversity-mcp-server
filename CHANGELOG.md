@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-07-13
+
+gbif_occurrence_facets gains a facetOffset input for paging past the first 100 facet values; gbif_search_datasets flags truncated dataset descriptions in structured output; gbif_get_species_classification's description corrected to match its actual root-to-parent output.
+
 ## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-07-13
 
 gbif_get_occurrence and gbif_get_dataset now return their advertised GADM, coverage, and contact fields; gbif_get_species class-name and key-only classification bugs fixed; mcp-ts-core bumped to ^0.10.14 with Socket install-scanner supply-chain hardening.
