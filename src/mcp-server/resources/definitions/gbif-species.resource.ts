@@ -52,6 +52,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       when: 'GBIF rejected the taxonKey segment as unparseable — a value outside the 32-bit signed integer range.',
       recovery:
         'Address the resource with a whole backbone taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
+      thrownBy: 'service',
     },
   ],
 

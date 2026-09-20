@@ -127,8 +127,20 @@ describe('GbifService upstream error payload', () => {
     vi.unstubAllGlobals();
   });
 
-  async function searchAndCatch(response: Response, ctx = createMockContext()): Promise<McpError> {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+  /**
+   * Takes a factory rather than an instance: a 5xx is transient, so `withRetry`
+   * issues several attempts and each one reads the body. A single `Response`
+   * reused across them fails on the second read with "Body already used" — a
+   * fixture artifact that would masquerade as a transport bug.
+   */
+  async function searchAndCatch(
+    respond: () => Response,
+    ctx = createMockContext(),
+  ): Promise<McpError> {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => Promise.resolve(respond())),
+    );
     const err = await makeService()
       .searchOccurrences({ geometry: 'POLYGON((0 0, 1 1))' }, ctx)
       .catch((e: unknown) => e);
@@ -137,7 +149,7 @@ describe('GbifService upstream error payload', () => {
   }
 
   it('keeps the request URL out of the error payload', async () => {
-    const err = await searchAndCatch(upstream(400, WKT_BODY, 'Bad Request'));
+    const err = await searchAndCatch(() => upstream(400, WKT_BODY, 'Bad Request'));
 
     expect(err.data).not.toHaveProperty('url');
     expect(JSON.stringify(err.data)).not.toContain('api.gbif.org');
@@ -147,14 +159,14 @@ describe('GbifService upstream error payload', () => {
   });
 
   it("states GBIF's explanation in the message, not only in data.body", async () => {
-    const err = await searchAndCatch(upstream(400, WKT_BODY, 'Bad Request'));
+    const err = await searchAndCatch(() => upstream(400, WKT_BODY, 'Bad Request'));
 
     expect(err.message).toContain('HTTP 400');
     expect(err.message).toContain('Points of LinearRing do not form a closed linestring');
   });
 
   it('carries the invalid_filter reason and a recovery hint on a 400', async () => {
-    const err = await searchAndCatch(upstream(400, WKT_BODY, 'Bad Request'));
+    const err = await searchAndCatch(() => upstream(400, WKT_BODY, 'Bad Request'));
     const data = err.data as { reason?: string; recovery?: { hint?: string } };
 
     expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
@@ -165,7 +177,7 @@ describe('GbifService upstream error payload', () => {
   it("prefers the calling definition's recovery wording over the service default", async () => {
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
     const err = await searchAndCatch(
-      upstream(400, 'Invalid UUID string: not-a-uuid', 'Bad Request'),
+      () => upstream(400, 'Invalid UUID string: not-a-uuid', 'Bad Request'),
       ctx,
     );
     const data = err.data as { recovery?: { hint?: string } };
@@ -197,25 +209,35 @@ describe('GbifService upstream error payload', () => {
     );
   });
 
+  /**
+   * A 500 no longer classifies `InternalError` — that code asserts *this* server
+   * failed, which a remote status cannot establish — so it joins the rest of the
+   * 5xx range as a transient `ServiceUnavailable` and runs the full retry budget
+   * before surfacing. The timeout covers that backoff; what the case pins is
+   * unchanged: a non-400 carries no filter reason, no recovery hint, and no
+   * trace of the outbound URL.
+   */
   it('leaves a non-400 unclassified as a filter problem but still drops the URL', async () => {
-    const err = await searchAndCatch(upstream(500, 'Internal Server Error', 'Server Error'));
+    const err = await searchAndCatch(() => upstream(500, 'Internal Server Error', 'Server Error'));
     const data = err.data as { reason?: string; recovery?: unknown };
 
-    expect(err.code).toBe(JsonRpcErrorCode.InternalError);
+    expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
     expect(data.reason).toBeUndefined();
     expect(data.recovery).toBeUndefined();
     expect(err.data).not.toHaveProperty('url');
-  });
+  }, 30_000);
 
   it('maps a 404 to NotFound so the not_found contracts still fire', async () => {
-    const err = await searchAndCatch(upstream(404, 'Entity not found for uri: /', 'Not Found'));
+    const err = await searchAndCatch(() =>
+      upstream(404, 'Entity not found for uri: /', 'Not Found'),
+    );
 
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
   });
 
   it('keeps an HTML outage page out of the message', async () => {
     const page = '<!DOCTYPE html><html><body>429 Too Many Requests</body></html>';
-    const err = await searchAndCatch(upstream(400, page, 'Bad Request'));
+    const err = await searchAndCatch(() => upstream(400, page, 'Bad Request'));
 
     expect(err.message).not.toContain('<html>');
     expect(err.message).not.toContain('<!DOCTYPE');

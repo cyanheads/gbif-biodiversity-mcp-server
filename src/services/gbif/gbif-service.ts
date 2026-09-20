@@ -56,15 +56,16 @@ const INVALID_FILTER_RECOVERY =
 /**
  * Converts a non-2xx GBIF response into an `McpError`.
  *
- * Two departures from the raw framework helper:
+ * One departure from the raw framework helper: **GBIF's explanation is folded
+ * into the message.** It otherwise reaches only
+ * `structuredContent.error.data.body`, leaving `content[]` clients with the bare
+ * status. An HTML body (a rate-limit or outage page) is left out of the message.
  *
- * - **The request URL is dropped.** `httpErrorFromResponse` seeds `data.url` from
- *   the response, which would put the full upstream endpoint and every query
- *   parameter on the wire. Only that key is removed; `status`, `body`, and
- *   `retryAfter` stay, because `withRetry` and the callers classify on them.
- * - **GBIF's explanation is folded into the message.** It otherwise reaches only
- *   `structuredContent.error.data.body`, leaving `content[]` clients with the bare
- *   status. An HTML body (a rate-limit or outage page) is left out of the message.
+ * The request URL never reaches `error.data` — a GBIF query string carries the
+ * caller's own filter values, and `httpErrorFromResponse` omits `data.url`
+ * unless asked for it with `includeUrl: true`, which nothing here passes.
+ * `status`, `body`, and `retryAfter` stay, because `withRetry` and the callers
+ * classify on them.
  *
  * A 400 is a rejected input value rather than an outage, so it also carries the
  * `invalid_filter` contract reason and a recovery hint.
@@ -72,7 +73,6 @@ const INVALID_FILTER_RECOVERY =
 async function gbifHttpError(response: Response, ctx: Context): Promise<McpError> {
   const error = await httpErrorFromResponse(response, { service: 'GBIF API' });
   const data: Record<string, unknown> = { ...error.data };
-  delete data.url;
 
   const body = typeof data.body === 'string' ? data.body.trim() : '';
   const explanation = body && !HTML_RESPONSE.test(body) ? body : '';

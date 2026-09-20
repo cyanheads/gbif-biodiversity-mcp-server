@@ -202,6 +202,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       when: 'GBIF rejected the occurrenceKey as unparseable — a fraction, or a value past the largest integer the endpoint accepts.',
       recovery:
         'Occurrence keys are whole numbers; take one from the key field of a gbif_search_occurrences result rather than constructing it.',
+      thrownBy: 'service',
     },
   ],
 
