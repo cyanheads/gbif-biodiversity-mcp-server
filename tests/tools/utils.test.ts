@@ -226,4 +226,31 @@ describe('stripHtml', () => {
     const result = stripHtml('Copyright &#169;');
     expect(result).toContain('&#169;'); // not in decode map, left as-is
   });
+
+  /**
+   * #56 (CodeQL js/double-escaping) — a replacement's output must never be read
+   * by a later replacement. Decoding `&amp;` ahead of the references that follow
+   * it turned the `&` it produced into the opening of the next one, so text that
+   * literally contains an escaped reference lost a level of escaping: `&amp;lt;`
+   * spells the four characters `&lt;`, and the second pass collapsed them to `<`.
+   */
+  describe('decodes each reference exactly once', () => {
+    it('leaves a double-encoded tag as the literal reference text', () => {
+      expect(stripHtml('&amp;lt;b&amp;gt;')).toBe('&lt;b&gt;');
+    });
+
+    it('does not re-read an &amp;-produced & as the start of another reference', () => {
+      expect(stripHtml('&amp;quot;q&amp;quot;')).toBe('&quot;q&quot;');
+      expect(stripHtml('&amp;#39;')).toBe('&#39;');
+      expect(stripHtml('&amp;amp;')).toBe('&amp;');
+    });
+
+    it('still decodes a single-encoded reference beside a double-encoded one', () => {
+      expect(stripHtml('&lt;b&gt; vs &amp;lt;b&amp;gt;')).toBe('<b> vs &lt;b&gt;');
+    });
+
+    it('leaves a reference outside the supported set verbatim', () => {
+      expect(stripHtml('&#169; &nbsp; &copy; &#x3c;')).toBe('&#169; &nbsp; &copy; &#x3c;');
+    });
+  });
 });

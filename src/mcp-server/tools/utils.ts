@@ -224,18 +224,41 @@ export function compactGeographicCoverages(raw: RawGeographicCoverage[] | undefi
   return entries.length ? entries : undefined;
 }
 
-/** Strip HTML tags and decode common entities. */
+/**
+ * The character references `stripHtml` decodes. Everything else a publisher
+ * wrote — `&#169;`, `&nbsp;`, a hex reference — is left verbatim rather than
+ * resolved, so the extractor never invents a character the source did not name.
+ */
+const CHARACTER_REFERENCES = new Map<string, string>([
+  ['&amp;', '&'],
+  ['&lt;', '<'],
+  ['&gt;', '>'],
+  ['&quot;', '"'],
+  ['&#34;', '"'],
+  ['&#39;', "'"],
+  ['&#61;', '='],
+  ['&#43;', '+'],
+]);
+
+/**
+ * One alternation over exactly the keys above — none of which carries a regex
+ * metacharacter, so joining them is the whole pattern.
+ *
+ * Decoding in a single pass is what keeps each reference decoded exactly once.
+ * A chain of per-reference replacements decoded `&amp;` first and then re-read
+ * the `&` it had just produced as the opening of the next one, so text that
+ * literally contains an escaped reference lost a level of escaping: `&amp;lt;`
+ * spells the four characters `&lt;`, and the second pass collapsed them to `<`
+ * (#56, CodeQL `js/double-escaping`). A single pass consumes each match and
+ * moves past its replacement, so no output is ever re-read as input.
+ */
+const CHARACTER_REFERENCE = new RegExp([...CHARACTER_REFERENCES.keys()].join('|'), 'g');
+
+/** Strip HTML tags and decode the supported character references, each exactly once. */
 export function stripHtml(html: string): string {
   return html
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#34;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#61;/g, '=')
-    .replace(/&#43;/g, '+')
+    .replace(CHARACTER_REFERENCE, (ref) => CHARACTER_REFERENCES.get(ref) ?? ref)
     .replace(/\s+/g, ' ')
     .trim();
 }
