@@ -1,13 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "gbif-biodiversity-mcp-server",
   "version": "0.7.3",
   "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/gbif-biodiversity-mcp-server#readme",
   "repository": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
   "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "gbif", "biodiversity", "species", "taxonomy"],
   "mcpServers": {
     "gbif-biodiversity-mcp-server": {
       "command": "npx",

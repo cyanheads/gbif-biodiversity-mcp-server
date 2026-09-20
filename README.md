@@ -23,9 +23,11 @@
 
 ---
 
-## Tools
+## Overview
 
-13 tools for working with GBIF species taxonomy, occurrence records, datasets, and publishers:
+GBIF species taxonomy, occurrence records, datasets, and publishers. Match names to the backbone taxonomy, search 3.9B+ occurrence records with Darwin Core filters, and browse dataset and publisher metadata from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:---|:---|
@@ -43,9 +45,18 @@
 | `gbif_get_dataset` | Fetch full dataset metadata by UUID — title, description, citation, contacts, license, DOI, coverage |
 | `gbif_search_publishers` | Search GBIF-registered publishing organizations by name fragment or country |
 
-### `gbif_match_species`
+### Resources
 
-Match a scientific or common name against the GBIF backbone taxonomy.
+| Resource | Description |
+|:---|:---|
+| `gbif://species/{taxonKey}` | Taxon record from the GBIF backbone — classification, authorship, synonymy status, vernacular name |
+| `gbif://dataset/{datasetKey}` | Dataset metadata — title, description, citation, license, contacts, coverage |
+
+Both resources are also reachable via `gbif_get_species` and `gbif_get_dataset`; many MCP clients are tool-only and never surface resources.
+
+## Capability reference
+
+### `gbif_match_species` <sub>tool</sub>
 
 - Fuzzy matching handles minor typos and vernacular names; set `strict: true` for exact-only matching
 - Returns `taxonKey` — the backbone key required by `gbif_search_occurrences`, `gbif_count_occurrences`, and `gbif_occurrence_facets`
@@ -57,9 +68,7 @@ Match a scientific or common name against the GBIF backbone taxonomy.
 
 ---
 
-### `gbif_bulk_match_species`
-
-Match up to 50 scientific names against the GBIF backbone taxonomy in a single call.
+### `gbif_bulk_match_species` <sub>tool</sub>
 
 - The batch counterpart to `gbif_match_species` — built for checklist, inventory, and species-list workflows that would otherwise need one round trip per name
 - Returns one result per input name, in input order; each carries `taxonKey`, `matchType`, and confidence
@@ -69,9 +78,7 @@ Match up to 50 scientific names against the GBIF backbone taxonomy in a single c
 
 ---
 
-### `gbif_get_species`
-
-Fetch a complete taxon record by GBIF backbone key.
+### `gbif_get_species` <sub>tool</sub>
 
 - Full classification, authorship string, and vernacular (English) name when available
 - `taxonomicStatus`: ACCEPTED, SYNONYM, DOUBTFUL — when SYNONYM, `acceptedKey` and `accepted` identify the current name
@@ -81,9 +88,7 @@ Fetch a complete taxon record by GBIF backbone key.
 
 ---
 
-### `gbif_search_species`
-
-Search or browse the GBIF backbone taxonomy.
+### `gbif_search_species` <sub>tool</sub>
 
 - Accepts name fragments matching scientific and vernacular names
 - Filter by rank, kingdom, family, or genus to scope browsing
@@ -91,14 +96,12 @@ Search or browse the GBIF backbone taxonomy.
 - Names are matched exactly and capitalized as GBIF writes them, so `paridae` and `Paridaee` fail as `unresolved_taxon_scope` rather than being ignored. An alternative family name lands on the taxon it is a synonym of — `Compositae` scopes to Asteraceae. A `family` and `genus` in different lineages fail as `conflicting_taxon_scope`. The scope actually applied comes back in the enrichment
 - `isExtinct` filter for extinct vs. extant taxa
 - Scope to a specific checklist dataset with `datasetKey` — omit the field for the GBIF backbone. GBIF reads a higher-taxon key inside the checklist that key belongs to, so pairing `datasetKey` with a kingdom, family, or genus matches nothing unless the checklist is the backbone; the empty-result notice says so
-- `q`, `kingdom`, `family`, `genus`, and `datasetKey` are rejected when supplied blank rather than dropped: a blank `datasetKey` returns the unfiltered backbone result, and `q=` returns the whole 46,623,754-name index where `q=` with a space returns nothing. Omit a filter to leave it off — see the note under `gbif_search_occurrences`
+- `q`, `kingdom`, `family`, `genus`, and `datasetKey` are rejected when supplied blank rather than dropped: a blank `datasetKey` returns the unfiltered backbone result, and `q=` returns the whole 46,623,754-name index where `q=` with a space returns nothing. Omit a filter to leave it off
 - Paginated — limit up to 1000, use offset to walk through large groups
 
 ---
 
-### `gbif_get_species_classification`
-
-Return the root-to-parent classification chain for a taxon as an ordered array.
+### `gbif_get_species_classification` <sub>tool</sub>
 
 - Root-first from kingdom down to the immediate parent of the queried taxon (kingdom → phylum → class → … → parent)
 - The queried taxon itself is not included — use `gbif_get_species` for its own record
@@ -107,9 +110,7 @@ Return the root-to-parent classification chain for a taxon as an ordered array.
 
 ---
 
-### `gbif_get_species_children`
-
-List direct children of a backbone taxon.
+### `gbif_get_species_children` <sub>tool</sub>
 
 - Genera within a family, species within a genus, subspecies within a species
 - Each child: key, name, rank, taxonomic status, common name, occurrence count, descendant count
@@ -117,9 +118,7 @@ List direct children of a backbone taxon.
 
 ---
 
-### `gbif_search_occurrences`
-
-Search 3.9B+ GBIF occurrence records with full Darwin Core filtering.
+### `gbif_search_occurrences` <sub>tool</sub>
 
 - Use `taxonKey` from `gbif_match_species` for reliable results — resolves synonyms automatically; `scientificName` filter does not
 - Geographic filters: `country` (ISO 3166-1 alpha-2, uppercase), `stateProvince`, bounding box (`decimalLatitude`/`decimalLongitude` ranges as "min,max"), or WKT polygon (`geometry`)
@@ -137,9 +136,7 @@ Search 3.9B+ GBIF occurrence records with full Darwin Core filtering.
 
 ---
 
-### `gbif_count_occurrences`
-
-Count occurrences matching a filter without fetching any records.
+### `gbif_count_occurrences` <sub>tool</sub>
 
 - Backed by `/occurrence/search` at `limit=0` — no record payload, and the same endpoint `gbif_search_occurrences` queries, so the two agree on the same question. GBIF's dedicated `/occurrence/count` endpoint takes a closed parameter set that rejects `occurrenceStatus` and `iucnRedListCategory` outright
 - Supported filters: `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`. `country` and `publishingCountry` take the uppercase alpha-2 form only, and a blank filter is rejected rather than dropped, both for the reasons given under `gbif_search_occurrences`
@@ -148,9 +145,7 @@ Count occurrences matching a filter without fetching any records.
 
 ---
 
-### `gbif_get_occurrence`
-
-Fetch a single occurrence record by GBIF occurrence key.
+### `gbif_get_occurrence` <sub>tool</sub>
 
 - Complete Darwin Core record — all coordinate fields, administrative geography (continent, country, state/province, locality), dates
 - `occurrenceID`, full classification (`class`/`classKey`), GADM administrative units (levels 0–3, each with a stable GID and name), and source `identifiers`
@@ -163,9 +158,7 @@ Fetch a single occurrence record by GBIF occurrence key.
 
 ---
 
-### `gbif_occurrence_facets`
-
-Aggregate occurrence counts across a dimension.
+### `gbif_occurrence_facets` <sub>tool</sub>
 
 - Facets: `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `BASIS_OF_RECORD`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`
 - Scope with `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `year`, `geometry`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, or `iucnRedListCategory` filters — so a `COUNTRY`, `PUBLISHING_COUNTRY`, or `STATE_PROVINCE` bucket can be passed straight back to drill into it. `country` and `publishingCountry` take the uppercase alpha-2 form only, and a blank filter is rejected rather than dropped, both for the reasons given under `gbif_search_occurrences`
@@ -178,9 +171,7 @@ Aggregate occurrence counts across a dimension.
 
 ---
 
-### `gbif_search_datasets`
-
-Search GBIF datasets by keyword, type, country, publishing organization, or hosting organization.
+### `gbif_search_datasets` <sub>tool</sub>
 
 - Filters: free-text query, dataset type (`OCCURRENCE`, `CHECKLIST`, `METADATA`, `SAMPLING_EVENT`), `publishingCountry` (ISO 3166-1 alpha-2, uppercase), publishing and hosting organization UUIDs (lowercase)
 - `publishingCountry` takes the uppercase two-letter form only, for the same reason the occurrence filters do: `/dataset/search` matches the verbatim stored code, so `gb` and `GBR` return zero datasets where `GB` returns 2,416. A two-letter code GBIF does not assign (`XX`) is rejected upstream by name and surfaces as `invalid_filter`
@@ -194,12 +185,10 @@ Search GBIF datasets by keyword, type, country, publishing organization, or host
 
 ---
 
-### `gbif_get_dataset`
-
-Fetch full dataset metadata by UUID.
+### `gbif_get_dataset` <sub>tool</sub>
 
 - Full description, citation text (for academic reference), license, DOI
-- Contacts with role, name, organization, and email
+- Contacts with role, name, organization, and email — capped by `contactLimit` (default 10, max 100); `contactsTotal`/`contactsReturned` report the full count
 - Temporal and geographic coverage ranges when the publisher declares them
 - `recordCount` — the indexed occurrence total, matching what `gbif_search_datasets` reports, for every dataset type (a `CHECKLIST` reports 0). It spans every `occurrenceStatus`, absences included; `gbif_count_occurrences` with the same key counts sightings only by default, so the two figures differ by design
 - `numConstituents` for aggregate datasets (e.g. iNaturalist, eBird)
@@ -207,9 +196,7 @@ Fetch full dataset metadata by UUID.
 
 ---
 
-### `gbif_search_publishers`
-
-Search organizations registered with GBIF.
+### `gbif_search_publishers` <sub>tool</sub>
 
 - Filter by name fragment or country
 - `country` here is unconstrained on purpose: the registry endpoint matches the *parsed* country rather than the verbatim string, so `gb`, `GBR`, and `GB` all return the same 223 organizations. The uppercase-only rule the occurrence tools and `gbif_search_datasets` carry exists to close a silent zero that does not occur on this route. One value is rejected — an empty `country`, which the registry answers with all 3,561 registered organizations rather than an error; omit the field to search every country. Whitespace alone is left to the registry, which answers it with `400 Cannot parse … into a known Country`, an error naming the value
@@ -217,23 +204,27 @@ Search organizations registered with GBIF.
 - Returns organization key, title, and country. The key chains into `gbif_search_datasets` as `publishingOrg` for the datasets the organization published, or as `hostingOrg` for the ones its own installation serves. `publishingOrg` is the usual chain: of the first 25 GB organizations the registry lists, all 25 host no datasets while 13 publish one or two
 - Paginated — limit up to 1000
 
-## Resources
+---
 
-| Type | Name | Description |
-|:---|:---|:---|
-| Resource | `gbif://species/{taxonKey}` | Taxon record from the GBIF backbone — classification, authorship, synonymy status, vernacular name |
-| Resource | `gbif://dataset/{datasetKey}` | Dataset metadata — title, description, citation, license, contacts, coverage |
+### `gbif://species/{taxonKey}` <sub>resource</sub>
+
+- Taxon record as `application/json` — classification, authorship, synonymy status, vernacular name, descendant count
+- `taxonKey` comes from `gbif_match_species` or `gbif_search_species`
+- `extinct` present only when explicitly flagged, absent otherwise, matching `gbif_get_species`
+- A key that resolves to no backbone taxon fails as `not_found`; a non-numeric key segment is rejected locally as a validation error, and a numeric one GBIF cannot parse comes back as `invalid_filter`
+
+---
+
+### `gbif://dataset/{datasetKey}` <sub>resource</sub>
+
+- Dataset record as `application/json` — title, description, citation, license, DOI, temporal and geographic coverage
+- Contacts fixed at 10 (no configurable limit, unlike `gbif_get_dataset`'s `contactLimit`); `contactsTotal`/`contactsReturned` report the full count
+- `recordCount` spans every `occurrenceStatus`, absences included
+- `datasetKey` comes from `gbif_search_datasets` or an occurrence record's `datasetKey` field; a key that resolves to no dataset fails as `not_found`
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
-
-- Declarative tool definitions — single file per tool, framework handles registration and validation
-- Unified error handling across all tools
-- Pluggable auth (`none`, `jwt`, `oauth`)
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- Runs locally (stdio/HTTP) or on Cloudflare Workers from the same codebase
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
 GBIF-specific:
 
@@ -250,6 +241,21 @@ Agent-friendly output:
 - Discriminated error contracts with typed reasons, structured recovery hints, and `when` documentation per tool
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://gbif-biodiversity.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "gbif-biodiversity-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://gbif-biodiversity.caseyjhand.com/mcp"
+    }
+  }
+}
+```
 
 ### Self-Hosted / Local
 
@@ -312,7 +318,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher.
+- [Bun v1.4.0](https://bun.sh/) or higher.
 - No credentials — the GBIF endpoints this server calls are public.
 
 ### Installation
@@ -345,7 +351,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_HTTP_PORT` | HTTP server port | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path where the MCP server is mounted | `/mcp` |
 | `MCP_PUBLIC_URL` | Public origin override for TLS-terminating reverse-proxy deployments | none |
-| `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. `auto` resolves to `stateful`; the Docker image sets `stateless`. | `auto` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto` (the schema default, which resolves to `stateful`). `src/index.ts` declares `stateless`, so set this only to override that. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
 | `MCP_GC_PRESSURE_INTERVAL_MS` | Opt-in Bun-only forced-GC pressure loop (ms). Try `60000` if RSS grows under sustained HTTP load. | `0` (disabled) |
@@ -355,6 +361,8 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `GBIF_REQUEST_TIMEOUT_MS` | HTTP request timeout in milliseconds | `10000` |
 | `GBIF_USER_AGENT` | `User-Agent` sent on every GBIF request. GBIF asks integrators to identify themselves with a contact URL or email. | server name, version, and repository URL |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
+
+See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ## Running the server
 
@@ -378,6 +386,15 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
   bun run test      # Runs the test suite
   ```
 
+### Docker
+
+```sh
+docker build -t gbif-biodiversity-mcp-server .
+docker run --rm -p 3010:3010 gbif-biodiversity-mcp-server
+```
+
+The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/gbif-biodiversity-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+
 ## Project structure
 
 | Directory | Purpose |
@@ -398,7 +415,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck

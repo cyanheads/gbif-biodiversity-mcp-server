@@ -38,7 +38,8 @@
       "type": "string",
       "title": "GBIF User-Agent",
       "description": "Sent as the User-Agent header on every GBIF API request. GBIF asks integrators to identify themselves with a contact URL or email so it can get in touch about problem traffic. Leave blank to send the server name, version, and repository URL.",
-      "required": false
+      "required": false,
+      "default": ""
     }
   }
 }
