@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "gbif-biodiversity-mcp-server",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",

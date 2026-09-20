@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.4](changelog/0.7.x/0.7.4.md) — 2026-09-20 · ⚠️ Breaking · 🛡️ Security
+
+The Bun engines floor rises to >=1.4.0 with the mcp-ts-core ^0.13.6 upgrade, and a rejected tool call now returns InvalidParams instead of ValidationError. stripHtml decoded &amp; before the references that followed it, so a literally-escaped reference like &amp;lt; lost a level of escaping (CodeQL js/double-escaping, #56).
+
 ## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-08-25
 
 @cyanheads/mcp-ts-core ^0.11.1 → ^0.12.3 (tool inputs now strict; MCP SDK moves to @modelcontextprotocol/server); gbif_get_dataset and gbif_occurrence_facets adopt the framework's standard truncated/shown/cap trailer for their contact-list and facet-page caps.
