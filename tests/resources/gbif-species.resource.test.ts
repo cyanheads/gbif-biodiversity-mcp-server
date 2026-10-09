@@ -70,11 +70,18 @@ describe('gbifSpeciesResource', () => {
     expect(result.class).toBe('Mammalia');
   });
 
-  it('throws ValidationError for non-numeric taxon key', async () => {
+  it('rejects a non-numeric taxon key as invalid_filter without issuing a request', async () => {
     const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifSpeciesResource.errors });
     const params = gbifSpeciesResource.params.parse({ taxonKey: 'not-a-number' });
 
-    await expect(gbifSpeciesResource.handler(params, ctx)).rejects.toThrow(/Invalid taxon key/);
+    const err = await gbifSpeciesResource.handler(params, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_filter' },
+    });
+    expect((err as Error).message).toMatch(/Invalid taxon key/);
+    expect(mockGetSpecies).not.toHaveBeenCalled();
   });
 
   it('throws not_found when key is missing from response', async () => {
