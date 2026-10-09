@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.5](changelog/0.7.x/0.7.5.md) — 2026-10-08
+
+mcp-ts-core ^0.13.14: a numeric string, a lone string for a list, or null for an optional field is now repaired before validation, tool errors close with a request ID, and the Docker image installs dependencies on the build platform; the gbif://species resource rejects a non-numeric key as invalid_filter with a recovery hint.
+
 ## [0.7.4](changelog/0.7.x/0.7.4.md) — 2026-09-20 · ⚠️ Breaking · 🛡️ Security
 
 The Bun engines floor rises to >=1.4.0 with the mcp-ts-core ^0.13.6 upgrade, and a rejected tool call now returns InvalidParams instead of ValidationError. stripHtml decoded &amp; before the references that followed it, so a literally-escaped reference like &amp;lt; lost a level of escaping (CodeQL js/double-escaping, #56).
