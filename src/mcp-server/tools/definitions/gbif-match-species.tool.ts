@@ -135,7 +135,6 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
       throw ctx.fail(
         'invalid_filter',
         `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -150,9 +149,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     );
 
     if (raw.matchType === 'NONE' || !raw.usageKey) {
-      throw ctx.fail('no_match', `No backbone match for "${input.name}"`, {
-        ...ctx.recoveryFor('no_match'),
-      });
+      throw ctx.fail('no_match', `No backbone match for "${input.name}"`);
     }
 
     /**

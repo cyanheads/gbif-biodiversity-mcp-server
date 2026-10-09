@@ -3,7 +3,8 @@
  * @module tests/tools/gbif-get-dataset.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetDataset } from '@/mcp-server/tools/definitions/gbif-get-dataset.tool.js';
 
@@ -199,15 +200,20 @@ describe('gbifGetDataset', () => {
 
   /** #38 — a malformed key fails locally with guidance, not as a bare upstream 400. */
   it('rejects a non-UUID datasetKey without issuing a request', async () => {
-    const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'not-a-uuid' });
+    const result = await runToolContract(gbifGetDataset, { datasetKey: 'not-a-uuid' });
 
-    const err = await gbifGetDataset.handler(input, ctx).catch((e: unknown) => e);
-
-    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
-    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
-      '8-4-4-4-12',
-    );
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'invalid_filter',
+          recovery: {
+            hint: "Supply the 8-4-4-4-12 hex UUID exactly as gbif_search_datasets returns it, or as it appears in an occurrence record's datasetKey field — a dataset title or DOI is not a key.",
+          },
+        },
+      },
+    });
     expect(mockGetDataset).not.toHaveBeenCalled();
   });
 

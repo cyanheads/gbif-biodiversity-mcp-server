@@ -75,17 +75,13 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
       raw = await getGbifService().getSpeciesParents(input.taxonKey, ctx);
     } catch (err) {
       if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
-        throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
-          ...ctx.recoveryFor('not_found'),
-        });
+        throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`);
       }
       throw err;
     }
 
     if (!Array.isArray(raw)) {
-      throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
-        ...ctx.recoveryFor('not_found'),
-      });
+      throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`);
     }
 
     // GBIF /species/{key}/parents returns [] for both nonexistent keys and kingdom-level taxa.
@@ -98,7 +94,6 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
           throw ctx.fail(
             'not_found',
             `Taxon key ${input.taxonKey} not found in the GBIF backbone.`,
-            { ...ctx.recoveryFor('not_found') },
           );
         }
         throw err;

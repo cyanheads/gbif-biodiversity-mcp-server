@@ -131,7 +131,6 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
           throw ctx.fail(
             'not_found',
             `Taxon key ${input.taxonKey} not found in the GBIF backbone.`,
-            { ...ctx.recoveryFor('not_found') },
           );
         }
         throw err;

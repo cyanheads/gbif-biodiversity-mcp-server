@@ -132,7 +132,6 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${params.datasetKey}" is not a GBIF dataset UUID.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -143,17 +142,13 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       // Map the upstream GBIF 404 envelope to a clean domain not_found, mirroring
       // gbif_get_dataset — the service throws before the !raw.key check can run.
       if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
-        throw ctx.fail('not_found', `Dataset ${params.datasetKey} not found in GBIF.`, {
-          ...ctx.recoveryFor('not_found'),
-        });
+        throw ctx.fail('not_found', `Dataset ${params.datasetKey} not found in GBIF.`);
       }
       throw err;
     }
 
     if (!raw.key) {
-      throw ctx.fail('not_found', `Dataset ${params.datasetKey} not found in GBIF.`, {
-        ...ctx.recoveryFor('not_found'),
-      });
+      throw ctx.fail('not_found', `Dataset ${params.datasetKey} not found in GBIF.`);
     }
 
     return {

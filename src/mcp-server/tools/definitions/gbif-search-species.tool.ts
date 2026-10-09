@@ -204,7 +204,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     {
       reason: 'conflicting_taxon_scope',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'the supplied family and genus each resolved, but to taxa in different lineages — the genus does not sit in that family.',
+      when: 'The supplied family and genus each resolved, but to taxa in different lineages — the genus does not sit in that family.',
       recovery:
         'Drop one of the two: genus alone already scopes to everything below it, and the failure message names the family the genus actually belongs to. Use gbif_get_species_classification on a taxon key to read a lineage before pairing filters.',
     },
@@ -232,7 +232,6 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       throw ctx.fail(
         'invalid_filter',
         `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -251,7 +250,6 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -319,7 +317,6 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
         throw ctx.fail(
           'unresolved_taxon_scope',
           `${r.field} "${r.name}" matched no GBIF backbone ${r.field}${r.field === 'kingdom' ? '' : underKingdom}.`,
-          { ...ctx.recoveryFor('unresolved_taxon_scope') },
         );
       }
       return { ...r, taxonKey };
@@ -338,7 +335,6 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       throw ctx.fail(
         'conflicting_taxon_scope',
         `genus "${genusScope.name}" sits in family ${genusScope.match.family ?? 'a different family'}, not "${familyScope.name}" — the two filters name different lineages, so nothing satisfies both.`,
-        { ...ctx.recoveryFor('conflicting_taxon_scope') },
       );
     }
 

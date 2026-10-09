@@ -3,7 +3,8 @@
  * @module tests/tools/gbif-count-occurrences.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifCountOccurrences } from '@/mcp-server/tools/definitions/gbif-count-occurrences.tool.js';
 
@@ -92,15 +93,20 @@ describe('gbifCountOccurrences', () => {
    * this tool's recovery hint rather than arriving as a bare upstream 400 (#38).
    */
   it('rejects a non-UUID datasetKey without issuing a request', async () => {
-    const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
-    const input = gbifCountOccurrences.input.parse({ datasetKey: 'eBird' });
+    const result = await runToolContract(gbifCountOccurrences, { datasetKey: 'eBird' });
 
-    const err = await gbifCountOccurrences.handler(input, ctx).catch((e: unknown) => e);
-
-    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
-    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
-      'gbif_search_datasets',
-    );
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'invalid_filter',
+          recovery: {
+            hint: 'A blank filter is not a way to skip one — omit the field instead. Otherwise: supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range; country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+          },
+        },
+      },
+    });
     expect(mockCountOccurrences).not.toHaveBeenCalled();
   });
 

@@ -8,11 +8,11 @@
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetDataset } from '@/mcp-server/tools/definitions/gbif-get-dataset.tool.js';
 import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
-import { GbifService } from '@/services/gbif/gbif-service.js';
+import { GbifService, initGbifService } from '@/services/gbif/gbif-service.js';
 
 const REPOSITORY_URL = 'https://github.com/cyanheads/gbif-biodiversity-mcp-server';
 
@@ -165,48 +165,79 @@ describe('GbifService upstream error payload', () => {
     expect(err.message).toContain('Points of LinearRing do not form a closed linestring');
   });
 
-  it('carries the invalid_filter reason and a recovery hint on a 400', async () => {
+  /**
+   * The service tags the reason and leaves the hint unset: the framework fills the
+   * calling definition's declared `invalid_filter` recovery, which a throw-site
+   * hint would override.
+   */
+  it('carries the invalid_filter reason on a 400 and leaves the hint to the contract', async () => {
     const err = await searchAndCatch(() => upstream(400, WKT_BODY, 'Bad Request'));
-    const data = err.data as { reason?: string; recovery?: { hint?: string } };
+    const data = err.data as { reason?: string; recovery?: unknown };
 
     expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(data.reason).toBe('invalid_filter');
-    expect(data.recovery?.hint).toBeTruthy();
+    expect(data.recovery).toBeUndefined();
   });
 
-  it("prefers the calling definition's recovery wording over the service default", async () => {
-    const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const err = await searchAndCatch(
-      () => upstream(400, 'Invalid UUID string: not-a-uuid', 'Bad Request'),
-      ctx,
+  it("reaches the caller with the calling definition's recovery wording", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(upstream(400, 'Invalid UUID string: not-a-uuid', 'Bad Request')),
+        ),
     );
-    const data = err.data as { recovery?: { hint?: string } };
+    initGbifService(appConfig, storage, { baseUrl: 'https://api.gbif.org/v1', timeoutMs: 1_000 });
 
-    expect(data.recovery?.hint).toBe(
-      gbifGetDataset.errors?.find((e) => e.reason === 'invalid_filter')?.recovery,
-    );
+    const result = await runToolContract(gbifGetDataset, {
+      datasetKey: '00000000-0000-0000-0000-000000000000',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'invalid_filter',
+          recovery: {
+            hint: "Supply the 8-4-4-4-12 hex UUID exactly as gbif_search_datasets returns it, or as it appears in an occurrence record's datasetKey field — a dataset title or DOI is not a key.",
+          },
+        },
+      },
+    });
   });
 
   /**
    * #47 — the taxon-key tools reach the same 400 path (live: /species/999999999999
-   * answers 400 "For input string"). Declaring the reason is what lets their own
-   * wording replace the service fallback, so assert the wording actually swaps.
+   * answers 400 "For input string"). Declaring the reason is what puts their own
+   * wording on the wire, so assert the declared hint is the one the caller reads.
    */
   it("uses a taxon-key tool's own invalid_filter wording once it declares one", async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(upstream(400, 'For input string: "999999999999"', 'Bad Request')),
+      vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(upstream(400, 'For input string: "999999999999"', 'Bad Request')),
+        ),
     );
-    const ctx = createMockContext({ errors: gbifGetSpecies.errors });
-    const err = (await makeService()
-      .getSpecies(999999999999, ctx)
-      .catch((e: unknown) => e)) as McpError;
-    const data = err.data as { reason?: string; recovery?: { hint?: string } };
+    initGbifService(appConfig, storage, { baseUrl: 'https://api.gbif.org/v1', timeoutMs: 1_000 });
 
-    expect(data.reason).toBe('invalid_filter');
-    expect(data.recovery?.hint).toBe(
-      gbifGetSpecies.errors?.find((e) => e.reason === 'invalid_filter')?.recovery,
-    );
+    const result = await runToolContract(gbifGetSpecies, { taxonKey: 999999999999 });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'invalid_filter',
+          recovery: {
+            hint: 'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+          },
+        },
+      },
+    });
   });
 
   /**

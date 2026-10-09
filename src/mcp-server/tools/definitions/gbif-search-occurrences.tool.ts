@@ -325,7 +325,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       throw ctx.fail(
         'pagination_cap_exceeded',
         `offset + limit (${input.offset + input.limit}) exceeds ${PAGINATION_CAP.toLocaleString('en-US')}, the deepest page GBIF serves. Reduce offset/limit, or partition the query by datasetKey and page each part separately.`,
-        { ...ctx.recoveryFor('pagination_cap_exceeded') },
       );
     }
 
@@ -352,7 +351,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       throw ctx.fail(
         'invalid_filter',
         `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -371,7 +369,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 

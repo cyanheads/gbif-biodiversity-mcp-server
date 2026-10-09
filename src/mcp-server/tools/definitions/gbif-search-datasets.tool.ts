@@ -162,7 +162,6 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       throw ctx.fail(
         'invalid_filter',
         `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -179,8 +178,8 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
      * resolves either case, so the shared UUID check is not tightened for it.
      * Kept in the handler rather than a Zod pattern because it catches both the
      * silent class and the malformed one while carrying the invalid_filter reason
-     * and its recovery hint; a schema rejection arrives as -32602 with empty
-     * structuredContent, which no contract can reach.
+     * and its recovery hint; a schema rejection arrives as -32602 under the
+     * framework's generic invalid_arguments reason, which no contract can reach.
      */
     for (const [field, value] of [
       ['publishingOrg', input.publishingOrg],
@@ -190,7 +189,6 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
         throw ctx.fail(
           'invalid_filter',
           `${field} "${value}" is not a GBIF organization UUID in lowercase 8-4-4-4-12 hex form.`,
-          { ...ctx.recoveryFor('invalid_filter') },
         );
       }
     }

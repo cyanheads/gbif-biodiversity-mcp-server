@@ -183,7 +183,6 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -192,17 +191,13 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       raw = await getGbifService().getDataset(input.datasetKey, ctx);
     } catch (err) {
       if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
-        throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`, {
-          ...ctx.recoveryFor('not_found'),
-        });
+        throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`);
       }
       throw err;
     }
 
     if (!raw.key) {
-      throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`, {
-        ...ctx.recoveryFor('not_found'),
-      });
+      throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`);
     }
 
     // contactLimit: 0 suppresses contact detail while projectContacts still reports

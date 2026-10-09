@@ -97,17 +97,13 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       raw = await getGbifService().getSpecies(input.taxonKey, ctx);
     } catch (err) {
       if (err instanceof McpError && err.code === -32001) {
-        throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
-          ...ctx.recoveryFor('not_found'),
-        });
+        throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`);
       }
       throw err;
     }
 
     if (!raw.key) {
-      throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`, {
-        ...ctx.recoveryFor('not_found'),
-      });
+      throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`);
     }
 
     return {

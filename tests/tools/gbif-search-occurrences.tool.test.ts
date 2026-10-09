@@ -3,7 +3,8 @@
  * @module tests/tools/gbif-search-occurrences.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchOccurrences } from '@/mcp-server/tools/definitions/gbif-search-occurrences.tool.js';
 
@@ -183,12 +184,20 @@ describe('gbifSearchOccurrences', () => {
    * that hit the wall.
    */
   it('recovers the cap failure with the partition technique, not a redirect to facets', async () => {
-    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-    const input = gbifSearchOccurrences.input.parse({ offset: 99702, limit: 300 });
+    const result = await runToolContract(gbifSearchOccurrences, { offset: 99702, limit: 300 });
+    const error = (
+      result.structuredContent as {
+        error: { code: number; data: { reason: string; recovery: { hint: string } } };
+      }
+    ).error;
+    const hint = error.data.recovery.hint;
 
-    const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
-    const hint = (err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint ?? '';
-
+    expect(result.isError).toBe(true);
+    expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(error.data.reason).toBe('pagination_cap_exceeded');
+    expect(hint).toBe(
+      gbifSearchOccurrences.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.recovery,
+    );
     expect(hint).toContain('DATASET_KEY');
     expect(hint).toContain('facetOffset');
     expect(hint).toMatch(/no cursor or scroll/i);
@@ -285,15 +294,20 @@ describe('gbifSearchOccurrences', () => {
 
   /** #38 — a malformed datasetKey fails locally with guidance rather than as a bare 400. */
   it('rejects a non-UUID datasetKey without issuing a request', async () => {
-    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-    const input = gbifSearchOccurrences.input.parse({ datasetKey: 'eBird' });
+    const result = await runToolContract(gbifSearchOccurrences, { datasetKey: 'eBird' });
 
-    const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
-
-    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
-    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
-      'gbif_search_datasets',
-    );
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.InvalidParams,
+        data: {
+          reason: 'invalid_filter',
+          recovery: {
+            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+          },
+        },
+      },
+    });
     expect(mockSearchOccurrences).not.toHaveBeenCalled();
   });
 

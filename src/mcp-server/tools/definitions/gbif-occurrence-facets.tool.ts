@@ -228,7 +228,6 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       throw ctx.fail(
         'invalid_filter',
         `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -247,7 +246,6 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 

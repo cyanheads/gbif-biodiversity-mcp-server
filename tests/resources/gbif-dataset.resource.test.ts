@@ -5,6 +5,7 @@
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifDatasetResource } from '@/mcp-server/resources/definitions/gbif-dataset.resource.js';
 
@@ -299,8 +300,57 @@ describe('gbifDatasetResource', () => {
     const err = await gbifDatasetResource.handler(params, ctx).catch((e: unknown) => e);
 
     expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
-    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
-      '8-4-4-4-12',
+    expect(mockGetDataset).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The handler throws the bare reason; the resource factory fills the declared
+   * hint. A direct `handler(...)` call skips that fill, so the hint is read off a
+   * real `resources/read` served by the Worker handler.
+   */
+  it('puts the declared invalid_filter hint on the wire for a non-UUID datasetKey', async () => {
+    const worker = createWorkerHandler({
+      name: 'gbif-dataset-resource-test',
+      resources: [gbifDatasetResource],
+    });
+    const uri = 'gbif://dataset/not-a-uuid';
+    const response = await worker.fetch(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json, text/event-stream',
+          'Content-Type': 'application/json',
+          'MCP-Protocol-Version': '2026-07-28',
+          'Mcp-Method': 'resources/read',
+          'Mcp-Name': uri,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'resources/read',
+          params: {
+            uri,
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0.0' },
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+      }),
+      {} as never,
+      { waitUntil: () => {}, passThroughOnException: () => {} } as never,
+    );
+    const text = await response.text();
+    const frame = text.startsWith('{') ? text : (text.match(/^data:(.*)$/m)?.[1] ?? '');
+    const body = JSON.parse(frame) as {
+      error: { code: number; data: { reason: string; recovery: { hint: string } } };
+    };
+
+    expect(body.error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(body.error.data.reason).toBe('invalid_filter');
+    expect(body.error.data.recovery.hint).toBe(
+      "Address the resource with the 8-4-4-4-12 hex UUID exactly as gbif_search_datasets returns it, or as it appears in an occurrence record's datasetKey field.",
     );
     expect(mockGetDataset).not.toHaveBeenCalled();
   });

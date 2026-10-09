@@ -213,17 +213,13 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       raw = await getGbifService().getOccurrence(input.occurrenceKey, ctx);
     } catch (err) {
       if (err instanceof McpError && err.code === -32001) {
-        throw ctx.fail('not_found', `Occurrence key ${input.occurrenceKey} not found in GBIF.`, {
-          ...ctx.recoveryFor('not_found'),
-        });
+        throw ctx.fail('not_found', `Occurrence key ${input.occurrenceKey} not found in GBIF.`);
       }
       throw err;
     }
 
     if (!raw.key) {
-      throw ctx.fail('not_found', `Occurrence key ${input.occurrenceKey} not found in GBIF.`, {
-        ...ctx.recoveryFor('not_found'),
-      });
+      throw ctx.fail('not_found', `Occurrence key ${input.occurrenceKey} not found in GBIF.`);
     }
 
     return {

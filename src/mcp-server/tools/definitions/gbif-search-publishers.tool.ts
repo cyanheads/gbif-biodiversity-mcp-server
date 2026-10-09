@@ -128,7 +128,6 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       throw ctx.fail(
         'invalid_filter',
         `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 
@@ -147,7 +146,6 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       throw ctx.fail(
         'invalid_filter',
         'country was supplied as an empty string, which filters nothing. Omit it to search every country.',
-        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 

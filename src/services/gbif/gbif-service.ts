@@ -42,18 +42,6 @@ const HTML_RESPONSE = /^\s*<(!DOCTYPE\s+html|html[\s>])/i;
 const RECORD_COUNT_TIMEOUT_MS = 3_000;
 
 /**
- * Recovery guidance for a GBIF rejection of a supplied value. GBIF names the
- * offending value in its response body, so the hint points at that value and at
- * the tools that produce well-formed ones. A tool that declares an
- * `invalid_filter` contract overrides this with its own wording, since
- * `ctx.recoveryFor` resolves against the calling definition's contract.
- */
-const INVALID_FILTER_RECOVERY =
-  'GBIF rejected one of the supplied values and the quoted explanation names it. Correct that ' +
-  'parameter and retry — dataset and organization keys are UUIDs from gbif_search_datasets or ' +
-  'gbif_search_publishers, and taxonKey comes from gbif_match_species.';
-
-/**
  * Converts a non-2xx GBIF response into an `McpError`.
  *
  * One departure from the raw framework helper: **GBIF's explanation is folded
@@ -68,9 +56,11 @@ const INVALID_FILTER_RECOVERY =
  * classify on them.
  *
  * A 400 is a rejected input value rather than an outage, so it also carries the
- * `invalid_filter` contract reason and a recovery hint.
+ * `invalid_filter` contract reason. Every definition that lets this error reach
+ * the caller declares `invalid_filter`, and the framework fills that entry's
+ * recovery hint onto the wire.
  */
-async function gbifHttpError(response: Response, ctx: Context): Promise<McpError> {
+async function gbifHttpError(response: Response): Promise<McpError> {
   const error = await httpErrorFromResponse(response, { service: 'GBIF API' });
   const data: Record<string, unknown> = { ...error.data };
 
@@ -80,14 +70,7 @@ async function gbifHttpError(response: Response, ctx: Context): Promise<McpError
   return new McpError(
     error.code,
     explanation ? `${error.message} ${explanation}` : error.message,
-    response.status === 400
-      ? {
-          ...data,
-          reason: 'invalid_filter',
-          recovery: { hint: INVALID_FILTER_RECOVERY },
-          ...ctx.recoveryFor('invalid_filter'),
-        }
-      : data,
+    response.status === 400 ? { ...data, reason: 'invalid_filter' } : data,
     { cause: error },
   );
 }
@@ -156,7 +139,7 @@ export class GbifService {
             signal: controller.signal,
           });
           if (!response.ok) {
-            throw await gbifHttpError(response, ctx);
+            throw await gbifHttpError(response);
           }
           const text = await response.text();
           if (HTML_RESPONSE.test(text)) {
