@@ -157,8 +157,9 @@ describe('gbifSpeciesResource', () => {
           await gbifSpeciesResource
             .handler({ taxonKey: segment }, ctx)
             .catch((error: unknown) => error);
+        vi.clearAllMocks();
         const start = process.threadCpuUsage();
-        for (let i = 0; i < 64; i++) {
+        for (let i = 0; i < 8; i++) {
           const result = await gbifSpeciesResource
             .handler({ taxonKey: segment }, ctx)
             .catch((error: unknown) => error);
@@ -167,8 +168,9 @@ describe('gbifSpeciesResource', () => {
         }
         const cpu = process.threadCpuUsage(start);
         const cpuUs = cpu.user + cpu.system;
-        expect(cpuUs).toBeLessThan(2_000_000);
+        expect(cpuUs).toBeLessThan(250_000);
         measurements.push(cpuUs);
+        vi.clearAllMocks();
       }
       expect(measurements.at(-1)! / Math.max(measurements[0], 1)).toBeLessThan(256);
     }
