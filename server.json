@@ -12,14 +12,14 @@
       "url": "https://gbif-biodiversity.caseyjhand.com/mcp"
     }
   ],
-  "version": "0.7.5",
+  "version": "0.7.6",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gbif-biodiversity-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.7.5",
+      "version": "0.7.6",
       "environmentVariables": [
         {
           "name": "MCP_LOG_LEVEL",
@@ -58,7 +58,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gbif-biodiversity-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.7.5",
+      "version": "0.7.6",
       "environmentVariables": [
         {
           "name": "MCP_TRANSPORT_TYPE",

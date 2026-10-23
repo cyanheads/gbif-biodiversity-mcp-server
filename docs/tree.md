@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-10-09 06:49:34
+Generated on: 2026-10-23 05:06:21
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -196,6 +196,7 @@ gbif-biodiversity-mcp-server/
 │   │   ├── gbif-search-occurrences.tool.test.ts
 │   │   ├── gbif-search-publishers.tool.test.ts
 │   │   ├── gbif-search-species.tool.test.ts
+│   │   ├── occurrence-workflow.test.ts
 │   │   ├── security.test.ts
 │   │   └── utils.test.ts
 │   └── credential-claims.test.ts

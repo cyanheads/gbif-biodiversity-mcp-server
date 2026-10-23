@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.6](changelog/0.7.x/0.7.6.md) — 2026-10-22
+
+Preserve taxonomy identity and consistent occurrence populations across search, count and facets.
+
 ## [0.7.5](changelog/0.7.x/0.7.5.md) — 2026-10-08
 
 mcp-ts-core ^0.13.14: a numeric string, a lone string for a list, or null for an optional field is now repaired before validation, tool errors close with a request ID, and the Docker image installs dependencies on the build platform; the gbif://species resource rejects a non-numeric key as invalid_filter with a recovery hint.
