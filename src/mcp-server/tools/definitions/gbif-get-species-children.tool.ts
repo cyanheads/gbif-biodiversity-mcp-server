@@ -8,9 +8,15 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 /** Pagination guidance when end of records is reached. */
-function buildNotice(args: { childCount: number; endOfRecords: boolean }): string | undefined {
-  const { childCount, endOfRecords } = args;
+function buildNotice(args: {
+  childCount: number;
+  endOfRecords: boolean;
+  offset: number;
+}): string | undefined {
+  const { childCount, endOfRecords, offset } = args;
   if (childCount === 0 && endOfRecords) {
+    if (offset > 0)
+      return `No children in this page at offset ${offset}. Reset offset to 0 or reduce it to revisit earlier pages.`;
     return 'This taxon has no direct children in the GBIF backbone at this rank.';
   }
   return;
@@ -150,7 +156,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
         guidance: `Showing ${children.length} children at offset ${offset}; more remain. Re-call with offset ${offset + children.length} for the next page, or raise limit (max 1000) to take a bigger page. This tool has no filters to narrow with.`,
       });
     }
-    const notice = buildNotice({ childCount: children.length, endOfRecords });
+    const notice = buildNotice({ childCount: children.length, endOfRecords, offset });
     if (notice) ctx.enrich.notice(notice);
 
     return { children };

@@ -3,15 +3,53 @@
  * @module mcp-server/tools/utils
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type {
+  OccurrenceFilters,
   OccurrenceStatusFilter,
   RawContact,
   RawDatasetRecord,
   RawGeographicCoverage,
   RawTemporalCoverage,
 } from '@/services/gbif/types.js';
+
+/** Filter echo shared by occurrence search, count and facets on both response surfaces. */
+export const occurrenceScopeSchema = z
+  .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+  .describe(
+    'Effective supplied biological filters, with occurrenceStatus always included; excludes pagination and facet controls.',
+  );
+
+/** Preserve supplied filter bytes and false/zero values; controls never enter the scope. */
+export function occurrenceScope(
+  input: {
+    [K in keyof Omit<OccurrenceFilters, 'occurrenceStatus'>]?: OccurrenceFilters[K] | undefined;
+  } & { occurrenceStatus: OccurrenceStatusFilter },
+) {
+  const keys = [
+    'taxonKey',
+    'scientificName',
+    'country',
+    'publishingCountry',
+    'stateProvince',
+    'decimalLatitude',
+    'decimalLongitude',
+    'geometry',
+    'year',
+    'month',
+    'basisOfRecord',
+    'hasCoordinate',
+    'isInCluster',
+    'coordinateUncertaintyInMeters',
+    'datasetKey',
+    'occurrenceStatus',
+    'iucnRedListCategory',
+  ] as const satisfies readonly (keyof OccurrenceFilters)[];
+  return Object.fromEntries(
+    keys.flatMap((key) => (input[key] === undefined ? [] : [[key, input[key]]])),
+  );
+}
 
 /** Canonical 8-4-4-4-12 hex UUID — the form every GBIF dataset and organization key takes. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -89,10 +127,8 @@ export const PAGINATION_CAP = 100_001;
  * they return 9 and 41 buckets against `DATASET_KEY`'s 550, so neither replaces it as
  * the first cut.
  *
- * The buckets sum to the caller's own total only when the facet call repeats the same
- * filters, and `gbif_occurrence_facets` accepts a narrower filter set than either tool
- * that emits this: whatever it cannot take has to be re-applied on each per-datasetKey
- * search instead.
+ * The buckets sum to the caller's own total only when the facet call and each
+ * per-datasetKey search repeat the same biological filters.
  *
  * Emitted as soon as the total is known rather than only once paging hits the wall,
  * because the caller's decision — page or partition — is made on the first response.
@@ -102,7 +138,7 @@ export function overPaginationCapNotice(totalCount: number): string | undefined 
   return (
     `${totalCount.toLocaleString('en-US')} records match, past the offset+limit ceiling of ${PAGINATION_CAP.toLocaleString('en-US')} that GBIF's search API serves; it offers no cursor or scroll, so records deeper than that cannot be paged to. ` +
     'To cover the whole set, partition it: gbif_occurrence_facets with facet DATASET_KEY splits a scope with no gap and no overlap, and each datasetKey is then searchable as its own result set; a bucket still over the ceiling cuts further on basisOfRecord or publishingCountry, the other two dimensions whose buckets leave no record out. ' +
-    "Repeat this query's filters on the facet call, or its buckets will not add up to this total — gbif_occurrence_facets does not accept scientificName, month, latitude/longitude ranges, or the coordinate, georeference, cluster, and coordinate-uncertainty filters, so carry any of those onto each per-datasetKey search instead. " +
+    "Repeat this query's filters on the facet call, or its buckets will not add up to this total — all three occurrence tools accept the same biological filters, so repeat them on the facet call and each per-datasetKey search. " +
     'Bucket sums also reconcile only against the occurrenceStatus this query applied. ' +
     "A bulk download is not available here — GBIF's Download API needs a GBIF.org account and returns an archive asynchronously, and GBIF's monthly Parquet snapshot on AWS Open Data is a bulk dataset; both are routes to take outside this server."
   );

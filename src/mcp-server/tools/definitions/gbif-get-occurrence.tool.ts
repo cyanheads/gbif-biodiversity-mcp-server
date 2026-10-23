@@ -326,11 +326,13 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     if (result.year != null) lines.push(`**Year:** ${result.year}`);
     if (result.month != null) lines.push(`**Month:** ${result.month}`);
     if (result.day != null) lines.push(`**Day:** ${result.day}`);
-    if (result.decimalLatitude != null && result.decimalLongitude != null) {
-      lines.push(
-        `**Coordinates:** ${result.decimalLatitude}, ${result.decimalLongitude}${result.coordinateUncertaintyInMeters != null ? ` (±${result.coordinateUncertaintyInMeters}m)` : ''}`,
-      );
-    } else {
+    if (result.decimalLatitude != null)
+      lines.push(`**Latitude:** ${result.decimalLatitude} decimal degrees (WGS84)`);
+    if (result.decimalLongitude != null)
+      lines.push(`**Longitude:** ${result.decimalLongitude} decimal degrees (WGS84)`);
+    if (result.coordinateUncertaintyInMeters != null)
+      lines.push(`**Coordinate uncertainty:** ${result.coordinateUncertaintyInMeters} m`);
+    if (result.decimalLatitude == null && result.decimalLongitude == null) {
       lines.push('**Coordinates:** Not available');
     }
     const geo: string[] = [];

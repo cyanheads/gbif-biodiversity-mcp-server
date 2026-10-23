@@ -208,10 +208,9 @@ describe('gbifSearchOccurrences', () => {
     expect(hint).toContain('AWS Open Data');
     // Partition arithmetic is against the presence-scoped total this tool applies.
     expect(hint).toContain('PRESENT');
-    // gbif_occurrence_facets takes fewer filters than this tool, so a partition plan
-    // built from a facet call that dropped them covers a wider scope than was asked for.
+    // Repeating every biological filter keeps partition arithmetic on the same scope.
     expect(hint).toMatch(/repeating this search's filters/i);
-    expect(hint).toContain('coordinate-uncertainty');
+    expect(hint).toContain('accepts the same biological filters');
     expect(hint).toContain('BASIS_OF_RECORD');
   });
 

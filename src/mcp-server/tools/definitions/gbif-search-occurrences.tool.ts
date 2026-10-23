@@ -6,10 +6,16 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
+import {
+  BASIS_OF_RECORD_VALUES,
+  IUCN_RED_LIST_CATEGORY_VALUES,
+  OCCURRENCE_STATUS_VALUES,
+} from '@/services/gbif/types.js';
 import {
   firstBlankFilter,
   isGbifUuid,
+  occurrenceScope,
+  occurrenceScopeSchema,
   occurrenceStatusNotice,
   overPaginationCapNotice,
   PAGINATION_CAP,
@@ -103,7 +109,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'WKT polygon for geographic filtering (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Takes precedence over decimalLatitude/decimalLongitude. Omit the field to search everywhere — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
+        'WKT polygon for geographic filtering (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. All supplied spatial filters intersect: decimalLatitude and decimalLongitude remain active and restrict results to the overlap. Omit the field to search everywhere — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
       ),
     year: z
       .string()
@@ -118,16 +124,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .optional()
       .describe('Calendar month (1–12). Useful for seasonal distribution queries.'),
     basisOfRecord: z
-      .enum([
-        'HUMAN_OBSERVATION',
-        'MACHINE_OBSERVATION',
-        'PRESERVED_SPECIMEN',
-        'LIVING_SPECIMEN',
-        'MATERIAL_SAMPLE',
-        'MATERIAL_CITATION',
-        'OCCURRENCE',
-        'LITERATURE',
-      ])
+      .enum(BASIS_OF_RECORD_VALUES)
       .optional()
       .describe(
         'Filter by how the occurrence was recorded. HUMAN_OBSERVATION covers citizen science. PRESERVED_SPECIMEN covers natural history collections.',
@@ -279,6 +276,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
 
   // Pagination context and recovery guidance — reaches both structuredContent and content[].
   enrichment: {
+    scope: occurrenceScopeSchema,
     totalCount: z.number().describe('Total matching occurrences before pagination.'),
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
@@ -296,13 +294,15 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       ),
   },
 
+  enrichmentTrailer: { scope: { render: (scope) => `**scope:** ${JSON.stringify(scope)}` } },
+
   errors: [
     {
       reason: 'pagination_cap_exceeded',
       code: JsonRpcErrorCode.ValidationError,
       when: 'offset + limit exceeds 100,001, the deepest page GBIF serves.',
       recovery:
-        "Reduce offset or limit so their sum is at most 100,001; GBIF exposes no cursor or scroll, so no parameter continues past it. To cover a result set larger than the cap, partition it instead of paging deeper: call gbif_occurrence_facets with facet DATASET_KEY, repeating this search's filters (every occurrence carries exactly one datasetKey, so the buckets cover the scope with no gaps or overlap, and facetOffset pages through them), then re-run this search once per datasetKey. A bucket still over the cap cuts further on BASIS_OF_RECORD or PUBLISHING_COUNTRY — the only other dimensions whose buckets leave no record out, and both have a matching filter here (basisOfRecord, publishingCountry). Do not take YEAR as the first cut — records without a year fall outside every year bucket, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way, stateProvince included even though this tool can filter on it. Either second cut can also return a single bucket inside one dataset, so compare any sub-split's sum against the bucket total before relying on it. gbif_occurrence_facets takes no scientificName, month, latitude/longitude range, coordinate, cluster, or coordinate-uncertainty filter, so re-apply any of those on each per-datasetKey search rather than expecting the buckets to reflect them. Bucket counts reconcile against the occurrenceStatus in force, PRESENT by default here. Retrieving the set in one piece is not possible through this server: the GBIF Download API requires a GBIF.org account, runs asynchronously, and returns a ZIP archive, and the monthly GBIF Parquet snapshot on AWS Open Data is a bulk dataset — both are routes for the caller to take directly.",
+        "Reduce offset or limit so their sum is at most 100,001; GBIF exposes no cursor or scroll, so no parameter continues past it. To cover a result set larger than the cap, partition it instead of paging deeper: call gbif_occurrence_facets with facet DATASET_KEY, repeating this search's filters (every occurrence carries exactly one datasetKey, so the buckets cover the scope with no gaps or overlap, and facetOffset pages through them), then re-run this search once per datasetKey. A bucket still over the cap cuts further on BASIS_OF_RECORD or PUBLISHING_COUNTRY — the only other dimensions whose buckets leave no record out, and both have a matching filter here (basisOfRecord, publishingCountry). Do not take YEAR as the first cut — records without a year fall outside every year bucket, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way, stateProvince included even though this tool can filter on it. Either second cut can also return a single bucket inside one dataset, so compare any sub-split's sum against the bucket total before relying on it. gbif_occurrence_facets accepts the same biological filters: repeat all of them on the facet call and each per-datasetKey search to preserve the population. Bucket counts reconcile against the occurrenceStatus in force, PRESENT by default here. Retrieving the set in one piece is not possible through this server: the GBIF Download API requires a GBIF.org account, runs asynchronously, and returns a ZIP archive, and the monthly GBIF Parquet snapshot on AWS Open Data is a bulk dataset — both are routes for the caller to take directly.",
     },
     {
       reason: 'invalid_filter',
@@ -440,6 +440,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       limit,
       endOfRecords,
       occurrenceStatus: input.occurrenceStatus,
+      scope: occurrenceScope(input),
     });
     const notice = [
       buildNotice({ totalCount, occurrenceCount: occurrences.length, offset }),
@@ -481,11 +482,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       if (occ.year != null) lines.push(`**Year:** ${occ.year}`);
       if (occ.month != null) lines.push(`**Month:** ${occ.month}`);
       if (occ.day != null) lines.push(`**Day:** ${occ.day}`);
-      if (occ.decimalLatitude != null && occ.decimalLongitude != null) {
-        lines.push(
-          `**Coordinates:** ${occ.decimalLatitude}, ${occ.decimalLongitude}${occ.coordinateUncertaintyInMeters != null ? ` (±${occ.coordinateUncertaintyInMeters}m)` : ''}`,
-        );
-      } else {
+      if (occ.decimalLatitude != null)
+        lines.push(`**Latitude:** ${occ.decimalLatitude} decimal degrees (WGS84)`);
+      if (occ.decimalLongitude != null)
+        lines.push(`**Longitude:** ${occ.decimalLongitude} decimal degrees (WGS84)`);
+      if (occ.coordinateUncertaintyInMeters != null)
+        lines.push(`**Coordinate uncertainty:** ${occ.coordinateUncertaintyInMeters} m`);
+      if (occ.decimalLatitude == null && occ.decimalLongitude == null) {
         lines.push('**Coordinates:** Not available');
       }
       const geo: string[] = [];

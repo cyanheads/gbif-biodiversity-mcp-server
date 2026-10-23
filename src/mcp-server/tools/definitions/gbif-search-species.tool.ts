@@ -12,6 +12,9 @@ import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawSpeciesMatch } from '@/services/gbif/types.js';
 import { firstBlankFilter, isGbifUuid } from '../utils.js';
 
+/** GBIF Backbone Taxonomy checklist; name scopes resolve keys within this dataset. */
+const BACKBONE_DATASET_KEY = 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c';
+
 /** The three name filters, ordered broadest first, with the rank each one names. */
 const SCOPE_RANKS = {
   kingdom: 'KINGDOM',
@@ -71,7 +74,7 @@ function buildNotice(args: {
      * `higherTaxonKey=9327` (Paridae) returns 641 names on the backbone and 0
      * against the 455-name "Checklist of alien birds of Belgium".
      */
-    if (scopedBy && datasetKey) {
+    if (scopedBy && datasetKey && datasetKey.toLowerCase() !== BACKBONE_DATASET_KEY) {
       return `No taxa matched. ${scopedBy} resolved to a GBIF backbone key, and GBIF applies a higher-taxon key only within the checklist that key belongs to — so a backbone key paired with another checklist's datasetKey matches nothing whatever that checklist holds. Drop datasetKey to browse the backbone under this ${scopedBy}, or drop ${scopedBy} to browse the checklist.`;
     }
     return 'No taxa matched the query. Try a shorter name fragment, drop the rank filter or the kingdom/family/genus scope, or use gbif_match_species for exact name lookup.';
@@ -85,7 +88,7 @@ function buildNotice(args: {
 export const gbifSearchSpecies = tool('gbif_search_species', {
   title: 'Search Species Taxonomy',
   description:
-    'Search or browse the GBIF backbone taxonomy. Accepts scientific name fragments, rank filters, ' +
+    'Search or browse the GBIF backbone taxonomy by default, or an explicit checklist datasetKey. Accepts scientific name fragments, rank filters, ' +
     'and higher-taxon constraints. Useful for exploring what species exist under a higher taxon ' +
     '(e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when ' +
     'gbif_match_species returns too narrow a result. kingdom, family, and genus scope the browse ' +
@@ -145,7 +148,22 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .array(
         z
           .object({
-            key: z.number().optional().describe('GBIF backbone taxon key.'),
+            key: z
+              .number()
+              .optional()
+              .describe(
+                'Taxon usage key within the source checklist; not necessarily a backbone key.',
+              ),
+            datasetKey: z
+              .string()
+              .optional()
+              .describe('Source checklist dataset UUID, when GBIF supplies it.'),
+            nubKey: z
+              .number()
+              .optional()
+              .describe(
+                'Mapped backbone taxon key for occurrence queries, when GBIF supplies it. Otherwise resolve the name with gbif_match_species.',
+              ),
             scientificName: z.string().optional().describe('Full scientific name with authorship.'),
             canonicalName: z.string().optional().describe('Scientific name without authorship.'),
             rank: z.string().optional().describe('Taxonomic rank.'),
@@ -161,7 +179,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
             numDescendants: z.number().optional().describe('Count of child taxa in the backbone.'),
             extinct: z.boolean().optional().describe('True when explicitly flagged as extinct.'),
           })
-          .describe('A backbone taxon with classification, status, and occurrence counts.'),
+          .describe('A checklist taxon usage with classification, status, and occurrence counts.'),
       )
       .describe('Matching taxa.'),
   }),
@@ -347,7 +365,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
         ...(input.rank && { rank: input.rank }),
         ...(scope && { higherTaxonKey: scope.taxonKey }),
         ...(input.isExtinct !== undefined && { isExtinct: input.isExtinct }),
-        ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
+        datasetKey: input.datasetKey ?? BACKBONE_DATASET_KEY,
         limit: input.limit,
         offset: input.offset,
       },
@@ -356,6 +374,8 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
 
     const taxa = (raw.results ?? []).map((r) => ({
       key: r.key,
+      datasetKey: r.datasetKey,
+      nubKey: r.nubKey,
       scientificName: r.scientificName,
       canonicalName: r.canonicalName,
       rank: r.rank,
@@ -407,7 +427,9 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       const name = t.canonicalName ?? t.scientificName ?? 'Unknown';
       const sci = t.scientificName && t.scientificName !== name ? ` [${t.scientificName}]` : '';
       lines.push(`\n## ${name}${sci}`);
-      if (t.key != null) lines.push(`**Taxon key:** ${t.key}`);
+      if (t.key != null) lines.push(`**Taxon usage key:** ${t.key}`);
+      if (t.datasetKey != null) lines.push(`**Dataset key:** ${t.datasetKey}`);
+      if (t.nubKey != null) lines.push(`**Backbone key:** ${t.nubKey}`);
       if (t.rank) lines.push(`**Rank:** ${t.rank}`);
       if (t.taxonomicStatus) lines.push(`**Status:** ${t.taxonomicStatus}`);
       if (t.vernacularName) lines.push(`**Common name:** ${t.vernacularName}`);

@@ -16,7 +16,11 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
     'vernacular name. Stable URI for caching and injection as context.',
   mimeType: 'application/json',
   params: z.object({
-    taxonKey: z.string().describe('GBIF backbone taxon key as a string.'),
+    taxonKey: z
+      .string()
+      .describe(
+        'Whole signed decimal GBIF taxon key within the signed 32-bit range. Leading plus, zero padding and surrounding whitespace are accepted; URI escapes are decoded once.',
+      ),
   }),
   output: z.object({
     key: z.number().optional().describe('GBIF backbone taxon key.'),
@@ -49,18 +53,33 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'The taxonKey segment is not a number, or GBIF rejected it as unparseable — a value outside the 32-bit signed integer range.',
+      when: 'The taxonKey segment has malformed URI escapes, is not a whole signed decimal integer after one decode and surrounding-whitespace trimming, or is outside the signed 32-bit integer range.',
       recovery:
         'Address the resource with a whole backbone taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
     },
   ],
 
   async handler(params, ctx) {
-    const taxonKey = parseInt(params.taxonKey, 10);
-    if (Number.isNaN(taxonKey)) {
+    let decodedKey: string;
+    try {
+      decodedKey = decodeURIComponent(params.taxonKey).trim();
+    } catch (error) {
+      if (!(error instanceof URIError)) throw error;
       throw ctx.fail(
         'invalid_filter',
-        `Invalid taxon key: "${params.taxonKey}". Must be a numeric backbone key.`,
+        `Invalid taxon key: "${params.taxonKey}". URI escapes must be valid.`,
+      );
+    }
+    const taxonKey = Number(decodedKey);
+    if (
+      !/^[+-]?[0-9]+$/.test(decodedKey) ||
+      !Number.isInteger(taxonKey) ||
+      taxonKey < -2147483648 ||
+      taxonKey > 2147483647
+    ) {
+      throw ctx.fail(
+        'invalid_filter',
+        `Invalid taxon key: "${params.taxonKey}". Must be a whole signed decimal key within the 32-bit signed integer range.`,
       );
     }
     ctx.log.debug('Fetching species resource', { taxonKey });

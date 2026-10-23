@@ -67,7 +67,7 @@ describe('gbifCountOccurrences', () => {
     await gbifCountOccurrences.handler(input, ctx);
 
     expect(mockCountOccurrences).toHaveBeenCalledWith(
-      expect.objectContaining({ isGeoreferenced: true }),
+      expect.objectContaining({ hasCoordinate: true }),
       ctx,
     );
   });
@@ -102,7 +102,7 @@ describe('gbifCountOccurrences', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'A blank filter is not a way to skip one — omit the field instead. Otherwise: supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range; country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+            hint: 'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
           },
         },
       },

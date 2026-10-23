@@ -66,6 +66,7 @@ export type RawSpeciesMatch = {
 export type RawSpeciesRecord = {
   key?: number;
   nubKey?: number;
+  datasetKey?: string;
   nameKey?: number;
   scientificName?: string;
   canonicalName?: string;
@@ -137,15 +138,22 @@ export type RawChildrenResponse = {
 
 // ─── Occurrences ──────────────────────────────────────────────────────────────
 
-export type BasisOfRecord =
-  | 'HUMAN_OBSERVATION'
-  | 'MACHINE_OBSERVATION'
-  | 'PRESERVED_SPECIMEN'
-  | 'LIVING_SPECIMEN'
-  | 'MATERIAL_SAMPLE'
-  | 'MATERIAL_CITATION'
-  | 'OCCURRENCE'
-  | 'LITERATURE';
+/** Complete GBIF BasisOfRecord vocabulary, shared by occurrence filters. */
+export const BASIS_OF_RECORD_VALUES = [
+  'HUMAN_OBSERVATION',
+  'MACHINE_OBSERVATION',
+  'PRESERVED_SPECIMEN',
+  'LIVING_SPECIMEN',
+  'MATERIAL_SAMPLE',
+  'MATERIAL_CITATION',
+  'OCCURRENCE',
+  'LITERATURE',
+  'FOSSIL_SPECIMEN',
+  'OBSERVATION',
+  'UNKNOWN',
+] as const;
+
+export type BasisOfRecord = (typeof BASIS_OF_RECORD_VALUES)[number];
 
 /** GBIF's own `OccurrenceStatus` vocabulary — the only two terms the API accepts. */
 export type OccurrenceStatus = 'PRESENT' | 'ABSENT';
@@ -182,6 +190,27 @@ export const IUCN_RED_LIST_CATEGORY_VALUES = [
 ] as const;
 
 export type IucnRedListCategory = (typeof IUCN_RED_LIST_CATEGORY_VALUES)[number];
+
+/** Biological occurrence filters accepted by GBIF occurrence search. */
+export type OccurrenceFilters = {
+  taxonKey?: number;
+  scientificName?: string;
+  country?: string;
+  publishingCountry?: string;
+  stateProvince?: string;
+  decimalLatitude?: string;
+  decimalLongitude?: string;
+  geometry?: string;
+  year?: string;
+  month?: number;
+  basisOfRecord?: BasisOfRecord;
+  hasCoordinate?: boolean;
+  isInCluster?: boolean;
+  coordinateUncertaintyInMeters?: string;
+  datasetKey?: string;
+  occurrenceStatus?: OccurrenceStatus;
+  iucnRedListCategory?: IucnRedListCategory;
+};
 
 /** Raw occurrence record from /occurrence/search or /occurrence/{key} */
 export type RawOccurrenceRecord = {

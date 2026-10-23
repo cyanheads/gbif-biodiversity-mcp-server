@@ -54,19 +54,14 @@ describe('overPaginationCapNotice', () => {
   });
 
   /**
-   * The two tools that emit this notice accept filters gbif_occurrence_facets does
-   * not, so a facet call that drops them aggregates a wider scope than the caller
-   * asked about — a search narrowed by month=6 reports 4,959,328 while its
-   * DATASET_KEY buckets sum to the unnarrowed 60,290,950. Promising the buckets
-   * "sum to exactly this total" unconditionally is wrong precisely where a caller
-   * would use the arithmetic to plan the split.
+   * Counts reconcile only when each call repeats the same biological filters.
    */
   it('conditions the bucket arithmetic on the facet call repeating the filters', () => {
     const notice = overPaginationCapNotice(60_290_950) as string;
     expect(notice).not.toMatch(/sum to exactly this total/i);
     expect(notice).toMatch(/repeat this query's filters/i);
-    expect(notice).toContain('month');
-    expect(notice).toContain('scientificName');
+    expect(notice).toContain('all three occurrence tools accept the same biological filters');
+    expect(notice).not.toContain('does not accept');
   });
 
   /**

@@ -504,7 +504,7 @@ describe('gbifOccurrenceFacets', () => {
     await gbifOccurrenceFacets.handler(input, ctx);
 
     expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
-      expect.objectContaining({ facetLimit: 3, facetOffset: 3 }),
+      expect.objectContaining({ facetLimit: 4, facetOffset: 3 }),
       ctx,
     );
     expect(getEnrichment(ctx).facetOffset).toBe(3);
@@ -523,7 +523,7 @@ describe('gbifOccurrenceFacets', () => {
     );
   });
 
-  it('discloses truncation when the page fills facetLimit', async () => {
+  it('discloses truncation when the lookahead proves another bucket exists', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({
       count: 3112676,
       facets: [
@@ -533,6 +533,7 @@ describe('gbifOccurrenceFacets', () => {
             { name: 'ds-1', count: 9000 },
             { name: 'ds-2', count: 8000 },
             { name: 'ds-3', count: 7000 },
+            { name: 'ds-4', count: 6000 },
           ],
         },
       ],
@@ -574,6 +575,7 @@ describe('gbifOccurrenceFacets', () => {
             { name: 'ds-4', count: 6000 },
             { name: 'ds-5', count: 5000 },
             { name: 'ds-6', count: 4000 },
+            { name: 'ds-7', count: 3000 },
           ],
         },
       ],
@@ -591,7 +593,7 @@ describe('gbifOccurrenceFacets', () => {
     expect(enrichment.truncated).toBe(true);
     // Advanced by the page actually returned, not blindly by facetLimit.
     expect(enrichment.notice).toContain('facetOffset 6');
-    expect(enrichment.notice).toContain('estimate of continuation');
+    expect(enrichment.notice).toContain('more remain');
   });
 
   /**
@@ -608,6 +610,7 @@ describe('gbifOccurrenceFacets', () => {
           counts: [
             { name: 'ds-1', count: 9000 },
             { name: 'ds-2', count: 8000 },
+            { name: 'ds-3', count: 7000 },
           ],
         },
       ],
@@ -620,7 +623,7 @@ describe('gbifOccurrenceFacets', () => {
     const enrichment = getEnrichment(ctx);
     expect(enrichment.truncated).toBe(true);
     expect(enrichment.notice).toContain('Absence records');
-    expect(enrichment.notice).toContain('full page of 2 facet values');
+    expect(enrichment.notice).toContain('Showing 2 facet values');
   });
 
   it('does not disclose truncation on an empty page, and keeps the empty-result notice', async () => {

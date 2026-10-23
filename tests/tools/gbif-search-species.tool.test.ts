@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-search-species.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 
@@ -138,6 +138,61 @@ describe('gbifSearchSpecies', () => {
       searchSpecies: mockSearchSpecies,
       matchSpecies: mockMatchSpecies,
     } as never);
+  });
+
+  it('preserves a sparse usage key without inventing mapping or provenance on either surface', async () => {
+    mockSearchSpecies.mockResolvedValue({ ...emptyPage, results: [{ key: 999 }], count: 1 });
+    const result = await runToolContract(gbifSearchSpecies, {});
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ taxa: [{ key: 999 }] });
+    const taxon = gbifSearchSpecies.output.parse(result.structuredContent).taxa[0];
+    expect(taxon.nubKey).toBeUndefined();
+    expect(taxon.datasetKey).toBeUndefined();
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('999');
+    expect(text).not.toContain('Backbone key');
+    expect(text).not.toContain('Dataset key');
+  });
+
+  it.each([
+    { offset: 0, limit: 1000, count: 1001, endOfRecords: false, results: [{ key: 2878688 }] },
+    { offset: 1000, limit: 1000, count: 1001, endOfRecords: true, results: [{ key: 2878688 }] },
+    { offset: 2000, limit: 1000, count: 1001, endOfRecords: true, results: [] },
+  ])('preserves pagination and identity through output parsing at offset $offset', async (page) => {
+    mockSearchSpecies.mockResolvedValue(page);
+    const result = await runToolContract(gbifSearchSpecies, {
+      offset: page.offset,
+      limit: page.limit,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 1001,
+      offset: page.offset,
+      limit: 1000,
+      endOfRecords: page.endOfRecords,
+      taxa: page.results,
+    });
+    expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({
+      datasetKey: 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c',
+      offset: page.offset,
+      limit: 1000,
+    });
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('1001');
+    if (page.offset === 2000) {
+      expect(result.structuredContent?.notice).toContain('Offset 2000 exceeds totalCount');
+      expect(text).toContain('Offset 2000 exceeds totalCount');
+    } else expect(text).toContain('2878688');
+  });
+
+  it('retains invalid_filter recovery on both surfaces for a blank checklist', async () => {
+    const result = await runToolContract(gbifSearchSpecies, { datasetKey: '' });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'invalid_filter' } },
+    });
+    expect(JSON.stringify(result.content)).toContain('omit it to search the backbone');
+    expect(mockSearchSpecies).not.toHaveBeenCalled();
   });
 
   it('returns taxa and enrichment with pagination metadata', async () => {
@@ -550,7 +605,7 @@ describe('gbifSearchSpecies', () => {
   });
 
   /** Omitting the field is still how a caller searches the whole backbone. */
-  it('omits datasetKey when not provided', async () => {
+  it('defaults datasetKey to the GBIF backbone when not provided', async () => {
     mockSearchSpecies.mockResolvedValue({
       results: [],
       count: 4972,
@@ -563,9 +618,53 @@ describe('gbifSearchSpecies', () => {
     await gbifSearchSpecies.handler(gbifSearchSpecies.input.parse({ q: 'Aves' }), ctx);
 
     expect(mockSearchSpecies).toHaveBeenCalledWith(
-      expect.not.objectContaining({ datasetKey: expect.anything() }),
+      expect.objectContaining({ datasetKey: 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c' }),
       ctx,
     );
+  });
+
+  it('preserves explicit checklist usage, mapping and provenance through output parsing and text', async () => {
+    mockSearchSpecies.mockResolvedValue({
+      ...emptyPage,
+      count: 1,
+      results: [
+        {
+          key: 206097493,
+          nubKey: 2878688,
+          datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed',
+          canonicalName: 'Quercus robur',
+        },
+      ],
+    });
+    const result = await runToolContract(gbifSearchSpecies, {
+      q: 'Quercus robur',
+      datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed',
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      taxa: [
+        { key: 206097493, nubKey: 2878688, datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed' },
+      ],
+    });
+    expect(mockSearchSpecies.mock.calls[0][0].datasetKey).toBe(
+      '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed',
+    );
+    const text = JSON.stringify(result.content);
+    for (const value of ['206097493', '2878688', '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed'])
+      expect(text).toContain(value);
+  });
+
+  it.each([
+    undefined,
+    'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c',
+    'D7DDDBF4-2CF0-4F39-9B2A-BB099CAAE36C',
+  ])('keeps backbone empty-scope guidance honest for datasetKey %s', async (datasetKey) => {
+    matchesByName({ Quercus: 'Quercus' });
+    mockSearchSpecies.mockResolvedValue(emptyPage);
+    const result = await runToolContract(gbifSearchSpecies, { genus: 'Quercus', datasetKey });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.notice).toContain('No taxa matched the query');
+    expect(JSON.stringify(result.content)).not.toContain('another checklist');
   });
 
   /**

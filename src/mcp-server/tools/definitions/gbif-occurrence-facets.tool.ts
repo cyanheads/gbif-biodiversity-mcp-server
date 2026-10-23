@@ -6,24 +6,19 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
+import {
+  BASIS_OF_RECORD_VALUES,
+  IUCN_RED_LIST_CATEGORY_VALUES,
+  OCCURRENCE_STATUS_VALUES,
+} from '@/services/gbif/types.js';
 import {
   firstBlankFilter,
   isGbifUuid,
+  occurrenceScope,
+  occurrenceScopeSchema,
   occurrenceStatusNotice,
   stateProvinceNoMatchNotice,
 } from '../utils.js';
-
-const BASIS_OF_RECORD_VALUES = [
-  'HUMAN_OBSERVATION',
-  'MACHINE_OBSERVATION',
-  'PRESERVED_SPECIMEN',
-  'LIVING_SPECIMEN',
-  'MATERIAL_SAMPLE',
-  'MATERIAL_CITATION',
-  'OCCURRENCE',
-  'LITERATURE',
-] as const;
 
 const FACET_VALUES = [
   'BASIS_OF_RECORD',
@@ -53,8 +48,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
     'Scope the aggregation with taxonKey, country (uppercase ISO 3166-1 alpha-2), ' +
-    'publishingCountry, stateProvince, year, ' +
-    'geometry, basisOfRecord, datasetKey, ' +
+    'publishingCountry, stateProvince, year, scientificName, latitude/longitude ranges, month, hasCoordinate, isInCluster, coordinateUncertaintyInMeters, geometry (all spatial filters intersect), basisOfRecord, datasetKey, ' +
     'occurrenceStatus, or iucnRedListCategory filters. Also the way to split a result set too ' +
     'large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by ' +
     'DATASET_KEY, then search each datasetKey on its own. Aggregates sightings only by default, ' +
@@ -62,6 +56,48 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'split itself, pass facet OCCURRENCE_STATUS with occurrenceStatus ANY.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    scientificName: z
+      .string()
+      .optional()
+      .describe(
+        'Scientific name; does not match synonyms. With taxonKey GBIF takes their union (OR), not their intersection. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
+      ),
+    decimalLatitude: z
+      .string()
+      .optional()
+      .describe(
+        'Latitude or latitude range "min,max" in decimal degrees (WGS84). All supplied spatial filters intersect, including geometry. Omit to leave latitude unbounded; blank or whitespace-only is rejected.',
+      ),
+    decimalLongitude: z
+      .string()
+      .optional()
+      .describe(
+        'Longitude or longitude range "min,max" in decimal degrees (WGS84). All supplied spatial filters intersect, including geometry. Omit to leave longitude unbounded; blank or whitespace-only is rejected.',
+      ),
+    month: z
+      .number()
+      .min(1)
+      .max(12)
+      .optional()
+      .describe('Calendar month (1–12), matching the occurrence search filter.'),
+    hasCoordinate: z
+      .boolean()
+      .optional()
+      .describe(
+        'True includes records with coordinates; false only records without coordinates. Omit for both.',
+      ),
+    isInCluster: z
+      .boolean()
+      .optional()
+      .describe(
+        'True includes likely duplicates; false excludes them. Omit to include all records. GBIF exposes membership only, with no cluster identifier.',
+      ),
+    coordinateUncertaintyInMeters: z
+      .string()
+      .optional()
+      .describe(
+        'Coordinate uncertainty radius in meters, e.g. "0,1000"; range endpoints inclusive. Omit for any uncertainty; blank or whitespace-only is rejected.',
+      ),
     facet: z
       .enum(FACET_VALUES)
       .describe(
@@ -113,7 +149,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Omit the field to aggregate everywhere — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
+        'WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. All supplied spatial filters intersect: decimalLatitude and decimalLongitude remain active and restrict results to the overlap. Omit the field to aggregate everywhere — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
       ),
     datasetKey: z
       .string()
@@ -166,13 +202,14 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
 
   // Agent-facing context — reaches both structuredContent and content[].
   enrichment: {
+    scope: occurrenceScopeSchema,
     facetLimit: z.number().describe('Maximum facet values requested.'),
     facetOffset: z.number().describe('Zero-based offset applied to the ranked facet values.'),
     truncated: z
       .boolean()
       .optional()
       .describe(
-        'Heuristic continuation flag: present and true when this page returned a full facetLimit of values, so more distinct values may exist past facetOffset + facetLimit. GBIF exposes no total distinct-value count, so this is an estimate, not exact. Absent when the page came back short, which is the only proof the ranking is exhausted.',
+        'Present and true only when an extra upstream bucket proves another page exists. Absent on the final page, including an exactly full final page.',
       ),
     shown: z
       .number()
@@ -193,15 +230,17 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned, the page came back full and more values may remain, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
+        'Guidance when no facet values were returned, a lookahead bucket proves more remain, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
+
+  enrichmentTrailer: { scope: { render: (scope) => `**scope:** ${JSON.stringify(scope)}` } },
 
   errors: [
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A scope filter was supplied blank or whitespace-only, datasetKey is not an 8-4-4-4-12 hex UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected the geometry or year scope as malformed.',
+      when: 'A scope filter was supplied blank or whitespace-only, datasetKey is not an 8-4-4-4-12 hex UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter as malformed.',
       recovery:
         'The message names the rejected value. A blank scope filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
     },
@@ -220,6 +259,10 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
      * than a record list does — nothing in them says which scope they cover.
      */
     const blankFilter = firstBlankFilter({
+      scientificName: input.scientificName,
+      decimalLatitude: input.decimalLatitude,
+      decimalLongitude: input.decimalLongitude,
+      coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
       stateProvince: input.stateProvince,
       year: input.year,
       geometry: input.geometry,
@@ -252,6 +295,15 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     const raw = await getGbifService().getOccurrenceFacets(
       {
         facet: input.facet,
+        ...(input.scientificName !== undefined && { scientificName: input.scientificName }),
+        ...(input.decimalLatitude !== undefined && { decimalLatitude: input.decimalLatitude }),
+        ...(input.decimalLongitude !== undefined && { decimalLongitude: input.decimalLongitude }),
+        ...(input.month !== undefined && { month: input.month }),
+        ...(input.hasCoordinate !== undefined && { hasCoordinate: input.hasCoordinate }),
+        ...(input.isInCluster !== undefined && { isInCluster: input.isInCluster }),
+        ...(input.coordinateUncertaintyInMeters !== undefined && {
+          coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
+        }),
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.country && { country: input.country }),
         ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
@@ -262,14 +314,15 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
         ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
         ...(input.occurrenceStatus !== 'ANY' && { occurrenceStatus: input.occurrenceStatus }),
         ...(input.iucnRedListCategory && { iucnRedListCategory: input.iucnRedListCategory }),
-        facetLimit: input.facetLimit,
+        facetLimit: input.facetLimit + 1,
         facetOffset: input.facetOffset,
       },
       ctx,
     );
 
     const facetData = raw.facets?.find((f) => f.field?.toUpperCase() === input.facet.toUpperCase());
-    const counts = (facetData?.counts ?? []).map((c) => ({
+    const buckets = facetData?.counts ?? [];
+    const counts = buckets.slice(0, input.facetLimit).map((c) => ({
       name: c.name ?? '',
       count: c.count ?? 0,
     }));
@@ -278,29 +331,29 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       facetLimit: input.facetLimit,
       facetOffset: input.facetOffset,
       occurrenceStatus: input.occurrenceStatus,
+      scope: occurrenceScope(input),
     });
 
-    /**
-     * A full page is the only continuation signal this endpoint offers: GBIF reports no
-     * total distinct-value count for a facet, so "more may exist" cannot be sharpened to
-     * "N remain". Composed into the notice rather than passed as `truncated({ guidance })`
-     * because `guidance` and `ctx.enrich.notice` write the same key on a last-wins basis —
-     * one write keeps the ordering of the two calls from deciding what the agent reads.
-     */
-    const pageIsFull = counts.length >= input.facetLimit;
+    // One lookahead bucket proves continuation without advancing past an unexposed value.
+    // Compose notices once: truncated guidance and notice share a last-wins key.
+    const hasMore = buckets.length > input.facetLimit;
     const notice = [
       counts.length === 0
-        ? 'No facet values returned. The filter combination may match zero occurrences, or the facet dimension has no data for the given scope.'
+        ? input.facetOffset > 0
+          ? `No facet values returned at facetOffset ${input.facetOffset}. Reset facetOffset to 0 or reduce it to revisit earlier pages.`
+          : (raw.count ?? 0) === 0
+            ? 'No facet values returned. The filter combination matched zero occurrences.'
+            : 'No facet values returned. The facet dimension has no data for the given scope.'
         : undefined,
-      pageIsFull
-        ? `Returned a full page of ${counts.length} facet values, so more may exist past this slice of the ranking — re-call with facetOffset ${input.facetOffset + counts.length} for the next page. GBIF publishes no total distinct-value count, so a full page is an estimate of continuation, not proof of it.`
+      hasMore
+        ? `Showing ${counts.length} facet values; more remain. Re-call with facetOffset ${input.facetOffset + counts.length} for the next page.`
         : undefined,
       stateProvinceNoMatchNotice(input.stateProvince, raw.count ?? 0),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
       .filter(Boolean)
       .join(' ');
-    if (pageIsFull) {
+    if (hasMore) {
       // `notice` always carries at least the continuation sentence on this branch.
       ctx.enrich.truncated({
         shown: counts.length,

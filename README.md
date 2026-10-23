@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-Species taxonomy, occurrence records, datasets, and publishers from the Global Biodiversity Information Facility (GBIF). Match names to the backbone taxonomy, search and aggregate 3.9B+ occurrence records with Darwin Core filters, and trace records back to their datasets and publishers. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Species taxonomy, occurrence records, datasets, and publishers from the Global Biodiversity Information Facility (GBIF). Match names to the backbone taxonomy, search and aggregate 3.9B+ occurrence records with Darwin Core filters, and trace records back to their datasets and publishers.
 
 ### Tools
 
@@ -85,7 +85,7 @@ Both resources are also reachable via `gbif_get_species` and `gbif_get_dataset`;
 ### `gbif_search_species` <sub>tool</sub>
 
 - `q` name fragment (scientific and vernacular), `rank`, `isExtinct`, and a checklist `datasetKey` (omit for the backbone); up to 1,000 per page with `offset`
-- Taxa carry `key`, `rank`, `taxonomicStatus`, classification names, `numOccurrences`, and `numDescendants`; enrichment reports `totalCount`, `endOfRecords`, and the `taxonScope` applied
+- Taxa carry the checklist usage `key`, optional source `datasetKey` and mapped backbone `nubKey`, `rank`, `taxonomicStatus`, classification names, `numOccurrences`, and `numDescendants`; enrichment reports `totalCount`, `endOfRecords`, and the `taxonScope` applied. Occurrence queries use `nubKey` when supplied; otherwise resolve the name with `gbif_match_species`. Omitted `datasetKey` selects GBIF Backbone Taxonomy `d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`
 - `kingdom`, `family`, and `genus` take names, matched exactly as GBIF capitalizes them; the narrowest one scopes, and `kingdom` beside a narrower one disambiguates it. An unknown name fails as `unresolved_taxon_scope`, a genus outside the named family as `conflicting_taxon_scope`, and a scope paired with a non-backbone `datasetKey` matches nothing. A blank filter or a malformed `datasetKey` fails as `invalid_filter`
 
 ---
@@ -101,20 +101,24 @@ Both resources are also reachable via `gbif_get_species` and `gbif_get_dataset`;
 
 - One `taxonKey`, up to 1,000 children per page with `offset`; no filters. An unknown key fails as `not_found`, one GBIF cannot parse as `invalid_filter`
 - Each child carries `key`, `canonicalName`, `rank`, `taxonomicStatus`, `vernacularName`, `numOccurrences`, and `numDescendants`; GBIF reports no total, so `endOfRecords` (with `truncated` while more remain) is the continuation signal
+- An empty later page gives offset-reset guidance; only an empty first page for an existing taxon means no direct children
 
 ---
 
 ### `gbif_search_occurrences` <sub>tool</sub>
 
 - Filters: `taxonKey` (preferred; `scientificName` does not match synonyms), `country`, `publishingCountry`, `stateProvince`, a `decimalLatitude`/`decimalLongitude` box or WKT `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `isInCluster`, `coordinateUncertaintyInMeters`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory`; up to 300 per page
+- All supplied spatial filters intersect: combining `geometry` with latitude or longitude ranges restricts results to their overlap
 - Records carry `key`, `taxonKey`, `taxonomicStatus`, coordinates, `eventDate` and `eventTime`, `basisOfRecord`, `occurrenceStatus`, `iucnRedListCategory`, `datasetKey`, and `issues`; enrichment reports `totalCount`, `endOfRecords`, and the `occurrenceStatus` applied
+- Search, count and facets echo the same `scope`: effective supplied biological filters, with `occurrenceStatus` always included and pagination controls excluded. `ANY` is echoed but omitted upstream. `taxonKey` and `scientificName` combine with OR. All 11 GBIF basis-of-record values are accepted, including `FOSSIL_SPECIMEN`, `OBSERVATION`, and `UNKNOWN`
+- Latitude, longitude and coordinate uncertainty are independent optional facts; text renders each supplied value, including zero, in decimal degrees or meters
 - `offset + limit` caps at 100,001 and GBIF has no cursor; a deeper request fails as `pagination_cap_exceeded`, and a larger match is reached by partitioning on a `DATASET_KEY` facet from `gbif_occurrence_facets`. A rejected filter value fails as `invalid_filter`
 
 ---
 
 ### `gbif_count_occurrences` <sub>tool</sub>
 
-- Filters: `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`
+- Accepts every biological filter listed for `gbif_search_occurrences`, with the same constraints and spatial intersection. `isGeoreferenced` remains an alias for `hasCoordinate`; either alone or both equal works, conflicting values fail as `invalid_filter`
 - Returns `count`, with the `occurrenceStatus` applied in the enrichment; a count above 100,001 carries a notice naming the partition route, and a rejected filter value fails as `invalid_filter`
 
 ---
@@ -129,7 +133,8 @@ Both resources are also reachable via `gbif_get_species` and `gbif_get_dataset`;
 ### `gbif_occurrence_facets` <sub>tool</sub>
 
 - `facet` is one of `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `MONTH`, `BASIS_OF_RECORD`, `DATASET_KEY`, `PUBLISHING_COUNTRY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`; up to 100 values per page (`facetLimit`, default 10), paged with `facetOffset`
-- Scope filters: `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `year`, `geometry`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory`. Returns `totalOccurrences` and `counts` ranked by count; a full page sets `truncated` in the enrichment, and a rejected scope value fails as `invalid_filter`
+- Accepts every biological filter listed for `gbif_search_occurrences`, with the same constraints and spatial intersection. Repeat them on the facet call and each partition search to preserve the population. Returns `totalOccurrences` and `counts` ranked by count; a rejected scope value fails as `invalid_filter`
+- Each facet request fetches one extra bucket to prove continuation. `truncated`, `shown`, and `cap` appear only when that bucket exists; advance `facetOffset` by the exposed page size. An exactly full final page carries no truncation flag. Empty later pages give offset-reset guidance; an empty first page distinguishes zero matching occurrences from a dimension with no data
 - `DATASET_KEY` buckets sum to the scope's full total, so it is the facet for partitioning a search too large to page; `YEAR`, `MONTH`, `STATE_PROVINCE`, and `SPECIES_KEY` drop records that lack the field. Pass `facet: OCCURRENCE_STATUS` with `occurrenceStatus: ANY` for the presence/absence split
 
 ---
@@ -160,7 +165,7 @@ Both resources are also reachable via `gbif_get_species` and `gbif_get_dataset`;
 ### `gbif://species/{taxonKey}` <sub>resource</sub>
 
 - Taxon record as `application/json`: classification names, `authorship`, `vernacularName`, `taxonomicStatus` with `acceptedKey` and `accepted`, `numDescendants`
-- `taxonKey` comes from `gbif_match_species` or `gbif_search_species`; an unknown key fails as `not_found`, a non-numeric or unparseable one as `invalid_filter`
+- `taxonKey` is a whole signed decimal integer within the signed 32-bit range. The segment is URI-decoded once and surrounding whitespace is trimmed; leading `+`, zero padding and their percent-encoded equivalents are accepted. An unknown key fails as `not_found`; malformed escapes, suffixes, fractions, exponents, hexadecimal forms, embedded whitespace and out-of-range values fail as `invalid_filter` before a request. Use a backbone key from `gbif_match_species` or a search result's `nubKey`, resolving its name when that mapping is absent
 
 ---
 

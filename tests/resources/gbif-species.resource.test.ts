@@ -5,6 +5,7 @@
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSpeciesResource } from '@/mcp-server/resources/definitions/gbif-species.resource.js';
 
@@ -14,6 +15,54 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** Exercise URI matching, output parsing, JSON rendering and declared recovery on the wire. */
+async function readSpecies(segment: string) {
+  const worker = createWorkerHandler({
+    name: 'gbif-species-test',
+    resources: [gbifSpeciesResource],
+  });
+  const uri = `gbif://species/${segment}`;
+  const response = await worker.fetch(
+    new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        'Content-Type': 'application/json',
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'resources/read',
+        'Mcp-Name': uri,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/read',
+        params: {
+          uri,
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0.0' },
+            'io.modelcontextprotocol/clientCapabilities': {},
+          },
+        },
+      }),
+    }),
+    {} as never,
+    { waitUntil: () => {}, passThroughOnException: () => {} } as never,
+  );
+  const text = await response.text();
+  const frame = text.startsWith('{')
+    ? text
+    : text
+        .split('\n')
+        .find((line) => line.startsWith('data:'))
+        ?.slice(5);
+  if (!frame) throw new Error('Missing JSON-RPC response frame');
+  return JSON.parse(frame) as {
+    result?: { contents: { uri: string; text: string; mimeType: string }[] };
+    error?: { code: number; message: string; data: { reason: string; recovery: { hint: string } } };
+  };
+}
+
 describe('gbifSpeciesResource', () => {
   const mockGetSpecies = vi.fn();
 
@@ -21,6 +70,22 @@ describe('gbifSpeciesResource', () => {
     vi.clearAllMocks();
     vi.mocked(getGbifService).mockReturnValue({ getSpecies: mockGetSpecies } as never);
   });
+
+  it.each(['5219404', '05219404', '+5219404', '5219404%20'])(
+    'preserves the existing valid alias %s through resource output parsing',
+    async (segment) => {
+      mockGetSpecies.mockResolvedValue({ key: 5219404, canonicalName: 'Panthera leo' });
+      const body = await readSpecies(segment);
+      expect(body.error).toBeUndefined();
+      expect(body.result?.contents[0].uri).toBe(`gbif://species/${segment}`);
+      expect(body.result?.contents[0].mimeType).toBe('application/json');
+      expect(JSON.parse(body.result!.contents[0].text)).toMatchObject({
+        key: 5219404,
+        canonicalName: 'Panthera leo',
+      });
+      expect(mockGetSpecies).toHaveBeenCalledWith(5219404, expect.anything());
+    },
+  );
 
   it('returns species record for valid taxon key', async () => {
     mockGetSpecies.mockResolvedValue({
@@ -53,6 +118,129 @@ describe('gbifSpeciesResource', () => {
     expect(result.class).toBe('Aves');
     expect(result.numDescendants).toBe(12);
   });
+
+  it.each(['%35%32%31%39%34%30%34', '%2B5219404', '%20%095219404%0A', ' 5219404', '0005219404'])(
+    'decodes valid alias %s once and selects the intended taxon',
+    async (segment) => {
+      mockGetSpecies.mockResolvedValue({ key: 5219404, canonicalName: 'Panthera leo' });
+      const body = await readSpecies(segment);
+      expect(body.error).toBeUndefined();
+      expect(JSON.parse(body.result!.contents[0].text)).toEqual({
+        key: 5219404,
+        canonicalName: 'Panthera leo',
+      });
+      expect(mockGetSpecies).toHaveBeenCalledWith(5219404, expect.anything());
+    },
+  );
+
+  it('trims literal surrounding whitespace at the resource handler seam', async () => {
+    mockGetSpecies.mockResolvedValue({ key: 5219404 });
+    const ctx = createMockContext({ errors: gbifSpeciesResource.errors });
+    await gbifSpeciesResource.handler({ taxonKey: ' \t+05219404\n ' }, ctx);
+    expect(mockGetSpecies).toHaveBeenCalledWith(5219404, ctx);
+  });
+
+  it('bounds per-thread CPU across a 64-fold input span without losing line breaks', async () => {
+    const ctx = createMockContext({ errors: gbifSpeciesResource.errors });
+    for (const shape of ['decimal-suffix', 'trailing-break', 'embedded-breaks'] as const) {
+      const measurements: number[] = [];
+      for (const size of [5000, 10000, 20000, 40000, 80000, 160000, 320000]) {
+        const segment =
+          shape === 'decimal-suffix'
+            ? `${'0'.repeat(size)}x`
+            : shape === 'trailing-break'
+              ? `${'0'.repeat(size)}5219404\n`
+              : `0\n`.repeat(size / 2);
+        // Warm each exact shape so regex tier transitions are outside the measured span.
+        mockGetSpecies.mockResolvedValue({ key: 5219404 });
+        for (let i = 0; i < 32; i++)
+          await gbifSpeciesResource
+            .handler({ taxonKey: segment }, ctx)
+            .catch((error: unknown) => error);
+        const start = process.threadCpuUsage();
+        for (let i = 0; i < 64; i++) {
+          const result = await gbifSpeciesResource
+            .handler({ taxonKey: segment }, ctx)
+            .catch((error: unknown) => error);
+          if (shape === 'trailing-break') expect(result).toMatchObject({ key: 5219404 });
+          else expect(result).toMatchObject({ data: { reason: 'invalid_filter' } });
+        }
+        const cpu = process.threadCpuUsage(start);
+        const cpuUs = cpu.user + cpu.system;
+        expect(cpuUs).toBeLessThan(2_000_000);
+        measurements.push(cpuUs);
+      }
+      expect(measurements.at(-1)! / Math.max(measurements[0], 1)).toBeLessThan(256);
+    }
+  });
+
+  it.each([
+    '5219404garbage',
+    '5219404.5',
+    '5219404e2',
+    '5219404%00',
+    '5219404%2Fparents',
+    '5219404%3Ffoo',
+    '5219404%23foo',
+    '5219404%2520',
+    '%2535%2532',
+    '%',
+    '%GG',
+    '%C0%AF',
+    '52%209404',
+    '52%0A9404',
+    '0x4fa40c',
+    '5_219_404',
+    '2147483648',
+    '-2147483649',
+    '+',
+    '%20',
+  ])('rejects the entire malformed segment %s before fetching a shorter key', async (segment) => {
+    mockGetSpecies.mockResolvedValue({ key: 5219404 });
+    const body = await readSpecies(segment);
+    expect(body.error).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: {
+        reason: 'invalid_filter',
+        recovery: {
+          hint: 'Address the resource with a whole backbone taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
+        },
+      },
+    });
+    expect(body.result).toBeUndefined();
+    expect(mockGetSpecies).not.toHaveBeenCalled();
+  });
+
+  it.each(['0', '+0', '-0', '000'])(
+    'preserves the existing root-record not_found behavior for %s',
+    async (segment) => {
+      mockGetSpecies.mockResolvedValue({ key: 0 });
+      const body = await readSpecies(segment);
+      expect(body.error?.data.reason).toBe('not_found');
+      expect(mockGetSpecies).toHaveBeenCalledWith(Number(segment), expect.anything());
+    },
+  );
+
+  it.each(['-2147483648', '2147483647', '-1', '999999999'])(
+    'preserves clean not_found and recovery for well-formed key %s',
+    async (segment) => {
+      mockGetSpecies.mockRejectedValue(
+        new McpError(JsonRpcErrorCode.NotFound, 'GBIF API returned HTTP 404 Not Found.'),
+      );
+      const body = await readSpecies(segment);
+      expect(body.error).toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: {
+          reason: 'not_found',
+          recovery: {
+            hint: 'Use gbif_match_species to resolve a name to a valid backbone key, or gbif_search_species to browse.',
+          },
+        },
+      });
+      expect(body.error?.message).not.toContain('HTTP 404');
+      expect(mockGetSpecies).toHaveBeenCalledWith(Number(segment), expect.anything());
+    },
+  );
 
   it('populates the class name from GBIF raw.class (#34)', async () => {
     // GBIF's /species/{key} returns the class name under `class` (not `clazz`, which is always
@@ -200,23 +388,23 @@ describe('gbifSpeciesResource', () => {
   });
 
   /**
-   * #47 — parseInt lets a key past the 32-bit signed range through to GBIF, which
-   * answers 400 rather than the 404 the not_found contract covers.
+   * #47 — an upstream rejection of a well-formed key still carries the service's
+   * invalid_filter reason; local grammar validation does not replace that path.
    */
-  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+  it('propagates the upstream invalid_filter reason for a well-formed key (issue #47)', async () => {
     mockGetSpecies.mockRejectedValue(
-      new McpError(
-        JsonRpcErrorCode.InvalidParams,
-        'GBIF API returned HTTP 400 Bad Request. For input string: "999999999999"',
-        { status: 400, reason: 'invalid_filter' },
-      ),
+      new McpError(JsonRpcErrorCode.InvalidParams, 'GBIF API rejected the taxon key.', {
+        status: 400,
+        reason: 'invalid_filter',
+      }),
     );
 
     const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifSpeciesResource.errors });
-    const params = gbifSpeciesResource.params.parse({ taxonKey: '999999999999' });
+    const params = gbifSpeciesResource.params.parse({ taxonKey: '5231190' });
 
     const err = await gbifSpeciesResource.handler(params, ctx).catch((e: unknown) => e);
     expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect(mockGetSpecies).toHaveBeenCalledWith(5231190, ctx);
 
     const declared = gbifSpeciesResource.errors?.find((e) => e.reason === 'invalid_filter');
     expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);

@@ -9,9 +9,7 @@ import { McpError, serviceUnavailable, timeout } from '@cyanheads/mcp-ts-core/er
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
-  BasisOfRecord,
-  IucnRedListCategory,
-  OccurrenceStatus,
+  OccurrenceFilters,
   RawChildrenResponse,
   RawDatasetRecord,
   RawDatasetSearchResponse,
@@ -266,24 +264,7 @@ export class GbifService {
   // ─── Occurrences ─────────────────────────────────────────────────────────────
 
   searchOccurrences(
-    params: {
-      taxonKey?: number;
-      scientificName?: string;
-      country?: string;
-      publishingCountry?: string;
-      stateProvince?: string;
-      decimalLatitude?: string;
-      decimalLongitude?: string;
-      geometry?: string;
-      year?: string;
-      month?: number;
-      basisOfRecord?: BasisOfRecord;
-      hasCoordinate?: boolean;
-      isInCluster?: boolean;
-      coordinateUncertaintyInMeters?: string;
-      datasetKey?: string;
-      occurrenceStatus?: OccurrenceStatus;
-      iucnRedListCategory?: IucnRedListCategory;
+    params: OccurrenceFilters & {
       limit?: number;
       offset?: number;
     },
@@ -338,32 +319,17 @@ export class GbifService {
    * caller keeps asking in the vocabulary `/occurrence/count` used.
    */
   async countOccurrences(
-    params: {
-      taxonKey?: number;
-      country?: string;
-      publishingCountry?: string;
-      stateProvince?: string;
+    params: OccurrenceFilters & {
       isGeoreferenced?: boolean;
-      datasetKey?: string;
-      year?: string;
-      occurrenceStatus?: OccurrenceStatus;
-      iucnRedListCategory?: IucnRedListCategory;
     },
     ctx: Context,
   ): Promise<number> {
-    const queryParams: Record<string, unknown> = { limit: 0 };
-    if (params.taxonKey !== undefined) queryParams.taxonKey = params.taxonKey;
-    if (params.country) queryParams.country = params.country;
-    if (params.publishingCountry) queryParams.publishingCountry = params.publishingCountry;
-    if (params.stateProvince) queryParams.stateProvince = params.stateProvince;
-    if (params.isGeoreferenced !== undefined) queryParams.hasCoordinate = params.isGeoreferenced;
-    if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
-    if (params.year) queryParams.year = params.year;
-    if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
-    if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;
-    const url = this.buildUrl('/occurrence/search', queryParams);
     ctx.log.debug('Counting occurrences', { taxonKey: params.taxonKey });
-    const raw = await this.getJson<RawOccurrenceSearchResponse>(url, ctx);
+    const hasCoordinate = params.hasCoordinate ?? params.isGeoreferenced;
+    const raw = await this.searchOccurrences(
+      { ...params, ...(hasCoordinate !== undefined && { hasCoordinate }), limit: 0 },
+      ctx,
+    );
     return raw.count ?? 0;
   }
 
@@ -374,17 +340,7 @@ export class GbifService {
   }
 
   getOccurrenceFacets(
-    params: {
-      taxonKey?: number;
-      country?: string;
-      publishingCountry?: string;
-      stateProvince?: string;
-      year?: string;
-      basisOfRecord?: BasisOfRecord;
-      geometry?: string;
-      datasetKey?: string;
-      occurrenceStatus?: OccurrenceStatus;
-      iucnRedListCategory?: IucnRedListCategory;
+    params: OccurrenceFilters & {
       facet: string;
       facetLimit?: number;
       facetOffset?: number;
@@ -393,12 +349,20 @@ export class GbifService {
   ): Promise<RawOccurrenceSearchResponse> {
     const queryParams: Record<string, unknown> = { limit: 0, facet: params.facet };
     if (params.taxonKey !== undefined) queryParams.taxonKey = params.taxonKey;
+    if (params.scientificName) queryParams.scientificName = params.scientificName;
     if (params.country) queryParams.country = params.country;
     if (params.publishingCountry) queryParams.publishingCountry = params.publishingCountry;
     if (params.stateProvince) queryParams.stateProvince = params.stateProvince;
     if (params.year) queryParams.year = params.year;
     if (params.basisOfRecord) queryParams.basisOfRecord = params.basisOfRecord;
     if (params.geometry) queryParams.geometry = params.geometry;
+    if (params.decimalLatitude) queryParams.decimalLatitude = params.decimalLatitude;
+    if (params.decimalLongitude) queryParams.decimalLongitude = params.decimalLongitude;
+    if (params.month !== undefined) queryParams.month = params.month;
+    if (params.hasCoordinate !== undefined) queryParams.hasCoordinate = params.hasCoordinate;
+    if (params.isInCluster !== undefined) queryParams.isInCluster = params.isInCluster;
+    if (params.coordinateUncertaintyInMeters)
+      queryParams.coordinateUncertaintyInMeters = params.coordinateUncertaintyInMeters;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
     if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
     if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;

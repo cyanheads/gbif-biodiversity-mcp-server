@@ -7,14 +7,15 @@
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
 | `gbif_match_species` | Match a species name (scientific or common) against the GBIF backbone taxonomy. Returns the best-matching taxon with full classification and a confidence score. The starting point for any workflow involving a species name. | `name`, `strict`, `kingdom`, `rank` | `readOnlyHint: true` |
+| `gbif_bulk_match_species` | Match up to 50 scientific names to backbone keys, preserving input order and isolating per-name failures. | `names`, `strict` | `readOnlyHint: true` |
 | `gbif_get_species` | Fetch a taxon record by GBIF taxon key — full classification, authorship, taxonomic status (accepted/synonym/doubtful), vernacular name, and descendant count. Use after `gbif_match_species` to get the full record for a backbone taxon key. | `taxonKey` | `readOnlyHint: true` |
-| `gbif_search_species` | Search or browse the GBIF backbone taxonomy. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Returns matching species/genera/families with taxonomy, vernacular names, and record counts. | `q`, `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_search_species` | Search or browse the GBIF backbone taxonomy, or an explicitly selected checklist. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Returns matching species/genera/families with taxonomy, vernacular names, and record counts. | `q`, `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `datasetKey`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_get_species_classification` | Return the full parent chain from kingdom down to the given taxon — each rank as a named node with its own taxon key. Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level. | `taxonKey` | `readOnlyHint: true` |
 | `gbif_get_species_children` | List direct children of a taxon in the GBIF backbone (e.g., species within a genus, genera within a family). Paginated. | `taxonKey`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, bounding box, date range, basis of record, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. Filters to presences by default. | `taxonKey`, `scientificName`, `country`, `publishingCountry`, `stateProvince`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `occurrenceStatus`, `iucnRedListCategory`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_count_occurrences` | Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. Applies the same presence/absence default as `gbif_search_occurrences`. | `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory` | `readOnlyHint: true` |
+| `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, bounding box, date range, basis of record, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. Filters to presences by default. | `taxonKey`, `scientificName`, `country`, `publishingCountry`, `stateProvince`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `isInCluster`, `coordinateUncertaintyInMeters`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_count_occurrences` | Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. Applies the same presence/absence default as `gbif_search_occurrences`. | Every biological filter on `gbif_search_occurrences`, plus `isGeoreferenced` as an alias for `hasCoordinate` | `readOnlyHint: true` |
 | `gbif_get_occurrence` | Fetch a single occurrence record by GBIF occurrence key — full Darwin Core fields, coordinates, date, collector, media, dataset provenance. | `occurrenceKey` | `readOnlyHint: true` |
-| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `geometry`, `facet`, `facetLimit`, `facetOffset`, `year`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory` | `readOnlyHint: true` |
+| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | Every biological filter on `gbif_search_occurrences`, plus `facet`, `facetLimit`, `facetOffset` | `readOnlyHint: true` |
 | `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, publishing organization, or hosting organization. Returns dataset title, description, license, record count, and DOI. | `q`, `type`, `publishingCountry`, `publishingOrg`, `hostingOrg`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, and record count. | `datasetKey`, `contactLimit` | `readOnlyHint: true` |
 | `gbif_search_publishers` | Search organizations (publishers/institutions) that contribute data to GBIF by name or country. Returns organization name, country, and key for chaining into dataset and occurrence queries. | `q`, `country`, `limit`, `offset` | `readOnlyHint: true` |
@@ -185,7 +186,7 @@ Browses or searches the backbone taxonomy. The primary tool for exploring what s
 
 `kingdom`, `family`, and `genus` are name filters over an endpoint that scopes by key alone. Each is resolved through `/species/match` and the narrowest one is forwarded as `higherTaxonKey`; the resolved scope is reported in the enrichment. See decision 17.
 
-**Output:** paginated list of taxon records, each with classification, vernacular name, `numOccurrences` count, and backbone key.
+**Output:** paginated list of taxon usages, each with classification, vernacular name, `numOccurrences` count, checklist usage `key`, and optional raw `datasetKey` and mapped backbone `nubKey`. The effective checklist defaults to GBIF Backbone Taxonomy `d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`; an explicit checklist is preserved. This makes the advertised backbone default explicit while retaining checklist provenance. Occurrence queries chain from `nubKey` when supplied, otherwise resolve the name with `gbif_match_species`; missing mapping is never inferred from the usage key. Empty-scope checklist incompatibility guidance applies only to a foreign checklist, with UUID case ignored for backbone equivalence.
 
 **Errors:** `invalid_filter` when any string filter is supplied blank or `datasetKey` is not a UUID; `unresolved_taxon_scope` when a `kingdom`, `family`, or `genus` name matches no backbone taxon at that rank; `conflicting_taxon_scope` when the supplied `family` and `genus` resolve into different lineages.
 
@@ -253,12 +254,12 @@ z.object({
   decimalLongitude: z.string().optional()
     .describe('Longitude range as "min,max" (e.g., "8.0,9.5"). Decimal degrees, WGS84. Combine with decimalLatitude for a bounding box.'),
   geometry: z.string().optional()
-    .describe('WKT polygon for geographic filtering (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Takes precedence over decimalLatitude/decimalLongitude when both are supplied.'),
+    .describe('WKT polygon for geographic filtering (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. All supplied spatial filters intersect; latitude and longitude ranges remain active alongside geometry.'),
   year: z.string().optional()
     .describe('Year or year range. Single year: "2024". Range: "2020,2024". Filters by observation year.'),
   month: z.number().min(1).max(12).optional()
     .describe('Calendar month (1–12). Useful for seasonal distribution queries.'),
-  basisOfRecord: z.enum(['HUMAN_OBSERVATION','MACHINE_OBSERVATION','PRESERVED_SPECIMEN','LIVING_SPECIMEN','MATERIAL_SAMPLE','MATERIAL_CITATION','OCCURRENCE','LITERATURE']).optional()
+  basisOfRecord: z.enum(BASIS_OF_RECORD_VALUES).optional()
     .describe('Filter by how the occurrence was recorded. HUMAN_OBSERVATION covers citizen science (eBird, iNaturalist). PRESERVED_SPECIMEN covers natural history collections.'),
   hasCoordinate: z.boolean().optional()
     .describe('When true, return only georeferenced records (those with coordinates). When false, return ONLY records without coordinates. Omit the parameter entirely to include all records regardless of coordinate presence.'),
@@ -286,7 +287,7 @@ z.object({
 - `recordedBy` (may be absent)
 - `issues` — array of GBIF quality flags
 
-**Pagination output:** `count` (total matches), `endOfRecords`, `offset`, `limit`, the applied `occurrenceStatus`, and an enrichment `notice` when the result set is empty, the offset overshot the total, or a presence/absence filter narrowed the result.
+**Pagination output:** `totalCount` (total matches), `endOfRecords`, `offset`, `limit`, the applied `occurrenceStatus` and `scope`, and an enrichment `notice` when the result set is empty, the offset overshot the total, or a presence/absence filter narrowed the result.
 
 **Errors:** `pagination_cap_exceeded` when offset+limit passes 100,001, `invalid_filter` when any string filter is supplied blank or whitespace-only, when a datasetKey is not a UUID, or when GBIF rejects the geometry or a range.
 
@@ -298,9 +299,9 @@ z.object({
 
 Returns a single integer count, read from `/occurrence/search` at `limit=0` — no record payload, and the same filter set the search tool accepts. Use before `gbif_search_occurrences` when you only need the total, or to get counts for multiple filters in parallel.
 
-**Key inputs:** `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`. `stateProvince` and `year` are validated whenever present, on the same ground as the search tool's filters; see decision 16.
+**Key inputs:** every biological filter on `gbif_search_occurrences`, with the same types and constraints. `isGeoreferenced` is retained as an alias for `hasCoordinate`: either alone or both equal is accepted; conflicts fail as `invalid_filter`. Blank string filters fail rather than widening the population; see decision 16.
 
-**Output:** `count: number`, plus enrichment carrying the applied `occurrenceStatus` and a `notice` when it narrowed the count, when the count is past what paging can reach, or when a verbatim `stateProvince` filter matched nothing.
+**Output:** `count: number`, plus enrichment carrying `scope`, the applied `occurrenceStatus` and a `notice` when it narrowed the count, when the count is past what paging can reach, or when a verbatim `stateProvince` filter matched nothing.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: false`
 
@@ -322,6 +323,10 @@ Fetches a full occurrence record by its GBIF key. Returns the complete Darwin Co
 
 ### `gbif_occurrence_facets`
 
+Fetch one lookahead bucket (`facetLimit + 1`, including 101 at the public limit of 100) and expose at most `facetLimit`. Only an extra bucket sets `truncated`, `shown`, and `cap`; advance `facetOffset` by the exposed page size so the lookahead becomes the next page's first value. An exactly full final page has no continuation metadata. Empty later facet or child pages give offset-reset guidance instead of asserting missing biological data. At offset zero, empty facets distinguish zero occurrences from missing dimension data; empty children mean no direct children only after the existing taxon check succeeds.
+
+Accepts every biological filter on `gbif_search_occurrences`, with the same types, blank rejection and byte-preserving forwarding. Search, count and facets echo identical `scope` enrichment: supplied biological filters only, with `occurrenceStatus` always included, `ANY` omitted upstream, the count alias resolved to `hasCoordinate`, and pagination/facet controls excluded. All 11 official `BASIS_OF_RECORD_VALUES` are shared across these tools, including `FOSSIL_SPECIMEN`, `OBSERVATION` and `UNKNOWN`.
+
 Returns aggregated occurrence counts for a given facet dimension. Backed by the occurrence search endpoint with `limit=0` and `facet=<field>`, so it returns only the facet counts with no record payload — efficient for distribution analysis.
 
 Available facet dimensions: `BASIS_OF_RECORD`, `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`.
@@ -333,11 +338,18 @@ Available facet dimensions: `BASIS_OF_RECORD`, `COUNTRY`, `STATE_PROVINCE`, `YEA
 ```ts
 z.object({
   taxonKey: z.number().optional().describe('Backbone taxon key to scope the aggregation.'),
+  scientificName: z.string().optional().describe('Scientific name; combines with taxonKey by union (OR), not intersection.'),
+  decimalLatitude: z.string().optional().describe('Latitude range in decimal degrees; intersects every supplied spatial filter.'),
+  decimalLongitude: z.string().optional().describe('Longitude range in decimal degrees; intersects every supplied spatial filter.'),
+  month: z.number().min(1).max(12).optional().describe('Calendar month (1–12).'),
+  hasCoordinate: z.boolean().optional().describe('True for coordinates, false for no coordinates; omit for both.'),
+  isInCluster: z.boolean().optional().describe('True for likely duplicates, false to exclude them; omit for both.'),
+  coordinateUncertaintyInMeters: z.string().optional().describe('Coordinate uncertainty radius or inclusive range in meters.'),
   country: z.string().regex(/^[A-Z]{2}$/).optional().describe('ISO 3166-1 alpha-2 code, uppercase, of where the occurrence was recorded — pass back a COUNTRY bucket to drill into it.'),
   publishingCountry: z.string().regex(/^[A-Z]{2}$/).optional().describe('ISO 3166-1 alpha-2 code, uppercase, of the publishing organization — pass back a PUBLISHING_COUNTRY bucket to drill into it.'),
   stateProvince: z.string().optional().describe('Verbatim state/province, exact and case-sensitive — pass back a STATE_PROVINCE bucket rather than guessing.'),
   year: z.string().optional().describe('Year or year range (e.g., "2020,2024").'),
-  basisOfRecord: z.enum([...]).optional().describe('Scope to a specific basis of record.'),
+  basisOfRecord: z.enum(BASIS_OF_RECORD_VALUES).optional().describe('Scope to a specific basis of record.'),
   geometry: z.string().optional().describe('WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Same format as gbif_search_occurrences.'),
   datasetKey: z.string().optional().describe('Scope the aggregation to a single dataset by its GBIF dataset UUID.'),
   occurrenceStatus: z.enum(['PRESENT','ABSENT','ANY']).default('PRESENT').describe('Presence/absence scope. ANY omits the filter upstream.'),
@@ -475,13 +487,13 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 - **The AWS Open Data snapshot** (`gbif-open-data-us-east-1`, keyless) is a monthly Parquet dump for DuckDB or Spark — a bulk analytical dataset, not a live filtered query.
 - **Caller-side partitioning** is the only route that works through this surface, and `datasetKey` is the dimension for it: every occurrence carries exactly one, so `DATASET_KEY` facet buckets cover the scope with no gap and no overlap, and the dimension has the cardinality to cut a large scope into pageable pieces. Measured on `taxonKey=212` + `country=GB` + `occurrenceStatus=PRESENT` (60,290,950 records): 550 `DATASET_KEY` buckets summing to 60,290,950 exactly, against 224 `YEAR` buckets summing to 59,407,400 — 883,550 undated records in no bucket. `basisOfRecord` and `publishingCountry` are gap-free as well (both sum to the whole 3.9-billion-record index exactly, in 9 and 250 buckets; 9 and 41 within the measured scope, where `PUBLISHING_COUNTRY` buckets summed to the scope total with no gap), and both have a matching filter on all three occurrence tools, so either drives a further split of a bucket still over the cap — but at that cardinality neither reaches pageable pieces as a first cut. Partitioning does not close the gap on its own either: 29 of the 550 buckets individually exceed the cap, and splitting the largest (`4fa7b334-ce0d-4e88-aaae-2e0c138d049e`, 42,437,187 records) by year leaves 41 of its 165 sub-buckets still over. Recursion depth is data-dependent and unbounded, so this is a technique for the caller to apply, not a bounded tool call.
 
-The technique also depends on the facet call reproducing the query's scope, and `gbif_occurrence_facets` accepts a narrower filter set than `gbif_search_occurrences` (no `scientificName`, `month`, bounding box, `hasCoordinate`, `isInCluster`, or `coordinateUncertaintyInMeters`) or `gbif_count_occurrences` (no `isGeoreferenced`). The buckets partition the facet call's own scope either way; they only add up to the caller's total when both calls carry the same filters, so anything the facet tool cannot take has to be re-applied on each per-`datasetKey` search. Every surface carrying the guidance says so.
+Search, count and facets accept the same biological filters. Repeat every effective filter on the facet call and each per-`datasetKey` search: bucket counts reconcile only for the same population. The shared `scope` echo makes this comparison explicit, excluding pagination/facet controls and resolving the count coordinate alias to `hasCoordinate`.
 
 What ships instead is accurate guidance: the `pagination_cap_exceeded` recovery, the partition note on the `facet` description, an over-cap notice on `gbif_search_occurrences` and `gbif_count_occurrences`, and the server `instructions` all name the partition technique and state plainly that a bulk download is a route the caller takes outside this server.
 
 **4. Occurrence record output normalization.** GBIF's occurrence search response is verbose (the `classifications` object includes entries for both the Catalogue of Life backbone and the legacy GBIF backbone, with deeply nested structure). The handler extracts the simpler top-level Darwin Core fields (`taxonKey`, `scientificName`, `kingdom`, etc.) and discards the `classifications` nested object to reduce response size. The full record is available via `gbif_get_occurrence` when needed.
 
-**5. WKT geometry vs. lat/lon bounding box.** GBIF's occurrence search supports both. The design exposes both — `decimalLatitude`/`decimalLongitude` ranges for simple bounding boxes, `geometry` for WKT polygons. The `geometry` parameter is more powerful (supports non-rectangular areas, e.g., watershed boundaries) but harder to construct. Both are documented; the simpler lat/lon form is named first.
+**5. WKT geometry and lat/lon bounding box.** GBIF's occurrence search supports both — `decimalLatitude`/`decimalLongitude` ranges for simple bounding boxes, `geometry` for WKT polygons. Every supplied spatial filter remains active and results are their intersection: adding a disjoint latitude range to a matching polygon returns zero. The geometry does not override the ranges.
 
 **6. No `gbif_get_species_synonyms` tool.** The synonyms endpoint (`/species/{key}/synonyms`) returns a paginated list of species records that are synonyms of the given accepted taxon. This is niche — most workflows need only to know whether a taxon *is* a synonym (surfaced in `gbif_get_species`), not to enumerate all synonyms of an accepted name. Deferred to a future iteration if demand warrants.
 
@@ -601,7 +613,7 @@ All list endpoints return: `{ offset, limit, endOfRecords, count, results[] }`. 
 
 ### Facet query pattern
 
-Add `facet=FIELD_NAME` to occurrence search, set `limit=0` to skip record fetching. Add `facetLimit=N` (default 10, max 100) and `facetMincount=N` to filter low-count values. Multiple `facet=` parameters are allowed in a single request.
+Add `facet=FIELD_NAME` to occurrence search, set `limit=0` to skip record fetching. The tool exposes `facetLimit=N` (default 10, max 100) and sends `N+1` upstream for exact continuation, returning at most N values. `facetOffset` advances by the exposed page size. The upstream API also accepts `facetMincount` and multiple `facet` parameters.
 
 ### Name matching confidence
 
