@@ -78,11 +78,9 @@ export function isGbifUuid(value: string): boolean {
  *
  * Every filter this server forwards used to be spread behind a `?.trim()` test,
  * which dropped a blank value instead of sending it — and GBIF answers a dropped
- * filter with the unfiltered scope. `stateProvince: ""` returned all 60,290,950
- * records of a `taxonKey=212` + `country=GB` scope where `England` returns
- * 47,672,439, and `""` matched the omitted-field figure exactly. So the caller
- * that supplied a filter got the answer to a wider question with nothing in the
- * response saying so. This inverts that test: the values the old guard dropped
+ * filter with the unfiltered scope. The caller that supplied a filter got the
+ * answer to a wider question with nothing in the response saying so. This
+ * inverts that test: the values the old guard dropped
  * are exactly the values it now names, and every value it forwarded is still
  * forwarded byte-identically — untrimmed, since GBIF trims a padded value itself
  * and normalizing one here would hide a caller-side defect.
@@ -123,9 +121,8 @@ export const PAGINATION_CAP = 100_001;
  * with nothing dropped and nothing double-counted, and its cardinality is high enough
  * to cut a large scope into pageable pieces. `BASIS_OF_RECORD` and `PUBLISHING_COUNTRY`
  * are gap-free as well and both have a matching filter on the occurrence tools, so
- * either can cut a bucket that is still over the ceiling — but on the measured scope
- * they return 9 and 41 buckets against `DATASET_KEY`'s 550, so neither replaces it as
- * the first cut.
+ * either can cut a bucket that is still over the ceiling. Their lower cardinality
+ * makes DATASET_KEY the first cut.
  *
  * The buckets sum to the caller's own total only when the facet call and each
  * per-datasetKey search repeat the same biological filters.
@@ -203,17 +200,23 @@ export function occurrenceStatusNotice(status: OccurrenceStatusFilter): string |
  *
  * The figure spans every `occurrenceStatus`, absences included, so it is not the
  * number `gbif_count_occurrences` returns for the same key — every surface that
- * carries it says so. The lookup is supplementary and best-effort, so the field
- * stays absent rather than blocking or failing the record.
+ * carries it says so. Operational lookup failures retain metadata with a notice;
+ * cancellation and invalid responses propagate.
  */
-export function resolveDatasetRecordCount(
+export async function resolveDatasetRecordCount(
   raw: RawDatasetRecord,
   ctx: Context,
-): Promise<number | undefined> {
+): Promise<{ recordCount?: number; recordCountNotice?: string }> {
   const declared = raw.numRecords ?? raw.recordCount;
-  if (declared != null) return Promise.resolve(declared);
-  if (!raw.key) return Promise.resolve(undefined);
-  return getGbifService().getDatasetOccurrenceCount(raw.key, ctx);
+  if (declared != null) return { recordCount: declared };
+  if (!raw.key) return {};
+  const recordCount = await getGbifService().getDatasetOccurrenceCount(raw.key, ctx);
+  return recordCount === undefined
+    ? {
+        recordCountNotice:
+          'The supplementary indexed occurrence count is unavailable. Other dataset metadata is retained; retry this dataset lookup to request the count again.',
+      }
+    : { recordCount };
 }
 
 /**
@@ -238,15 +241,40 @@ export function projectContacts(raw: RawContact[] | undefined, limit: number) {
 }
 
 /**
- * Project raw dataset temporal coverages to compact `{ start, end }` ranges, keeping only
- * entries that carry at least one bound (GBIF also emits verbatim/single-date shapes we skip).
- * Returns undefined when nothing survives, so the field is omitted rather than empty.
+ * Preserve supported temporal variants in source order and disclose unusable entries.
  */
-export function compactTemporalCoverages(raw: RawTemporalCoverage[] | undefined) {
-  const ranges = (raw ?? [])
-    .map((t) => ({ start: t.start, end: t.end }))
-    .filter((t) => t.start || t.end);
-  return ranges.length ? ranges : undefined;
+export function projectTemporalCoverages(raw: RawTemporalCoverage[] | undefined) {
+  const temporalCoverages: RawTemporalCoverage[] = [];
+  let unsupported = 0;
+  for (const entry of raw ?? []) {
+    const kind = entry?.['@type'];
+    const usable =
+      kind === 'single'
+        ? entry.date
+        : kind === 'verbatim'
+          ? entry.period
+          : kind === undefined || kind === 'range'
+            ? entry?.start || entry?.end
+            : false;
+    if (!usable) {
+      unsupported++;
+      continue;
+    }
+    temporalCoverages.push({
+      ...(kind !== undefined && { '@type': kind }),
+      ...(entry.start !== undefined && { start: entry.start }),
+      ...(entry.end !== undefined && { end: entry.end }),
+      ...(entry.date !== undefined && { date: entry.date }),
+      ...(entry.period !== undefined && { period: entry.period }),
+      ...(entry.type !== undefined && { type: entry.type }),
+    });
+  }
+  return {
+    temporalCoverages: temporalCoverages.length ? temporalCoverages : undefined,
+    temporalCoverageNotice: unsupported
+      ? `${unsupported} temporal coverage entries have unsupported or unusable representations and are omitted. Returned temporal coverage is incomplete.`
+      : undefined,
+  };
 }
 
 /**
@@ -261,15 +289,14 @@ export function compactGeographicCoverages(raw: RawGeographicCoverage[] | undefi
 }
 
 /**
- * The character references `stripHtml` decodes. Everything else a publisher
- * wrote — `&#169;`, `&nbsp;`, a hex reference — is left verbatim rather than
- * resolved, so the extractor never invents a character the source did not name.
+ * Named references supported by the plain-text extractor.
  */
 const CHARACTER_REFERENCES = new Map<string, string>([
   ['&amp;', '&'],
   ['&lt;', '<'],
   ['&gt;', '>'],
   ['&quot;', '"'],
+  ['&nbsp;', ' '],
   ['&#34;', '"'],
   ['&#39;', "'"],
   ['&#61;', '='],
@@ -277,9 +304,6 @@ const CHARACTER_REFERENCES = new Map<string, string>([
 ]);
 
 /**
- * One alternation over exactly the keys above — none of which carries a regex
- * metacharacter, so joining them is the whole pattern.
- *
  * Decoding in a single pass is what keeps each reference decoded exactly once.
  * A chain of per-reference replacements decoded `&amp;` first and then re-read
  * the `&` it had just produced as the opening of the next one, so text that
@@ -288,13 +312,58 @@ const CHARACTER_REFERENCES = new Map<string, string>([
  * (#56, CodeQL `js/double-escaping`). A single pass consumes each match and
  * moves past its replacement, so no output is ever re-read as input.
  */
-const CHARACTER_REFERENCE = new RegExp([...CHARACTER_REFERENCES.keys()].join('|'), 'g');
+const CHARACTER_REFERENCE = /&(?:amp|lt|gt|quot|nbsp|#[0-9]+|#x[0-9a-f]+);/gi;
 
 /** Strip HTML tags and decode the supported character references, each exactly once. */
 export function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(CHARACTER_REFERENCE, (ref) => CHARACTER_REFERENCES.get(ref) ?? ref)
-    .replace(/\s+/g, ' ')
-    .trim();
+  const parts: string[] = [];
+  let start = 0;
+  while (start < html.length) {
+    const opening = html.indexOf('<', start);
+    if (opening === -1) break;
+    const closing = html.indexOf('>', opening + 1);
+    if (closing === -1) break;
+    parts.push(html.slice(start, opening));
+    const tag = html.slice(opening + 1, closing);
+    parts.push(
+      /^(?:br\b|\/(?:p|div|li|ul|ol|section|article|h[1-6]|blockquote|pre|tr)\b)/i.test(tag)
+        ? '\n\n'
+        : ' ',
+    );
+    start = closing + 1;
+  }
+  parts.push(html.slice(start));
+  return parts
+    .join('')
+    .replace(CHARACTER_REFERENCE, (ref) => {
+      const named = CHARACTER_REFERENCES.get(ref);
+      if (named !== undefined) return named;
+      if (!ref.startsWith('&#')) return ref;
+      const hex = ref[2]?.toLowerCase() === 'x';
+      const point = Number.parseInt(ref.slice(hex ? 3 : 2, -1), hex ? 16 : 10);
+      return point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
+        ? String.fromCodePoint(point)
+        : ref;
+    })
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/** Render publisher text literally in CommonMark; inline slots retain newlines as character references. */
+export function escapeMarkdownText(text: string, inline = true): string {
+  const punctuation = inline ? /[&<>\\`*_{}[\]()#!|~\r\n\t ]/g : /[&<>\\`*_{}[\]()#!|~.\-+\r\t ]/g;
+  return text.replace(punctuation, (character, offset: number) => {
+    // Boundary spaces must survive Markdown trimming and indentation; interior spaces stay readable.
+    if (
+      character === ' ' &&
+      offset > 0 &&
+      offset < text.length - 1 &&
+      text[offset - 1] !== '\n' &&
+      text[offset + 1] !== '\n'
+    )
+      return character;
+    return `&#${character.charCodeAt(0)};`;
+  });
 }

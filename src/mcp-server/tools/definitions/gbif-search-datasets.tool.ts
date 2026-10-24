@@ -7,7 +7,8 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import { firstBlankFilter, isGbifUuid, stripHtml } from '../utils.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
+import { escapeMarkdownText, firstBlankFilter, isGbifUuid, stripHtml } from '../utils.js';
 
 /**
  * Empty-result and pagination-overshoot guidance.
@@ -75,18 +76,15 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       .string()
       .optional()
       .describe(
-        'UUID (8-4-4-4-12 hex, lowercase — GBIF matches these two keys case-sensitively, so an upper-cased rendering of a real key matches nothing) of the organization that published the dataset — the organization whose data it is, and the question a key from gbif_search_publishers is usually asking. Not the organization that serves it, which is hostingOrg and matches a different set: Butterfly Conservation (0d72dd7f-6f05-46af-85c2-8b6e77ce5534) publishes 3 datasets and hosts none, while the National Biodiversity Network (07f617d0-c688-11d8-bf62-b8a03c50a862) hosts 984 — those 3 among them — and publishes 1. Supplied together the two filters are intersected, not combined, so the same key in both fields returns only what that organization both published and serves.',
+        'UUID (8-4-4-4-12 hex, lowercase — GBIF matches these two keys case-sensitively, so an upper-cased rendering of a real key matches nothing) of the organization that published the dataset — the organization whose data it is, and the question a key from gbif_search_publishers is usually asking. The organization that serves it is hostingOrg, which matches a different set. Supplied together the two filters are intersected, not combined, so the same key in both fields returns only what that organization both published and serves.',
       ),
     hostingOrg: z
       .string()
       .optional()
       .describe(
-        'UUID (8-4-4-4-12 hex, lowercase — matched case-sensitively, as publishingOrg is) of the organization whose installation serves the dataset — not the organization that published it, which is publishingOrg. Most organizations publish through an installation someone else runs, so a key from gbif_search_publishers matches nothing here for them: of the first 25 GB organizations the registry lists, all 25 host no datasets while 13 publish one or two. Supplied together the two filters are intersected, not combined.',
+        'UUID (8-4-4-4-12 hex, lowercase — matched case-sensitively, as publishingOrg is) of the organization whose installation serves the dataset — distinct from the organization that published it, which is publishingOrg. Most organizations publish through an installation someone else runs, so a key from gbif_search_publishers matches nothing here for them. Supplied together the two filters are intersected, not combined.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
+    limit: readLimitSchema(z.number().min(1), 1000)
       .default(20)
       .describe('Number of datasets to return (default 20, max 1000).'),
     offset: z.number().min(0).default(0).describe('Pagination offset.'),
@@ -134,7 +132,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+        'Guidance when results are empty, paging overshot, or an oversized read limit was clamped. Absent when none applies.',
       ),
   },
 
@@ -149,6 +147,8 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(input.limit, 1000, 'gbif_search_datasets', 'limit', ctx);
+    input = { ...input, limit: clamp.applied };
     ctx.log.info('Searching datasets', { q: input.q, type: input.type });
     /**
      * `q` is checked on presence rather than on a non-blank value, because
@@ -233,7 +233,8 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       offset,
       bothOrgFilters: input.publishingOrg !== undefined && input.hostingOrg !== undefined,
     });
-    if (notice) ctx.enrich.notice(notice);
+    const combinedNotice = [clamp.notice, notice].filter(Boolean).join(' ');
+    if (combinedNotice) ctx.enrich.notice(combinedNotice);
 
     return { datasets };
   },
@@ -250,7 +251,17 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
         'Record counts span every occurrenceStatus, absences included. gbif_count_occurrences with a dataset key counts sightings only by default.',
       );
     }
-    for (const ds of result.datasets) {
+    for (const raw of result.datasets) {
+      const ds = {
+        ...raw,
+        title: raw.title && escapeMarkdownText(raw.title),
+        key: raw.key && escapeMarkdownText(raw.key),
+        type: raw.type && escapeMarkdownText(raw.type),
+        license: raw.license && escapeMarkdownText(raw.license),
+        doi: raw.doi && escapeMarkdownText(raw.doi),
+        publishingCountry: raw.publishingCountry && escapeMarkdownText(raw.publishingCountry),
+        description: raw.description && escapeMarkdownText(raw.description, false),
+      };
       lines.push(`\n## ${ds.title ?? 'Untitled dataset'}`);
       if (ds.key) lines.push(`**Key:** ${ds.key}`);
       if (ds.type) lines.push(`**Type:** ${ds.type}`);

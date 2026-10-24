@@ -7,9 +7,9 @@ import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
   compactGeographicCoverages,
-  compactTemporalCoverages,
   isGbifUuid,
   projectContacts,
+  projectTemporalCoverages,
   resolveDatasetRecordCount,
   stripHtml,
 } from '@/mcp-server/tools/utils.js';
@@ -48,6 +48,12 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       .describe(
         'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Spans every occurrenceStatus: absence records — surveys that looked for a taxon and did not find it — are counted alongside sightings, and on some datasets they are the overwhelming majority. gbif_count_occurrences with this datasetKey answers the other question, defaulting to occurrenceStatus PRESENT, so the two figures are expected to differ rather than one being wrong. Fetched separately because the detail endpoint omits it; absent when that lookup does not return in time.',
       ),
+    recordCountNotice: z
+      .string()
+      .optional()
+      .describe(
+        'Explains an unavailable supplementary count and how to retry. Absent after a successful lookup or a declared count.',
+      ),
     numConstituents: z.number().optional().describe('Number of sub-datasets. May be absent.'),
     contacts: z
       .array(
@@ -81,6 +87,18 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       .array(
         z
           .object({
+            '@type': z
+              .string()
+              .optional()
+              .describe(
+                'GBIF coverage representation: range, single, or verbatim. May be absent on legacy ranges.',
+              ),
+            date: z
+              .string()
+              .optional()
+              .describe('Single coverage date as supplied by GBIF. May be absent.'),
+            period: z.string().optional().describe('Verbatim coverage period. May be absent.'),
+            type: z.string().optional().describe('Verbatim period type. May be absent.'),
             start: z
               .string()
               .optional()
@@ -90,10 +108,18 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
               .optional()
               .describe('Coverage end as an ISO 8601 date-time. May be absent.'),
           })
-          .describe('A temporal coverage range.'),
+          .describe('A temporal coverage range, single date, or verbatim period.'),
       )
       .optional()
-      .describe('Temporal coverage ranges declared by the dataset. May be absent.'),
+      .describe(
+        'Temporal coverage declared by the dataset, preserving supplied dates and verbatim periods. May be absent.',
+      ),
+    temporalCoverageNotice: z
+      .string()
+      .optional()
+      .describe(
+        'Discloses unsupported or unusable temporal entries omitted from the response. May be absent.',
+      ),
     geographicCoverages: z
       .array(
         z
@@ -160,10 +186,10 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       doi: raw.doi,
       citationText: raw.citation?.text,
       publishingCountry: raw.publishingCountry,
-      recordCount: await resolveDatasetRecordCount(raw, ctx),
+      ...(await resolveDatasetRecordCount(raw, ctx)),
       numConstituents: raw.numConstituents,
       ...projectContacts(raw.contacts, CONTACT_CAP),
-      temporalCoverages: compactTemporalCoverages(raw.temporalCoverages),
+      ...projectTemporalCoverages(raw.temporalCoverages),
       geographicCoverages: compactGeographicCoverages(raw.geographicCoverages),
     };
   },

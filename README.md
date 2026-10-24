@@ -70,7 +70,7 @@ Both resources are also reachable via `gbif_get_species` and `gbif_get_dataset`;
 
 ### `gbif_bulk_match_species` <sub>tool</sub>
 
-- 1–50 scientific `names` per call, with `strict`; results come back in input order
+- Scientific `names` with `strict`; the first 50 are processed in input order. With read-limit clamping enabled (default), extra names are returned in `unprocessedNames`, preserving order and duplicates for the next call
 - Each result carries `name` and `matchType`, and on a match `taxonKey`, `matchedTaxonKey` (synonyms), and `confidence`; an unmatched name is `NONE`, a failed lookup is `ERROR` with `error` and, when classified, `reason`, and neither fails the batch
 
 ---
@@ -192,6 +192,8 @@ Agent-friendly output:
 - Graceful partial failure: `gbif_bulk_match_species` returns a `NONE` or `ERROR` row per name instead of failing the batch
 - Typed errors: `invalid_filter`, `not_found`, `no_match`, `unresolved_taxon_scope`, `conflicting_taxon_scope`, and `pagination_cap_exceeded`, each with a recovery hint
 - Sparse fields omitted rather than null-filled: `extinct` appears only on taxa GBIF explicitly flags
+- Dataset metadata preserves temporal ranges, single dates, and verbatim periods such as `1975-current`; unsupported coverage entries are disclosed. An unavailable supplementary record count carries `recordCountNotice` while retaining metadata
+- Publisher descriptions retain paragraph breaks and decode numeric character references once; Markdown output renders publisher text literally
 
 ## Getting started
 
@@ -306,6 +308,7 @@ cp .env.example .env
 | Variable | Description | Default |
 |:---|:---|:---|
 | `GBIF_BASE_URL` | GBIF API base URL. | `https://api.gbif.org/v1` |
+| `GBIF_CLAMP_READ_LIMITS` | Clamp oversized read limits to the documented caps and disclose requested/applied values. Bulk matching processes the first 50 names and returns the remainder in `unprocessedNames`. Set `false` to advertise and enforce rejecting maxima instead. Strict boolean parsing rejects malformed values. | `true` |
 | `GBIF_REQUEST_TIMEOUT_MS` | Per-request HTTP timeout, in ms. | `10000` |
 | `GBIF_USER_AGENT` | `User-Agent` sent on every GBIF request. GBIF asks integrators to identify themselves with a contact URL or email. | server name, version, and repository URL |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |

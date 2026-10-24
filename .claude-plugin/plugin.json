@@ -12,12 +12,22 @@
   "repository": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
   "license": "Apache-2.0",
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "gbif", "biodiversity", "species", "taxonomy"],
+  "userConfig": {
+    "gbif_clamp_read_limits": {
+      "type": "boolean",
+      "title": "Clamp read limits",
+      "description": "Clamp oversized read requests to their documented caps and return unprocessed bulk names. Disable to reject oversized requests instead.",
+      "required": false,
+      "default": true
+    }
+  },
   "mcpServers": {
     "gbif-biodiversity-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/gbif-biodiversity-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "GBIF_CLAMP_READ_LIMITS": "${user_config.gbif_clamp_read_limits}"
       }
     }
   }

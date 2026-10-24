@@ -207,14 +207,13 @@ describe('gbifOccurrenceFacets', () => {
    * them partition a scope without loss. That distinction decides whether a caller
    * splitting an over-cap result set covers it or silently drops records, so it has
    * to sit in the schema a client reads from `tools/list`, not only in a doc.
-   * Measured: taxonKey 212 + country GB + PRESENT is 60,290,950 records; DATASET_KEY
-   * sums to 60,290,950 across 550 buckets, YEAR to 59,407,400 across 224.
    */
   it('names DATASET_KEY as the partition dimension in the facet schema', () => {
     const described = gbifOccurrenceFacets.input.shape.facet.description ?? '';
     expect(described).toContain('DATASET_KEY');
-    expect(described).toContain('60,290,950');
-    expect(described).toContain('59,407,400');
+    expect(described).toContain('first cut');
+    expect(described).toContain('no gap or overlap');
+    expect(described).toContain('drops that record');
     expect(described).toMatch(/YEAR/);
     expect(described).toMatch(/occurrenceStatus/);
   });

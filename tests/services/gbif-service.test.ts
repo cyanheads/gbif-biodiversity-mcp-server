@@ -320,7 +320,7 @@ describe('GbifService request deadline', () => {
    * client's retry budget or pacing — one attempt, then the field goes absent.
    */
   it('bounds the dataset occurrence count to a single attempt and degrades to undefined', async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error('connection reset'));
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock);
     const service = new GbifService(appConfig, storage, {
       baseUrl: 'https://api.gbif.org/v1',
@@ -334,6 +334,114 @@ describe('GbifService request deadline', () => {
 
     expect(count).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the supplementary count at three seconds without retrying', async () => {
+    vi.useFakeTimers();
+    const fetch = hangingFetch();
+    vi.stubGlobal('fetch', fetch);
+    const pending = makeService().getDatasetOccurrenceCount(
+      '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+      createMockContext(),
+    );
+    await vi.advanceTimersByTimeAsync(2999);
+    const request = fetch.mock.calls[0];
+    if (!request) throw new Error('Count fetch did not start');
+    expect(request[1].signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toBeUndefined();
+    expect(request[1].signal?.aborted).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['not JSON', '{}', '-1', '1.5', 'null'])(
+    'propagates invalid count payload %s',
+    async (body) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
+      await expect(
+        makeService().getDatasetOccurrenceCount(
+          '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+          createMockContext(),
+        ),
+      ).rejects.toThrow();
+    },
+  );
+
+  it('propagates programmer errors from the count request', async () => {
+    const error = new Error('programmer defect');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(error));
+    await expect(
+      makeService().getDatasetOccurrenceCount(
+        '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+        createMockContext(),
+      ),
+    ).rejects.toBe(error);
+  });
+
+  it.each([400, 401, 403, 404])('propagates rejected count request HTTP %s', async (status) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('Rejected', { status })));
+    await expect(
+      makeService().getDatasetOccurrenceCount(
+        '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+        createMockContext(),
+      ),
+    ).rejects.toBeInstanceOf(McpError);
+  });
+
+  it('discloses an unavailable count on the production tool contract', async () => {
+    const key = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e';
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation((url: string) =>
+          Promise.resolve(
+            url.includes('/dataset/')
+              ? new Response(JSON.stringify({ key, title: 'eBird', type: 'METADATA' }))
+              : new Response('Unavailable', { status: 503 }),
+          ),
+        ),
+    );
+    initGbifService(appConfig, storage, { baseUrl: 'https://api.gbif.org/v1', timeoutMs: 1000 });
+    const result = await runToolContract(gbifGetDataset, { datasetKey: key });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      title: 'eBird',
+      recordCountNotice: expect.stringContaining('retry'),
+    });
+    expect(JSON.stringify(result.content)).toContain(
+      'supplementary indexed occurrence count is unavailable',
+    );
+  });
+
+  it('preserves caller cancellation identity and aborts the count fetch', async () => {
+    const controller = new AbortController();
+    const reason = new Error('caller stopped count');
+    let aborted = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener(
+              'abort',
+              () => {
+                aborted = true;
+                reject(init.signal?.reason);
+              },
+              { once: true },
+            );
+            controller.abort(reason);
+          }),
+      ),
+    );
+    await expect(
+      makeService().getDatasetOccurrenceCount(
+        '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+        createMockContext({ signal: controller.signal }),
+      ),
+    ).rejects.toBe(reason);
+    expect(aborted).toBe(true);
   });
 });
 

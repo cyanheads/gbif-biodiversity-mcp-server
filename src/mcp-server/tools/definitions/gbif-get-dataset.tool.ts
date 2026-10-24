@@ -7,11 +7,13 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawDatasetRecord } from '@/services/gbif/types.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
   compactGeographicCoverages,
-  compactTemporalCoverages,
+  escapeMarkdownText,
   isGbifUuid,
   projectContacts,
+  projectTemporalCoverages,
   resolveDatasetRecordCount,
   stripHtml,
 } from '../utils.js';
@@ -28,11 +30,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     datasetKey: z
       .string()
       .describe('Dataset UUID (8-4-4-4-12 hex) from gbif_search_datasets or an occurrence record.'),
-    contactLimit: z
-      .number()
-      .int()
-      .min(0)
-      .max(100)
+    contactLimit: readLimitSchema(z.number().int().min(0), 100)
       .default(10)
       .describe(
         'Maximum number of contacts to include (default 10, max 100). Set to 0 to omit contact detail while still reporting contactsTotal — useful when citation, license, and record count are all you need from a high-contact dataset like eBird.',
@@ -58,6 +56,12 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .optional()
       .describe(
         'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Spans every occurrenceStatus: absence records — surveys that looked for a taxon and did not find it — are counted alongside sightings, and on some datasets they are the overwhelming majority. gbif_count_occurrences with this datasetKey answers the other question, defaulting to occurrenceStatus PRESENT, so the two figures are expected to differ rather than one being wrong. Fetched separately because the detail endpoint omits it; absent when that lookup does not return in time.',
+      ),
+    recordCountNotice: z
+      .string()
+      .optional()
+      .describe(
+        'Explains an unavailable supplementary count and how to retry. Absent after a successful lookup or a declared count.',
       ),
     numConstituents: z
       .number()
@@ -101,6 +105,18 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .array(
         z
           .object({
+            '@type': z
+              .string()
+              .optional()
+              .describe(
+                'GBIF coverage representation: range, single, or verbatim. May be absent on legacy ranges.',
+              ),
+            date: z
+              .string()
+              .optional()
+              .describe('Single coverage date as supplied by GBIF. May be absent.'),
+            period: z.string().optional().describe('Verbatim coverage period. May be absent.'),
+            type: z.string().optional().describe('Verbatim period type. May be absent.'),
             start: z
               .string()
               .optional()
@@ -110,10 +126,18 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
               .optional()
               .describe('Coverage end as an ISO 8601 date-time. May be absent.'),
           })
-          .describe('A temporal coverage range.'),
+          .describe('A temporal coverage range, single date, or verbatim period.'),
       )
       .optional()
-      .describe('Temporal coverage ranges declared by the dataset. May be absent.'),
+      .describe(
+        'Temporal coverage declared by the dataset, preserving supplied dates and verbatim periods. May be absent.',
+      ),
+    temporalCoverageNotice: z
+      .string()
+      .optional()
+      .describe(
+        'Discloses unsupported or unusable temporal entries omitted from the response. May be absent.',
+      ),
     geographicCoverages: z
       .array(
         z
@@ -156,7 +180,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .string()
       .optional()
       .describe(
-        'How to reach the contacts contactLimit held back. Absent when every contact was returned.',
+        'How to reach contacts held back, or requested/applied values when contactLimit was clamped. Absent when neither applies.',
       ),
   },
 
@@ -178,6 +202,8 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(input.contactLimit, 100, 'gbif_get_dataset', 'contactLimit', ctx);
+    input = { ...input, contactLimit: clamp.applied };
     ctx.log.info('Fetching dataset record', { datasetKey: input.datasetKey });
     if (!isGbifUuid(input.datasetKey)) {
       throw ctx.fail(
@@ -214,8 +240,15 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       ctx.enrich.truncated({
         shown: contactFields.contactsReturned,
         cap: input.contactLimit,
-        guidance: `Showing ${contactFields.contactsReturned} of ${contactFields.contactsTotal} dataset contacts. Raise contactLimit (max 100) to see more, or set it to 0 to drop contact detail entirely while still reading contactsTotal.`,
+        guidance: [
+          clamp.notice,
+          `Showing ${contactFields.contactsReturned} of ${contactFields.contactsTotal} dataset contacts. Raise contactLimit (max 100) to see more, or set it to 0 to drop contact detail entirely while still reading contactsTotal.`,
+        ]
+          .filter(Boolean)
+          .join(' '),
       });
+    } else if (clamp.notice) {
+      ctx.enrich.notice(clamp.notice);
     }
 
     return {
@@ -227,15 +260,37 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       doi: raw.doi,
       citationText: raw.citation?.text,
       publishingCountry: raw.publishingCountry,
-      recordCount: await resolveDatasetRecordCount(raw, ctx),
+      ...(await resolveDatasetRecordCount(raw, ctx)),
       numConstituents: raw.numConstituents,
       ...contactFields,
-      temporalCoverages: compactTemporalCoverages(raw.temporalCoverages),
+      ...projectTemporalCoverages(raw.temporalCoverages),
       geographicCoverages: compactGeographicCoverages(raw.geographicCoverages),
     };
   },
 
-  format: (result) => {
+  format: (rawResult) => {
+    const result = {
+      ...rawResult,
+      title: escapeMarkdownText(rawResult.title ?? 'Dataset'),
+      key: rawResult.key && escapeMarkdownText(rawResult.key),
+      type: rawResult.type && escapeMarkdownText(rawResult.type),
+      license: rawResult.license && escapeMarkdownText(rawResult.license),
+      doi: rawResult.doi && escapeMarkdownText(rawResult.doi),
+      publishingCountry:
+        rawResult.publishingCountry && escapeMarkdownText(rawResult.publishingCountry),
+      citationText: rawResult.citationText && escapeMarkdownText(rawResult.citationText),
+      description: rawResult.description && escapeMarkdownText(rawResult.description, false),
+      geographicCoverages: rawResult.geographicCoverages?.map((entry) => ({
+        description: entry.description && escapeMarkdownText(entry.description),
+      })),
+      contacts: rawResult.contacts?.map((contact) => ({
+        type: contact.type && escapeMarkdownText(contact.type),
+        firstName: contact.firstName && escapeMarkdownText(contact.firstName),
+        lastName: contact.lastName && escapeMarkdownText(contact.lastName),
+        organization: contact.organization && escapeMarkdownText(contact.organization),
+        email: contact.email?.map((email) => escapeMarkdownText(email)),
+      })),
+    };
     const lines: string[] = [];
     lines.push(`## ${result.title ?? 'Dataset'}`);
     if (result.key) lines.push(`**Key:** ${result.key}`);
@@ -255,10 +310,18 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       );
     if (result.numConstituents != null)
       lines.push(`**Constituent datasets:** ${result.numConstituents}`);
+    if (result.recordCountNotice) lines.push(result.recordCountNotice);
     if (result.temporalCoverages?.length) {
-      const ranges = result.temporalCoverages.map((t) => `${t.start ?? '?'} → ${t.end ?? '?'}`);
+      const ranges = result.temporalCoverages.map((t) =>
+        Object.entries(t)
+          .flatMap(([field, value]) =>
+            value === undefined ? [] : [`${field}: ${escapeMarkdownText(value)}`],
+          )
+          .join(', '),
+      );
       lines.push(`**Temporal coverage:** ${ranges.join('; ')}`);
     }
+    if (result.temporalCoverageNotice) lines.push(result.temporalCoverageNotice);
     if (result.geographicCoverages?.length) {
       const descs = result.geographicCoverages.map((g) => g.description).filter(Boolean);
       if (descs.length > 0) lines.push(`**Geographic coverage:** ${descs.join('; ')}`);

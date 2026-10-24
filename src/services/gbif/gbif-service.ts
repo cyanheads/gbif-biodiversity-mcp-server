@@ -3,9 +3,14 @@
  * @module services/gbif/gbif-service
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
-import { McpError, serviceUnavailable, timeout } from '@cyanheads/mcp-ts-core/errors';
+import {
+  JsonRpcErrorCode,
+  McpError,
+  serviceUnavailable,
+  timeout,
+} from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
@@ -112,64 +117,68 @@ export class GbifService {
     opts: { maxRetries?: number; timeoutMs?: number } = {},
   ): Promise<T> {
     const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
-    return withRetry(
-      async () => {
-        const controller = new AbortController();
-        /**
-         * Abort with a `TimeoutError` DOMException rather than a bare `abort()`.
-         * `fetch` rejects with the abort *reason*, so a bare abort surfaces a raw
-         * `AbortError` that names neither GBIF nor the deadline and reaches the
-         * client with no structured data. Holding the instance also keeps our own
-         * deadline distinguishable from a caller cancellation on `ctx.signal`,
-         * which aborts the same controller.
-         */
-        const timeoutReason = new DOMException(
-          `GBIF API request timed out after ${timeoutMs}ms.`,
-          'TimeoutError',
-        );
-        const timeoutId = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
-        // Propagate ctx.signal cancellation; once:true cleans up after each attempt
-        const onAbort = () => controller.abort();
-        ctx.signal.addEventListener('abort', onAbort, { once: true });
-        try {
-          const response = await fetch(url, {
-            headers: { Accept: 'application/json', 'User-Agent': this.userAgent },
-            signal: controller.signal,
-          });
-          if (!response.ok) {
-            throw await gbifHttpError(response);
-          }
-          const text = await response.text();
-          if (HTML_RESPONSE.test(text)) {
-            throw serviceUnavailable(
-              'GBIF API returned HTML — likely rate-limited or unavailable.',
-            );
-          }
-          return JSON.parse(text) as T;
-        } catch (err) {
-          // Identity-match the reason, not the rejection value: an abort reason may
-          // be any type, so an `instanceof Error` gate would drop the timeout into
-          // the unclassified path it is here to escape.
-          if (controller.signal.reason === timeoutReason) {
-            throw timeout(
-              `GBIF API request timed out after ${timeoutMs}ms.`,
-              { timeoutMs },
-              { cause: err },
-            );
-          }
-          throw err;
-        } finally {
-          clearTimeout(timeoutId);
-          ctx.signal.removeEventListener('abort', onAbort);
+    const request = async () => {
+      ctx.signal.throwIfAborted();
+      const controller = new AbortController();
+      /**
+       * Abort with a `TimeoutError` DOMException rather than a bare `abort()`.
+       * `fetch` rejects with the abort *reason*, so a bare abort surfaces a raw
+       * `AbortError` that names neither GBIF nor the deadline and reaches the
+       * client with no structured data. Holding the instance also keeps our own
+       * deadline distinguishable from a caller cancellation on `ctx.signal`,
+       * which aborts the same controller.
+       */
+      const timeoutReason = new DOMException(
+        `GBIF API request timed out after ${timeoutMs}ms.`,
+        'TimeoutError',
+      );
+      const timeoutId = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
+      // Propagate ctx.signal cancellation; once:true cleans up after each attempt
+      const onAbort = () => controller.abort(ctx.signal.reason);
+      ctx.signal.addEventListener('abort', onAbort, { once: true });
+      const rethrowTransportError = (error: unknown): never => {
+        if (opts.maxRetries === 0 && error instanceof TypeError && !controller.signal.aborted) {
+          throw serviceUnavailable('GBIF API count transport failed.', undefined, { cause: error });
         }
-      },
-      {
-        operation: 'GbifService.getJson',
-        baseDelayMs: 1000,
-        signal: ctx.signal,
-        ...(opts.maxRetries !== undefined && { maxRetries: opts.maxRetries }),
-      },
-    );
+        throw error;
+      };
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: 'application/json', 'User-Agent': this.userAgent },
+          signal: controller.signal,
+        }).catch(rethrowTransportError);
+        if (!response.ok) {
+          throw await gbifHttpError(response);
+        }
+        const text = await response.text().catch(rethrowTransportError);
+        if (HTML_RESPONSE.test(text)) {
+          throw serviceUnavailable('GBIF API returned HTML — likely rate-limited or unavailable.');
+        }
+        return JSON.parse(text) as T;
+      } catch (err) {
+        // Identity-match the reason, not the rejection value: an abort reason may
+        // be any type, so an `instanceof Error` gate would drop the timeout into
+        // the unclassified path it is here to escape.
+        if (controller.signal.reason === timeoutReason) {
+          throw timeout(
+            `GBIF API request timed out after ${timeoutMs}ms.`,
+            { timeoutMs },
+            { cause: err },
+          );
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutId);
+        ctx.signal.removeEventListener('abort', onAbort);
+      }
+    };
+    if (opts.maxRetries === 0) return request();
+    return withRetry(request, {
+      operation: 'GbifService.getJson',
+      baseDelayMs: 1000,
+      signal: ctx.signal,
+      ...(opts.maxRetries !== undefined && { maxRetries: opts.maxRetries }),
+    });
   }
 
   // ─── Species/Taxonomy ─────────────────────────────────────────────────────────
@@ -423,17 +432,30 @@ export class GbifService {
    * against a different endpoint.
    *
    * Supplementary to the dataset record already in hand, so it is bounded (no
-   * retries, short deadline) and degrades to `undefined` on any failure instead
-   * of turning a successful dataset lookup into an error.
+   * retries, short deadline). Operational failures leave the count unavailable;
+   * cancellation, invalid responses and programming failures still propagate.
    */
   async getDatasetOccurrenceCount(datasetKey: string, ctx: Context): Promise<number | undefined> {
     const url = this.buildUrl('/occurrence/count', { datasetKey });
     try {
-      return await this.getJson<number>(url, ctx, {
+      const value = await this.getJson<unknown>(url, ctx, {
         maxRetries: 0,
         timeoutMs: RECORD_COUNT_TIMEOUT_MS,
       });
+      return z.number().int().nonnegative().parse(value);
     } catch (err) {
+      ctx.signal.throwIfAborted();
+      if (
+        !(
+          err instanceof McpError &&
+          [
+            JsonRpcErrorCode.ServiceUnavailable,
+            JsonRpcErrorCode.Timeout,
+            JsonRpcErrorCode.RateLimited,
+          ].includes(err.code)
+        )
+      )
+        throw err;
       ctx.log.debug('Dataset occurrence count unavailable', {
         datasetKey,
         error: err instanceof Error ? err.message : String(err),

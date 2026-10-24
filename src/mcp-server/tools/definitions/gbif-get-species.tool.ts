@@ -7,7 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawSpeciesRecord } from '@/services/gbif/types.js';
-import { stripHtml } from '../utils.js';
+import { escapeMarkdownText, stripHtml } from '../utils.js';
 
 export const gbifGetSpecies = tool('gbif_get_species', {
   title: 'Get Species Record',
@@ -140,7 +140,26 @@ export const gbifGetSpecies = tool('gbif_get_species', {
     };
   },
 
-  format: (result) => {
+  format: (rawResult) => {
+    const result = {
+      ...rawResult,
+      canonicalName: rawResult.canonicalName && escapeMarkdownText(rawResult.canonicalName),
+      scientificName: rawResult.scientificName && escapeMarkdownText(rawResult.scientificName),
+      authorship: rawResult.authorship && escapeMarkdownText(rawResult.authorship),
+      vernacularName: rawResult.vernacularName && escapeMarkdownText(rawResult.vernacularName),
+      rank: rawResult.rank && escapeMarkdownText(rawResult.rank),
+      taxonomicStatus: rawResult.taxonomicStatus && escapeMarkdownText(rawResult.taxonomicStatus),
+      accepted: rawResult.accepted && escapeMarkdownText(rawResult.accepted),
+      parent: rawResult.parent && escapeMarkdownText(rawResult.parent),
+      publishedIn: rawResult.publishedIn && escapeMarkdownText(rawResult.publishedIn),
+      kingdom: rawResult.kingdom && escapeMarkdownText(rawResult.kingdom),
+      phylum: rawResult.phylum && escapeMarkdownText(rawResult.phylum),
+      class: rawResult.class && escapeMarkdownText(rawResult.class),
+      order: rawResult.order && escapeMarkdownText(rawResult.order),
+      family: rawResult.family && escapeMarkdownText(rawResult.family),
+      genus: rawResult.genus && escapeMarkdownText(rawResult.genus),
+      species: rawResult.species && escapeMarkdownText(rawResult.species),
+    };
     const lines: string[] = [];
     if (result.canonicalName || result.scientificName) {
       lines.push(`## ${result.canonicalName ?? result.scientificName}`);

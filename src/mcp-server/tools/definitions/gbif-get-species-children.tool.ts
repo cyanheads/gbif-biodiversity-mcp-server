@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 
 /** Pagination guidance when end of records is reached. */
 function buildNotice(args: {
@@ -33,10 +34,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
     taxonKey: z
       .number()
       .describe('GBIF backbone taxon key from gbif_match_species or another taxonomy tool.'),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
+    limit: readLimitSchema(z.number().min(1), 1000)
       .default(20)
       .describe('Number of children to return (default 20, max 1000).'),
     offset: z.number().min(0).default(0).describe('Pagination offset.'),
@@ -83,7 +81,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       .string()
       .optional()
       .describe(
-        'Agent guidance — a no-children note for a valid taxon, or a pagination note when the page was capped. Absent on a complete single page.',
+        'Guidance when a valid taxon has no children, more pages remain, or an oversized limit was clamped. Absent when none applies.',
       ),
   },
 
@@ -105,6 +103,8 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(input.limit, 1000, 'gbif_get_species_children', 'limit', ctx);
+    input = { ...input, limit: clamp.applied };
     ctx.log.info('Fetching species children', { taxonKey: input.taxonKey });
     const raw = await getGbifService().getSpeciesChildren(
       input.taxonKey,
@@ -153,11 +153,17 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       ctx.enrich.truncated({
         shown: children.length,
         cap: limit,
-        guidance: `Showing ${children.length} children at offset ${offset}; more remain. Re-call with offset ${offset + children.length} for the next page, or raise limit (max 1000) to take a bigger page. This tool has no filters to narrow with.`,
+        guidance: [
+          clamp.notice,
+          `Showing ${children.length} children at offset ${offset}; more remain. Re-call with offset ${offset + children.length} for the next page, or raise limit (max 1000) to take a bigger page. This tool has no filters to narrow with.`,
+        ]
+          .filter(Boolean)
+          .join(' '),
       });
     }
     const notice = buildNotice({ childCount: children.length, endOfRecords, offset });
-    if (notice) ctx.enrich.notice(notice);
+    const combinedNotice = [clamp.notice, notice].filter(Boolean).join(' ');
+    if (endOfRecords && combinedNotice) ctx.enrich.notice(combinedNotice);
 
     return { children };
   },

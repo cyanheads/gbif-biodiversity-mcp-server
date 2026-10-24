@@ -6,11 +6,35 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  escapeMarkdownText,
   overPaginationCapNotice,
   PAGINATION_CAP,
   stateProvinceNoMatchNotice,
   stripHtml,
 } from '@/mcp-server/tools/utils.js';
+
+describe('escapeMarkdownText', () => {
+  it('escapes entity openers, literal markup and Markdown syntax only at rendering', () => {
+    expect(escapeMarkdownText('<i>&copy; [x](url) `x` *x*')).toBe(
+      '&#60;i&#62;&#38;copy; &#91;x&#93;&#40;url&#41; &#96;x&#96; &#42;x&#42;',
+    );
+  });
+  it('keeps multiline inline slots inside their surrounding Markdown block', () => {
+    expect(escapeMarkdownText('first\n\n# second')).toBe('first&#10;&#10;&#35; second');
+    expect(escapeMarkdownText('first\n\n# second', false)).toBe('first\n\n&#35; second');
+  });
+  it('preserves carriage returns instead of letting CommonMark normalize them', () => {
+    expect(escapeMarkdownText('first\rsecond')).toBe('first&#13;second');
+    expect(escapeMarkdownText('first\r\nsecond')).toBe('first&#13;&#10;second');
+    expect(escapeMarkdownText('first\rsecond', false)).toBe('first&#13;second');
+    expect(escapeMarkdownText('first\r\nsecond', false)).toBe('first&#13;\nsecond');
+  });
+  it('preserves boundary whitespace in inline names without encoding internal spaces', () => {
+    expect(escapeMarkdownText('  Parus major  ')).toBe('&#32; Parus major &#32;');
+    expect(escapeMarkdownText('\tParus major')).toBe('&#9;Parus major');
+    expect(escapeMarkdownText('first\n    second', false)).toBe('first\n&#32;   second');
+  });
+});
 
 /**
  * #33 — a result set past the cap has no continuation path in this server, so the
@@ -167,7 +191,7 @@ describe('stripHtml', () => {
   });
 
   it('removes tags and normalizes whitespace together', () => {
-    expect(stripHtml('<p>  hello  <br/>  world  </p>')).toBe('hello world');
+    expect(stripHtml('<p>  hello  <br/>  world  </p>')).toBe('hello\n\nworld');
   });
 
   it('returns empty string for empty input', () => {
@@ -187,7 +211,7 @@ describe('stripHtml', () => {
   });
 
   it('handles self-closing tags', () => {
-    expect(stripHtml('line1<br/>line2')).toBe('line1 line2');
+    expect(stripHtml('line1<br/>line2')).toBe('line1\n\nline2');
   });
 
   it('handles deeply nested HTML', () => {
@@ -217,9 +241,8 @@ describe('stripHtml', () => {
   });
 
   it('handles HTML with numeric entities for special chars', () => {
-    // Verify numeric entities that are NOT in our map pass through unchanged
     const result = stripHtml('Copyright &#169;');
-    expect(result).toContain('&#169;'); // not in decode map, left as-is
+    expect(result).toBe('Copyright ©');
   });
 
   /**
@@ -245,7 +268,11 @@ describe('stripHtml', () => {
     });
 
     it('leaves a reference outside the supported set verbatim', () => {
-      expect(stripHtml('&#169; &nbsp; &copy; &#x3c;')).toBe('&#169; &nbsp; &copy; &#x3c;');
+      expect(stripHtml('&#169; &nbsp; &copy; &#x3c;')).toBe('© &copy; <');
+    });
+    it('decodes numeric code points once and leaves invalid scalars verbatim', () => {
+      expect(stripHtml('&#64; &#x1f426; &amp;#64;')).toBe('@ 🐦 &#64;');
+      expect(stripHtml('&#0; &#xD800; &#1114112;')).toBe('&#0; &#xD800; &#1114112;');
     });
   });
 });

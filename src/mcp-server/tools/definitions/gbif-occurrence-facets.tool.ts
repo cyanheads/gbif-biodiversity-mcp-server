@@ -11,6 +11,7 @@ import {
   IUCN_RED_LIST_CATEGORY_VALUES,
   OCCURRENCE_STATUS_VALUES,
 } from '@/services/gbif/types.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
   firstBlankFilter,
   isGbifUuid,
@@ -101,7 +102,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     facet: z
       .enum(FACET_VALUES)
       .describe(
-        "Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY). DATASET_KEY is the dimension to split on when a result set is too large to page: every occurrence carries exactly one datasetKey, so its buckets sum to totalOccurrences with no gap and no overlap, and it has the cardinality to cut a large scope into pageable pieces. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free too and both have a matching filter on the occurrence tools, so either can drive a further split of a bucket still too large — but on that same scope they return 9 and 41 buckets against DATASET_KEY's 550, so neither replaces it as the first cut. A dimension a record can lack silently drops that record: faceting one 60,290,950-record scope by YEAR returned 224 buckets summing to 59,407,400, leaving 883,550 undated records in no bucket at all, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way — stateProvince included, even though the occurrence tools can now filter on it. Sums are comparable only across the same occurrenceStatus scope.",
+        'Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY). DATASET_KEY is the first cut when a result set is too large to page: every occurrence carries exactly one datasetKey, so its buckets cover totalOccurrences with no gap or overlap. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still too large; both have a matching filter on the occurrence tools. A dimension a record can lack drops that record from every bucket: YEAR loses undated records; MONTH, STATE_PROVINCE, and SPECIES_KEY lose records lacking that dimension, even where the occurrence tools can filter on it. Sums are comparable only across the same occurrenceStatus scope.',
       ),
     taxonKey: z
       .number()
@@ -169,10 +170,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .describe(
         'Scope to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Leave unset and facet on IUCN_RED_LIST_CATEGORY to see the whole distribution instead.',
       ),
-    facetLimit: z
-      .number()
-      .min(1)
-      .max(100)
+    facetLimit: readLimitSchema(z.number().min(1), 100)
       .default(10)
       .describe('Maximum number of facet values to return (default 10, max 100).'),
     facetOffset: z
@@ -230,7 +228,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned, a lookahead bucket proves more remain, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
+        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
 
@@ -247,16 +245,21 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(
+      input.facetLimit,
+      100,
+      'gbif_occurrence_facets',
+      'facetLimit',
+      ctx,
+    );
+    input = { ...input, facetLimit: clamp.applied };
     ctx.log.info('Fetching occurrence facets', { facet: input.facet, taxonKey: input.taxonKey });
     /**
      * Every string scope filter this tool forwards, checked on presence rather than
      * on a non-blank value. `/occurrence/search` ignores a parameter it is given with
      * no value and answers the unfiltered aggregation, so the `?.trim()` spread these
      * fields used to sit behind partitioned a wider scope than the caller asked
-     * about: `stateProvince: ""` aggregates all 60,290,950 records of a
-     * `taxonKey=212` + `country=GB` scope where `England` aggregates 47,672,439, and
-     * a whitespace-only value does the same. Buckets hide the substitution better
-     * than a record list does — nothing in them says which scope they cover.
+     * about. Reject a blank value rather than silently dropping its constraint.
      */
     const blankFilter = firstBlankFilter({
       scientificName: input.scientificName,
@@ -338,6 +341,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     // Compose notices once: truncated guidance and notice share a last-wins key.
     const hasMore = buckets.length > input.facetLimit;
     const notice = [
+      clamp.notice,
       counts.length === 0
         ? input.facetOffset > 0
           ? `No facet values returned at facetOffset ${input.facetOffset}. Reset facetOffset to 0 or reduce it to revisit earlier pages.`

@@ -470,7 +470,7 @@ describe('gbifSearchDatasets', () => {
       datasets: [{ key: 'b', title: 'B', description: 'Short.', descriptionTruncated: false }],
     });
     const fullText = full[0].type === 'text' ? full[0].text : '';
-    expect(fullText).toContain('Short.');
+    expect(fullText).toContain('Short&#46;');
     expect(fullText).not.toContain('description truncated');
   });
 });

@@ -75,6 +75,7 @@ One service handles all API communication. The GBIF REST API is a single base UR
 |:--------|:---------|:------------|
 | `GBIF_BASE_URL` | No | Override the GBIF API base URL. Defaults to `https://api.gbif.org/v1`. |
 | `GBIF_REQUEST_TIMEOUT_MS` | No | HTTP request timeout in milliseconds. Defaults to `10000`. |
+| `GBIF_CLAMP_READ_LIMITS` | No | Defaults to `true`: oversized read limits clamp to the existing workload caps, with requested/applied notices, logs, and a counter. Bulk matching processes the first 50 names and returns the ordered remainder in `unprocessedNames`. `false` restores advertised and enforced rejecting maxima. Parsed with `z.stringbool()`; malformed values fail startup. |
 
 ---
 
@@ -153,7 +154,7 @@ z.object({
 - `no_match` — `matchType === 'NONE'`, no candidate met threshold. Recovery: try a broader name or remove the `strict` flag.
 - `invalid_filter` — `kingdom` supplied blank or whitespace-only. `/species/match` drops one and matches against the whole backbone, so the answer comes back looking disambiguated when it is not; see decision 16. Nothing upstream raises this reason — `/species/match` answers HTTP 200 for every input this schema can produce.
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 
@@ -174,7 +175,7 @@ Fetch a single backbone taxon by key. Companion to `gbif_match_species` — call
 
 **Errors:** `not_found` when the taxonKey doesn't exist in the backbone.
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 
@@ -204,7 +205,7 @@ The GBIF API exposes `/species/{taxonKey}/parents` which returns the full ancest
 
 **Output:** `classification: Array<{ rank, name, key }>` ordered root → leaf
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 
@@ -267,7 +268,7 @@ z.object({
     .describe('Filter to records flagged as likely duplicates (true) or exclude them (false). Omit to include all.'),
   datasetKey: z.string().optional()
     .describe('Restrict results to a single dataset by its GBIF dataset UUID.'),
-  limit: z.number().min(1).max(300).default(20)
+  limit: readLimitSchema(z.number().min(1), 300).default(20)
     .describe('Number of records to return (default 20, max 300).'),
   offset: z.number().min(0).default(0)
     .describe('Pagination offset. GBIF serves offset+limit up to 100,001 and rejects anything past it, with no cursor or scroll to continue from — to reach a larger result set, split it into per-datasetKey searches using a DATASET_KEY facet from gbif_occurrence_facets.'),
@@ -303,7 +304,7 @@ Returns a single integer count, read from `/occurrence/search` at `limit=0` — 
 
 **Output:** `count: number`, plus enrichment carrying `scope`, the applied `occurrenceStatus` and a `notice` when it narrowed the count, when the count is past what paging can reach, or when a verbatim `stateProvince` filter matched nothing.
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 
@@ -317,7 +318,7 @@ Fetches a full occurrence record by its GBIF key. Returns the complete Darwin Co
 
 **Errors:** `not_found` when the key doesn't exist.
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 
@@ -355,7 +356,7 @@ z.object({
   occurrenceStatus: z.enum(['PRESENT','ABSENT','ANY']).default('PRESENT').describe('Presence/absence scope. ANY omits the filter upstream.'),
   iucnRedListCategory: z.enum(['CR','EN','VU','NT','LC','DD','EX','EW','CD']).optional().describe('Scope to one IUCN Red List category.'),
   facet: z.enum(['BASIS_OF_RECORD','COUNTRY','STATE_PROVINCE','YEAR','DATASET_KEY','KINGDOM_KEY','PHYLUM_KEY','CLASS_KEY','ORDER_KEY','FAMILY_KEY','GENUS_KEY','SPECIES_KEY','PUBLISHING_COUNTRY','MONTH','OCCURRENCE_STATUS','IUCN_RED_LIST_CATEGORY']).describe('Dimension to aggregate by.'),
-  facetLimit: z.number().min(1).max(100).default(10).describe('Maximum number of facet values to return (default 10, max 100).'),
+  facetLimit: readLimitSchema(z.number().min(1), 100).default(10).describe('Maximum number of facet values to return (default 10, max 100).'),
 })
 ```
 
@@ -372,7 +373,7 @@ z.object({
 })
 ```
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 
@@ -392,13 +393,19 @@ Searches GBIF datasets. Useful for locating the specific dataset behind a set of
 
 Full dataset metadata including title, description, citation text, contacts, license, DOI, `numConstituents`, and temporal coverage. Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail.
 
-**Input:** `datasetKey: z.string().uuid()`, `contactLimit` (default 10, max 100; `0` suppresses contact detail while still reporting the count)
+**Input:** `datasetKey: z.string()` (the handler validates the 8-4-4-4-12 hex UUID), `contactLimit` (default 10, applied cap 100; `0` suppresses contact detail while still reporting the count)
 
 **Output:** Full dataset record. `citation.text` is the citable reference. Contacts are capped at `contactLimit`, with `contactsTotal`/`contactsReturned` reporting the full count. `recordCount` is fetched separately — the detail endpoint omits it — and spans every `occurrenceStatus`, matching `gbif_search_datasets` rather than `gbif_count_occurrences`; see decision 12.
 
+The supplementary count uses one request with a three-second deadline for every dataset type. Operational failures preserve metadata with `recordCountNotice`; cancellation and invalid input or responses propagate. Declared counts, including zero, suppress the lookup.
+
+Temporal coverage preserves optional `start`/`end` bounds, single `date`, and verbatim `period`/`type`, plus GBIF's `@type` discriminator. Unsupported or unusable entries produce `temporalCoverageNotice` rather than implying completeness. These additive fields preserve legacy ranges without inferring dates. The dataset resource uses the same projection.
+
+Publisher HTML extraction decodes numeric and supported named character references once and preserves paragraph breaks. Structured text remains plain text; dataset and species formatters escape publisher text at the CommonMark boundary so literal references and markup retain their meaning.
+
 **Errors:** `not_found` when the UUID doesn't match any dataset.
 
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
 ---
 

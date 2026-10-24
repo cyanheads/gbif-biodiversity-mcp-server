@@ -11,6 +11,7 @@ import {
   IUCN_RED_LIST_CATEGORY_VALUES,
   OCCURRENCE_STATUS_VALUES,
 } from '@/services/gbif/types.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
   firstBlankFilter,
   isGbifUuid,
@@ -50,9 +51,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     'indexes absence records (surveys that looked and found nothing), and occurrenceStatus controls ' +
     'whether they are included. Pagination is capped at offset+limit=100,001 and GBIF offers no ' +
     'cursor or scroll, so a larger result set is covered only by partitioning it — facet it by ' +
-    'DATASET_KEY with gbif_occurrence_facets and search each datasetKey separately. This server ' +
-    'cannot download a result set in bulk; that needs the GBIF Download API with a GBIF.org ' +
-    'account, or the GBIF snapshot on AWS Open Data.',
+    'DATASET_KEY with gbif_occurrence_facets and search each datasetKey separately. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still over the cap; YEAR, MONTH, STATE_PROVINCE, and SPECIES_KEY lose records lacking that dimension. Repeat every biological filter on the facet call and each partition search, including the same occurrenceStatus, and compare sub-split sums against the bucket total. Bulk retrieval is outside this server: use the asynchronous GBIF Download API with a GBIF.org account or the monthly GBIF Parquet snapshot on AWS Open Data.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
@@ -85,7 +84,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       )
       .optional()
       .describe(
-        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. The two differ constantly: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
+        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — distinct from where the occurrence was observed, which is country. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
       ),
     stateProvince: z
       .string()
@@ -167,10 +166,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .describe(
         'Restrict to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Records with no category are excluded when this is set.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(300)
+    limit: readLimitSchema(z.number().min(1), 300)
       .default(20)
       .describe('Number of records to return (default 20, max 300).'),
     offset: z
@@ -290,7 +286,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, paging overshot, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
+        'Guidance when results are empty, paging overshot, a read limit was clamped, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
       ),
   },
 
@@ -314,6 +310,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(input.limit, 300, 'gbif_search_occurrences', 'limit', ctx);
+    input = { ...input, limit: clamp.applied };
     ctx.log.info('Searching occurrences', {
       taxonKey: input.taxonKey,
       country: input.country,
@@ -333,10 +331,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
      * non-blank value. `/occurrence/search` ignores a parameter it is given with no
      * value and answers the unfiltered scope, so the `?.trim()` spread these fields
      * used to sit behind turned a narrowed query into a wide one and reported it as
-     * the caller's own: `stateProvince: ""` returns all 60,290,950 records of a
-     * `taxonKey=212` + `country=GB` scope where `England` returns 47,672,439, and a
-     * whitespace-only value does the same. Rejecting costs one retry; the answer it
-     * replaces is wrong and looks right.
+     * the caller's own. Reject a blank value rather than silently dropping its constraint.
      */
     const blankFilter = firstBlankFilter({
       scientificName: input.scientificName,
@@ -443,6 +438,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       scope: occurrenceScope(input),
     });
     const notice = [
+      clamp.notice,
       buildNotice({ totalCount, occurrenceCount: occurrences.length, offset }),
       stateProvinceNoMatchNotice(input.stateProvince, totalCount),
       overPaginationCapNotice(totalCount),

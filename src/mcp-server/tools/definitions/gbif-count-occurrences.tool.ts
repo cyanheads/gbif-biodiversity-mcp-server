@@ -113,7 +113,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       )
       .optional()
       .describe(
-        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. The two differ constantly: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
+        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — distinct from where the occurrence was observed, which is country. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
       ),
     stateProvince: z
       .string()
@@ -194,11 +194,8 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
      * String filters are checked on presence rather than on a
      * non-blank value. `/occurrence/search` ignores a parameter it is given with no
      * value and answers the unfiltered total, so the `?.trim()` spread these fields
-     * used to sit behind widened the count and reported it as the caller's own:
-     * `stateProvince: ""` counts all 60,290,950 records of a `taxonKey=212` +
-     * `country=GB` scope where `England` counts 47,672,439, and a whitespace-only
-     * value does the same. A count is the whole output here, so nothing else in the
-     * response contradicts the wrong figure.
+     * used to sit behind widened the count and reported it as the caller's own.
+     * Reject a blank value rather than silently dropping its constraint.
      */
     const blankFilter = firstBlankFilter({
       scientificName: input.scientificName,

@@ -520,24 +520,40 @@ describe('Oversized input handling', () => {
     expect(result.taxa).toBeDefined();
   });
 
-  it('gbif_occurrence_facets rejects facetLimit > 100', () => {
-    expect(() => gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', facetLimit: 101 })).toThrow();
+  it('gbif_occurrence_facets admits an oversized limit for bounded handler processing', () => {
+    expect(gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', facetLimit: 101 }).facetLimit).toBe(
+      101,
+    );
   });
 
   it('gbif_occurrence_facets rejects facetLimit < 1', () => {
     expect(() => gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', facetLimit: 0 })).toThrow();
   });
 
-  it('gbif_search_occurrences rejects limit > 300', () => {
-    expect(() => gbifSearchOccurrences.input.parse({ limit: 301 })).toThrow();
+  it('gbif_search_occurrences caps oversized limits before upstream work', async () => {
+    await gbifSearchOccurrences.handler(
+      gbifSearchOccurrences.input.parse({ limit: 301 }),
+      createMockContext(),
+    );
+    expect(mockSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 300 }),
+      expect.anything(),
+    );
   });
 
   it('gbif_search_occurrences rejects limit < 1', () => {
     expect(() => gbifSearchOccurrences.input.parse({ limit: 0 })).toThrow();
   });
 
-  it('gbif_search_species rejects limit > 1000', () => {
-    expect(() => gbifSearchSpecies.input.parse({ limit: 1001 })).toThrow();
+  it('gbif_search_species caps oversized limits before upstream work', async () => {
+    await gbifSearchSpecies.handler(
+      gbifSearchSpecies.input.parse({ limit: 1001 }),
+      createMockContext(),
+    );
+    expect(mockSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 1000 }),
+      expect.anything(),
+    );
   });
 });
 

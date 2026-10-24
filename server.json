@@ -22,6 +22,13 @@
       "version": "0.7.6",
       "environmentVariables": [
         {
+          "name": "GBIF_CLAMP_READ_LIMITS",
+          "description": "Clamp oversized read requests to their documented caps; false restores rejecting maxima.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -60,6 +67,13 @@
       "runtimeHint": "npx",
       "version": "0.7.6",
       "environmentVariables": [
+        {
+          "name": "GBIF_CLAMP_READ_LIMITS",
+          "description": "Clamp oversized read requests to their documented caps; false restores rejecting maxima.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
         {
           "name": "MCP_TRANSPORT_TYPE",
           "description": "Selects the HTTP transport.",

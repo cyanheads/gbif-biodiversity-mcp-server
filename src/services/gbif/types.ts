@@ -364,10 +364,14 @@ export type RawContact = {
   organization?: string;
 };
 
-/** A temporal coverage range on a dataset (GBIF's `range`-shaped entry). */
+/** GBIF temporal coverage variants; unknown discriminator values remain visible to projection. */
 export type RawTemporalCoverage = {
+  '@type'?: string;
   start?: string;
   end?: string;
+  date?: string;
+  period?: string;
+  type?: string;
 };
 
 /** A geographic coverage entry on a dataset. */

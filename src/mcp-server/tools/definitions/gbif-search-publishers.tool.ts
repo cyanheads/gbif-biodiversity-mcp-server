@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import { firstBlankFilter } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
@@ -60,10 +61,7 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       .describe(
         'ISO 3166-1 country code to filter organizations by country. The alpha-2 form ("GB") is canonical; unlike the country codes on the occurrence tools and gbif_search_datasets, this one also resolves the alpha-3 form ("GBR") and is case-insensitive, because the registry endpoint matches the parsed country rather than the string. A value GBIF cannot parse as a country errors rather than returning an empty list. Omit the field to search every country — an empty string is rejected rather than read as no filter, because the registry answers a blank country with all 3,561 organizations.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
+    limit: readLimitSchema(z.number().min(1), 1000)
       .default(20)
       .describe('Number of organizations to return (default 20, max 1000).'),
     offset: z.number().min(0).default(0).describe('Pagination offset.'),
@@ -98,7 +96,7 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+        'Guidance when results are empty, paging overshot, or an oversized read limit was clamped. Absent when none applies.',
       ),
   },
 
@@ -113,6 +111,8 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(input.limit, 1000, 'gbif_search_publishers', 'limit', ctx);
+    input = { ...input, limit: clamp.applied };
     ctx.log.info('Searching publishers', { q: input.q, country: input.country });
     /**
      * `q` takes the shared blank check; `country` below does not, and the split is
@@ -173,7 +173,8 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
 
     ctx.enrich({ totalCount, offset, limit, endOfRecords });
     const notice = buildNotice({ totalCount, publisherCount: publishers.length, offset });
-    if (notice) ctx.enrich.notice(notice);
+    const combinedNotice = [clamp.notice, notice].filter(Boolean).join(' ');
+    if (combinedNotice) ctx.enrich.notice(combinedNotice);
 
     return { publishers };
   },

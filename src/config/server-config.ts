@@ -4,9 +4,13 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
+import { config, parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
+  clampReadLimits: z
+    .stringbool()
+    .default(true)
+    .describe('Clamp oversized read requests to their workload caps.'),
   baseUrl: z.string().default('https://api.gbif.org/v1').describe('GBIF API base URL.'),
   requestTimeoutMs: z.coerce
     .number()
@@ -30,7 +34,10 @@ type ServerConfig = z.infer<typeof ServerConfigSchema>;
 let _config: ServerConfig | undefined;
 
 export function getServerConfig(): ServerConfig {
+  // Core config loads .env lazily. Read it before constructing env-dependent tool schemas.
+  void config.mcpServerName;
   _config ??= parseEnvConfig(ServerConfigSchema, {
+    clampReadLimits: 'GBIF_CLAMP_READ_LIMITS',
     baseUrl: 'GBIF_BASE_URL',
     requestTimeoutMs: 'GBIF_REQUEST_TIMEOUT_MS',
     userAgent: 'GBIF_USER_AGENT',

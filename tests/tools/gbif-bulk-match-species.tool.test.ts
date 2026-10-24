@@ -233,9 +233,9 @@ describe('gbifBulkMatchSpecies', () => {
     expect(entry.scientificName).not.toBeNull();
   });
 
-  it('enforces the 50-name cap', () => {
+  it('admits additional names for explicit remainder reporting', () => {
     const tooMany = Array.from({ length: 51 }, (_, i) => `Species ${i}`);
-    expect(() => gbifBulkMatchSpecies.input.parse({ names: tooMany })).toThrow();
+    expect(gbifBulkMatchSpecies.input.parse({ names: tooMany }).names).toHaveLength(51);
   });
 
   it('requires at least one name', () => {

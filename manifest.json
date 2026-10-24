@@ -22,7 +22,8 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
-        "GBIF_USER_AGENT": "${user_config.gbif_user_agent}"
+        "GBIF_USER_AGENT": "${user_config.gbif_user_agent}",
+        "GBIF_CLAMP_READ_LIMITS": "${user_config.gbif_clamp_read_limits}"
       }
     }
   },
@@ -34,6 +35,13 @@
   "tools_generated": true,
   "prompts_generated": true,
   "user_config": {
+    "gbif_clamp_read_limits": {
+      "type": "boolean",
+      "title": "Clamp read limits",
+      "description": "Clamp oversized read requests to their documented caps and return unprocessed bulk names. Disable to reject oversized requests instead.",
+      "required": false,
+      "default": true
+    },
     "gbif_user_agent": {
       "type": "string",
       "title": "GBIF User-Agent",

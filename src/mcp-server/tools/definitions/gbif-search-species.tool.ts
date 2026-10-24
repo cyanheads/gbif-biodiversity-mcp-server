@@ -10,6 +10,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawSpeciesMatch } from '@/services/gbif/types.js';
+import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import { firstBlankFilter, isGbifUuid } from '../utils.js';
 
 /** GBIF Backbone Taxonomy checklist; name scopes resolve keys within this dataset. */
@@ -135,10 +136,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .describe(
         'Scope to a specific checklist dataset UUID (8-4-4-4-12 hex). Omit the field to search the GBIF backbone — an empty string is rejected rather than read as no scope, because GBIF answers a blank datasetKey with the unfiltered backbone result.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
+    limit: readLimitSchema(z.number().min(1), 1000)
       .default(20)
       .describe('Number of records to return (default 20, max 1000).'),
     offset: z.number().min(0).default(0).describe('Pagination offset.'),
@@ -200,7 +198,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+        'Guidance when results are empty, paging overshot, or an oversized read limit was clamped. Absent when none applies.',
       ),
   },
 
@@ -229,6 +227,8 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
   ],
 
   async handler(input, ctx) {
+    const clamp = clampReadLimit(input.limit, 1000, 'gbif_search_species', 'limit', ctx);
+    input = { ...input, limit: clamp.applied };
     ctx.log.info('Searching species taxonomy', { q: input.q, rank: input.rank });
     /**
      * Every filter is checked on presence rather than on a non-blank value.
@@ -413,7 +413,8 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       scopedBy: scope?.field,
       datasetKey: input.datasetKey,
     });
-    if (notice) ctx.enrich.notice(notice);
+    const combinedNotice = [clamp.notice, notice].filter(Boolean).join(' ');
+    if (combinedNotice) ctx.enrich.notice(combinedNotice);
 
     return { taxa };
   },
