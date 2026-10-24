@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.7](changelog/0.7.x/0.7.7.md) — 2026-10-24
+
+Preserve dataset metadata and publisher text, with bounded processing for oversized read requests.
+
 ## [0.7.6](changelog/0.7.x/0.7.6.md) — 2026-10-22
 
 Preserve taxonomy identity and consistent occurrence populations across search, count and facets.

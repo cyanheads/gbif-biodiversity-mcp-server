@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-10-23 05:06:21
+Generated on: 2026-10-24 11:56:50
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -166,6 +166,7 @@ gbif-biodiversity-mcp-server/
 │   │       │   ├── gbif-search-occurrences.tool.ts
 │   │       │   ├── gbif-search-publishers.tool.ts
 │   │       │   └── gbif-search-species.tool.ts
+│   │       ├── read-limits.ts
 │   │       └── utils.ts
 │   ├── services/
 │   │   └── gbif/
@@ -183,6 +184,8 @@ gbif-biodiversity-mcp-server/
 │   │   └── gbif-service.test.ts
 │   ├── tools/
 │   │   ├── annotations.test.ts
+│   │   ├── dataset-metadata-contract.test.ts
+│   │   ├── description-guidance.test.ts
 │   │   ├── gbif-bulk-match-species.tool.test.ts
 │   │   ├── gbif-count-occurrences.tool.test.ts
 │   │   ├── gbif-get-dataset.tool.test.ts
@@ -197,6 +200,8 @@ gbif-biodiversity-mcp-server/
 │   │   ├── gbif-search-publishers.tool.test.ts
 │   │   ├── gbif-search-species.tool.test.ts
 │   │   ├── occurrence-workflow.test.ts
+│   │   ├── read-limit-contract.test.ts
+│   │   ├── read-limits.test.ts
 │   │   ├── security.test.ts
 │   │   └── utils.test.ts
 │   └── credential-claims.test.ts
