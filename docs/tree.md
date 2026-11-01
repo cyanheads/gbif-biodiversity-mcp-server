@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-10-24 11:56:50
+Generated on: 2026-11-01 07:15:29
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -31,6 +31,7 @@ gbif-biodiversity-mcp-server/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
+│   ├── 0.8.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -43,6 +44,8 @@ gbif-biodiversity-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -141,6 +144,9 @@ gbif-biodiversity-mcp-server/
 │   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
+├── skills/
+│   └── gbif-biodiversity-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -176,10 +182,14 @@ gbif-biodiversity-mcp-server/
 ├── tests/
 │   ├── config/
 │   │   └── server-config.test.ts
+│   ├── helpers/
+│   │   └── worker-request.ts
 │   ├── prompts/
 │   ├── resources/
 │   │   ├── gbif-dataset.resource.test.ts
 │   │   └── gbif-species.resource.test.ts
+│   ├── scripts/
+│   │   └── clean-mcpb.test.ts
 │   ├── services/
 │   │   └── gbif-service.test.ts
 │   ├── tools/
@@ -221,7 +231,9 @@ gbif-biodiversity-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

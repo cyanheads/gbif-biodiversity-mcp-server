@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-11-01
+
+Published agent skill gbif-biodiversity-guide, new occurrence filters (gadmGid, catalogNumber, institutionCode, recordedBy, mediaType), labeled facet buckets, and integer-typed numeric inputs.
+
 ## [0.7.7](changelog/0.7.x/0.7.7.md) — 2026-10-24
 
 Preserve dataset metadata and publisher text, with bounded processing for oversized read requests.
