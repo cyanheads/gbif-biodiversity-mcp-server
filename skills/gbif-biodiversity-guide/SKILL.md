@@ -21,7 +21,7 @@ It does not:
 
 | Identifier | Where it comes from | Where it goes |
 |:--|:--|:--|
-| Backbone `taxonKey` | `taxonKey` from `gbif_match_species` or `gbif_bulk_match_species`; `key` from `gbif_get_species`, `gbif_get_species_children`, and `gbif_get_species_classification`; `nubKey` (not `key`) on `gbif_search_species` rows; `taxonKey` on occurrence rows; a `*_KEY` facet bucket's `name` | Occurrence tools, species tools |
+| Backbone `taxonKey` | `taxonKey` from `gbif_match_species` or `gbif_bulk_match_species`; `key` from `gbif_get_species`, `gbif_get_species_children`, and `gbif_get_species_classification`; `nubKey` (not `key`) on `gbif_search_species` rows; `taxonKey` on occurrence rows; a `KINGDOM_KEY` … `SPECIES_KEY` bucket's `name` | Occurrence tools, species tools |
 | `datasetKey` | `gbif_search_datasets`, an occurrence row, a `DATASET_KEY` bucket | Occurrence tools, `gbif_get_dataset` |
 | Organization key | `gbif_search_publishers`; `publishingOrganizationKey` on the dataset tools | `gbif_search_datasets` as `publishingOrg` |
 | Occurrence key | `gbif_search_occurrences` | `gbif_get_occurrence` |
