@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetDataset } from '@/mcp-server/tools/definitions/gbif-get-dataset.tool.js';
 import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
 import { GbifService, initGbifService } from '@/services/gbif/gbif-service.js';
+import type { OccurrenceFilters } from '@/services/gbif/types.js';
 
 const REPOSITORY_URL = 'https://github.com/cyanheads/gbif-biodiversity-mcp-server';
 
@@ -233,7 +234,7 @@ describe('GbifService upstream error payload', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+            hint: 'Backbone taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
           },
         },
       },
@@ -530,6 +531,93 @@ describe('GbifService.countOccurrences endpoint', () => {
   });
 });
 
+/**
+ * All three occurrence methods hit `/occurrence/search`, and the endpoint answers a
+ * parameter it does not receive with the wider scope rather than an error. A filter
+ * one method forwards and another drops therefore answers a different question on
+ * inputs the caller believes identical — so every key is pinned at the wire, on
+ * each method, under its own name and byte-for-byte as supplied (padding, `0`, and
+ * `false` included).
+ */
+describe('GbifService occurrence filter table', () => {
+  let requests: URL[];
+
+  beforeEach(() => {
+    requests = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (address: string) => {
+        const url = new URL(address);
+        requests.push(url);
+        if (url.hostname !== 'api.gbif.org' || url.pathname !== '/v1/occurrence/search')
+          throw new TypeError(`Unexpected request to ${url.hostname}${url.pathname}`);
+        return new Response(JSON.stringify({ count: 0, results: [], facets: [] }));
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const filters = {
+    taxonKey: 0,
+    scientificName: ' Panthera leo ',
+    country: 'ZA',
+    publishingCountry: 'US',
+    stateProvince: ' Limpopo ',
+    decimalLatitude: '-35,-20',
+    decimalLongitude: '15,35',
+    geometry: 'POLYGON((15 -35,35 -35,35 -20,15 -20,15 -35))',
+    year: '2020,2024',
+    month: 12,
+    basisOfRecord: 'FOSSIL_SPECIMEN',
+    hasCoordinate: false,
+    isInCluster: false,
+    coordinateUncertaintyInMeters: '0,1000',
+    datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+    occurrenceStatus: 'ABSENT',
+    iucnRedListCategory: 'VU',
+    gadmGid: 'ZAF.5_1',
+    catalogNumber: 'l.1592880',
+    institutionCode: 'clo',
+    recordedBy: 'Darwin, C.',
+    mediaType: 'Sound',
+  } as const satisfies OccurrenceFilters;
+
+  const wire = Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, `${value}`]));
+
+  it.each([
+    {
+      name: 'searchOccurrences',
+      run: (service: GbifService) =>
+        service.searchOccurrences({ ...filters, limit: 3, offset: 2 }, createMockContext()),
+      controls: { limit: '3', offset: '2' },
+    },
+    {
+      name: 'countOccurrences',
+      run: (service: GbifService) => service.countOccurrences(filters, createMockContext()),
+      controls: { limit: '0' },
+    },
+    {
+      name: 'getOccurrenceFacets',
+      run: (service: GbifService) =>
+        service.getOccurrenceFacets(
+          { ...filters, facet: 'COUNTRY', facetLimit: 3, facetOffset: 1 },
+          createMockContext(),
+        ),
+      controls: { limit: '0', facet: 'COUNTRY', facetLimit: '3', facetOffset: '1' },
+    },
+  ])('$name forwards every filter and nothing else', async ({ run, controls }) => {
+    await run(
+      new GbifService(appConfig, storage, { baseUrl: 'https://api.gbif.org/v1', timeoutMs: 1_000 }),
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(Object.fromEntries(requests[0]!.searchParams)).toEqual({ ...wire, ...controls });
+  });
+});
+
 /** #36/#37 — the same two filters have to reach the search and facet endpoints. */
 describe('GbifService occurrence filter pass-through', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -687,5 +775,343 @@ describe('GbifService occurrence filter pass-through', () => {
 
     const params = sentParams();
     expect(params.has('higherTaxonKey')).toBe(false);
+  });
+});
+
+/**
+ * #76 — naming facet bucket keys costs one lookup per bucket, since GBIF has no
+ * multi-key read for species or datasets. The bounds live at this seam: one attempt
+ * per key, a concurrency ceiling shared by every call on the service, and one
+ * deadline over the whole set. The routed fakes answer by pathname and give any
+ * path they do not know a 400.
+ */
+describe('GbifService.getFacetLabels (#76)', () => {
+  const DATASET = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e';
+  const DEADLINE_MS = 10_000;
+  const json = (body: unknown) => new Response(JSON.stringify(body));
+  const taxonKeys = (count: number, from = 1000) =>
+    Array.from({ length: count }, (_, i) => String(from + i));
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Per-attempt timeout past the label deadline, so only the deadline ends a hanging lookup. */
+  function labelService(): GbifService {
+    return new GbifService(appConfig, storage, {
+      baseUrl: 'https://api.gbif.org/v1',
+      timeoutMs: 60_000,
+    });
+  }
+
+  /** Answers each known pathname from `routes`; a throwing route rejects, as fetch does. */
+  function routed(routes: Map<string, () => Response>) {
+    return vi.fn((address: string, _init?: RequestInit) => {
+      const url = new URL(address);
+      return Promise.resolve().then(() =>
+        url.hostname === 'api.gbif.org' && routes.has(url.pathname)
+          ? routes.get(url.pathname)!()
+          : new Response('Unexpected request', { status: 400 }),
+      );
+    });
+  }
+
+  /** A lookup that settles only when its signal aborts, rejecting with `rejectWith`. */
+  function hanging(rejectWith: (signal: AbortSignal) => unknown) {
+    return vi.fn(
+      (_address: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          signal.addEventListener('abort', () => reject(rejectWith(signal)), { once: true });
+        }),
+    );
+  }
+
+  /** What some runtimes reject an aborted fetch with in place of the signal's reason. */
+  const bareAbort = () => new DOMException('This operation was aborted', 'AbortError');
+
+  it("reads a taxon key's canonicalName and a dataset key's title, one bare request per key", async () => {
+    const fetch = routed(
+      new Map([
+        [
+          '/v1/species/2495455',
+          () =>
+            json({
+              key: 2495455,
+              canonicalName: 'Columba palumbus',
+              scientificName: 'Columba palumbus Linnaeus, 1758',
+            }),
+        ],
+        ['/v1/species/0', () => json({ key: 0, canonicalName: 'incertae sedis' })],
+        [
+          `/v1/dataset/${DATASET}`,
+          () => json({ key: DATASET, title: 'EOD – eBird Observation Dataset' }),
+        ],
+      ]),
+    );
+    vi.stubGlobal('fetch', fetch);
+    const service = labelService();
+
+    const taxa = await service.getFacetLabels(
+      { kind: 'taxon', keys: ['2495455', '0'], deadlineMs: DEADLINE_MS },
+      createMockContext(),
+    );
+    const datasets = await service.getFacetLabels(
+      { kind: 'dataset', keys: [DATASET], deadlineMs: DEADLINE_MS },
+      createMockContext(),
+    );
+
+    expect(taxa).toEqual(
+      new Map([
+        ['2495455', 'Columba palumbus'],
+        ['0', 'incertae sedis'],
+      ]),
+    );
+    expect(datasets).toEqual(new Map([[DATASET, 'EOD – eBird Observation Dataset']]));
+    const sent = fetch.mock.calls.map(([address]) => new URL(address));
+    expect(sent.map((url) => url.pathname)).toEqual([
+      '/v1/species/2495455',
+      '/v1/species/0',
+      `/v1/dataset/${DATASET}`,
+    ]);
+    expect(sent.every((url) => url.search === '')).toBe(true);
+  });
+
+  it.each([
+    { outcome: 'HTTP 404', respond: () => new Response('Entity not found', { status: 404 }) },
+    { outcome: 'HTTP 500', respond: () => new Response('Server error', { status: 500 }) },
+    { outcome: 'HTTP 503', respond: () => new Response('Unavailable', { status: 503 }) },
+    { outcome: 'HTTP 429', respond: () => new Response('Slow down', { status: 429 }) },
+    { outcome: 'an HTML outage page', respond: () => new Response('<!DOCTYPE html><p>Busy</p>') },
+    {
+      outcome: 'a transport failure',
+      respond: (): Response => {
+        throw new TypeError('fetch failed');
+      },
+    },
+    { outcome: 'a record without the name', respond: () => json({ key: 2492462 }) },
+    { outcome: 'an empty name', respond: () => json({ key: 2492462, canonicalName: '' }) },
+    { outcome: 'a null body', respond: () => new Response('null') },
+  ])('leaves a key unlabeled on $outcome, without retrying it', async ({ respond }) => {
+    const fetch = routed(
+      new Map([
+        ['/v1/species/2495455', () => json({ canonicalName: 'Columba palumbus' })],
+        ['/v1/species/2492462', respond],
+      ]),
+    );
+    vi.stubGlobal('fetch', fetch);
+
+    const labels = await labelService().getFacetLabels(
+      { kind: 'taxon', keys: ['2495455', '2492462'], deadlineMs: DEADLINE_MS },
+      createMockContext(),
+    );
+
+    expect(labels).toEqual(new Map([['2495455', 'Columba palumbus']]));
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  /** Not an upstream answer to disclose as a missing label, so the call fails loudly. */
+  it.each([
+    { failure: 'a malformed body', respond: () => new Response('not JSON'), expected: SyntaxError },
+    {
+      failure: 'a programming error',
+      respond: (): Response => {
+        throw new RangeError('programmer defect');
+      },
+      expected: RangeError,
+    },
+  ])('propagates $failure and ends the lookups still in flight', async ({ respond, expected }) => {
+    const straggler = hanging((signal) => signal.reason);
+    const answer = routed(new Map([['/v1/species/2495455', respond]]));
+    vi.stubGlobal('fetch', (address: string, init?: RequestInit) =>
+      new URL(address).pathname === '/v1/species/2492462'
+        ? straggler(address, init)
+        : answer(address, init),
+    );
+
+    await expect(
+      labelService().getFacetLabels(
+        { kind: 'taxon', keys: ['2495455', '2492462'], deadlineMs: DEADLINE_MS },
+        createMockContext(),
+      ),
+    ).rejects.toBeInstanceOf(expected);
+    expect(straggler.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  /**
+   * Event-driven, no timers: each released lookup waits for the fetch that replaces
+   * it, so the in-flight count is read at every point a slot changes hands.
+   */
+  it('keeps at most eight lookups in flight, across concurrent calls on the service', async () => {
+    const held: (() => void)[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    let onStart: (() => void) | undefined;
+    const fetch = vi.fn((address: string) => {
+      expect(new URL(address).pathname).toMatch(/^\/v1\/species\/\d+$/);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      onStart?.();
+      return new Promise<Response>((resolve) => {
+        held.push(() => {
+          inFlight--;
+          resolve(json({ canonicalName: 'Parus major' }));
+        });
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const service = labelService();
+
+    const calls = [1000, 2000].map((from) =>
+      service.getFacetLabels(
+        { kind: 'taxon', keys: taxonKeys(10, from), deadlineMs: DEADLINE_MS },
+        createMockContext(),
+      ),
+    );
+    expect(inFlight).toBe(8);
+    while (fetch.mock.calls.length < 20) {
+      const started = new Promise<void>((resolve) => {
+        onStart = resolve;
+      });
+      held.shift()?.();
+      await started;
+      expect(inFlight).toBeLessThanOrEqual(8);
+    }
+    for (const release of held.splice(0)) release();
+    const [first, second] = await Promise.all(calls);
+
+    expect(peak).toBe(8);
+    expect(fetch).toHaveBeenCalledTimes(20);
+    expect([...(first?.keys() ?? []), ...(second?.keys() ?? [])]).toHaveLength(20);
+  });
+
+  it.each([
+    { rejection: 'the abort reason', rejectWith: (signal: AbortSignal) => signal.reason },
+    { rejection: 'a bare AbortError', rejectWith: bareAbort },
+  ])(
+    'releases every lookup still queued or in flight at the deadline, when fetch rejects with $rejection',
+    async ({ rejectWith }) => {
+      vi.useFakeTimers();
+      const fetch = hanging(rejectWith);
+      vi.stubGlobal('fetch', fetch);
+      let settled = false;
+
+      const pending = labelService()
+        .getFacetLabels(
+          { kind: 'taxon', keys: taxonKeys(10), deadlineMs: DEADLINE_MS },
+          createMockContext(),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+      expect(settled).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(8);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pending).resolves.toEqual(new Map());
+      // The two still queued at the deadline never started.
+      expect(fetch).toHaveBeenCalledTimes(8);
+      for (const [, init] of fetch.mock.calls) expect(init?.signal?.aborted).toBe(true);
+    },
+  );
+
+  /**
+   * Each lookup answers 6 s after it starts, so the first eight land at 6 s and the
+   * next eight would at 12 s. A per-lookup 10 s deadline would let all sixteen
+   * through; one deadline over the set stops the second wave.
+   */
+  it('spends one deadline across the whole set, not one per lookup', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      (_address: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(json({ canonicalName: 'Parus major' })), 6_000);
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(init.signal?.reason);
+            },
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    const keys = taxonKeys(16);
+
+    const pending = labelService().getFacetLabels(
+      { kind: 'taxon', keys, deadlineMs: DEADLINE_MS },
+      createMockContext(),
+    );
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+    const labels = await pending;
+
+    expect([...labels.keys()]).toEqual(keys.slice(0, 8));
+    expect(fetch).toHaveBeenCalledTimes(16);
+  });
+
+  /**
+   * Queued lookups leave the line with the caller's own reason, so the case with all
+   * of them in flight and a bare AbortError is the one where only the lookup's own
+   * cancellation check keeps the reason's identity.
+   */
+  it.each([
+    {
+      shape: 'lookups queued, fetch rejecting with the abort reason',
+      keys: 10,
+      rejectWith: (signal: AbortSignal) => signal.reason,
+    },
+    {
+      shape: 'lookups queued, fetch rejecting with a bare AbortError',
+      keys: 10,
+      rejectWith: bareAbort,
+    },
+    {
+      shape: 'every lookup in flight, fetch rejecting with a bare AbortError',
+      keys: 3,
+      rejectWith: bareAbort,
+    },
+  ])(
+    "rejects with the caller's cancellation and ends every lookup, with $shape",
+    async ({ keys, rejectWith }) => {
+      const controller = new AbortController();
+      const reason = new Error('caller stopped the labels');
+      const fetch = hanging(rejectWith);
+      vi.stubGlobal('fetch', fetch);
+      const started = Math.min(keys, 8);
+
+      const pending = labelService().getFacetLabels(
+        { kind: 'taxon', keys: taxonKeys(keys), deadlineMs: DEADLINE_MS },
+        createMockContext({ signal: controller.signal }),
+      );
+      expect(fetch).toHaveBeenCalledTimes(started);
+      controller.abort(reason);
+
+      await expect(pending).rejects.toBe(reason);
+      expect(fetch).toHaveBeenCalledTimes(started);
+      for (const [, init] of fetch.mock.calls) expect(init?.signal?.aborted).toBe(true);
+    },
+  );
+
+  /** The response is already in hand when the abort lands, so no lookup itself fails. */
+  it('rejects with a cancellation that lands after every lookup has its answer', async () => {
+    const controller = new AbortController();
+    const reason = new Error('caller stopped the labels');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        controller.abort(reason);
+        return Promise.resolve(json({ canonicalName: 'Columba palumbus' }));
+      }),
+    );
+
+    await expect(
+      labelService().getFacetLabels(
+        { kind: 'taxon', keys: ['2495455'], deadlineMs: DEADLINE_MS },
+        createMockContext({ signal: controller.signal }),
+      ),
+    ).rejects.toBe(reason);
   });
 });

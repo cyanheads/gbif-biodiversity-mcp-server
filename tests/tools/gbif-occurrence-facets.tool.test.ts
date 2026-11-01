@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-occurrence-facets.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifOccurrenceFacets } from '@/mcp-server/tools/definitions/gbif-occurrence-facets.tool.js';
 
@@ -237,6 +237,44 @@ describe('gbifOccurrenceFacets', () => {
     expect(gbifOccurrenceFacets.description).toContain('DATASET_KEY');
   });
 
+  /**
+   * #77, #78 — the dimensions the GADM, institution, media, and collector filters take
+   * their values from. Bucket names are live values on the Lynx pardinus scope
+   * (taxonKey 2435261, PRESENT).
+   */
+  it.each([
+    { facet: 'GADM_LEVEL_0_GID', name: 'ESP', count: 1054 },
+    { facet: 'GADM_LEVEL_1_GID', name: 'ESP.1_1', count: 787 },
+    { facet: 'GADM_LEVEL_2_GID', name: 'ESP.1.5_1', count: 362 },
+    { facet: 'GADM_LEVEL_3_GID', name: 'ESP.1.5.5_1', count: 338 },
+    { facet: 'INSTITUTION_CODE', name: 'icnf', count: 685 },
+    { facet: 'MEDIA_TYPE', name: 'StillImage', count: 373 },
+    { facet: 'RECORDED_BY', name: 'P. Sarmento', count: 673 },
+  ])(
+    'aggregates by $facet and returns its buckets on both surfaces',
+    async ({ facet, name, count }) => {
+      mockGetOccurrenceFacets.mockResolvedValue({
+        count: 2263,
+        facets: [{ field: facet, counts: [{ name, count }] }],
+      });
+
+      const result = await runToolContract(gbifOccurrenceFacets, { facet, taxonKey: 2435261 });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+        expect.objectContaining({ facet, taxonKey: 2435261 }),
+        expect.anything(),
+      );
+      expect(result.structuredContent).toMatchObject({ facet, counts: [{ name, count }] });
+      expect(JSON.stringify(result.content)).toContain(name);
+    },
+  );
+
+  /** GADM_GID ranks every level in one list, so a level-0 bucket and its own level-1 buckets double-count. */
+  it('leaves GADM_GID out of the dimensions', () => {
+    expect(gbifOccurrenceFacets.input.safeParse({ facet: 'GADM_GID' }).success).toBe(false);
+  });
+
   // #25: datasetKey scopes the aggregation and is passed to the service
   it('passes datasetKey to the service', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({
@@ -467,7 +505,7 @@ describe('gbifOccurrenceFacets', () => {
     expect(described).not.toMatch(/only BASIS_OF_RECORD/i);
     expect(described).toMatch(/both have a matching filter/i);
     // STATE_PROVINCE is filterable now but still drops records, so it stays disqualified.
-    expect(described).toMatch(/MONTH, STATE_PROVINCE, and SPECIES_KEY lose records/);
+    expect(described).toMatch(/MONTH, STATE_PROVINCE, SPECIES_KEY, [^;]*lose records/);
   });
 
   it('keeps country and publishingCountry apart in both descriptions', () => {
@@ -639,6 +677,46 @@ describe('gbifOccurrenceFacets', () => {
     // 0 counts < facetLimit 3 — an empty page is proof of exhaustion, not truncation.
     expect(enrichment.truncated).toBeUndefined();
     expect(enrichment.notice).toContain('No facet values returned');
+  });
+
+  /** #76 — a label follows its key; a bucket without one renders exactly as before. */
+  it('renders a label after its key, escaped as text, and nothing for an unlabeled bucket', () => {
+    const blocks = gbifOccurrenceFacets.format!({
+      facet: 'SPECIES_KEY',
+      totalOccurrences: 60290950,
+      counts: [
+        { name: '2495455', count: 2130519, label: 'Columba palumbus' },
+        { name: '9999999', count: 10, label: '_Parus_ #1 `major`' },
+        { name: '2492462', count: 1842224 },
+      ],
+    });
+    const text = blocks[0]?.type === 'text' ? blocks[0].text : '';
+
+    expect(text).toContain('- **2495455** — Columba palumbus: 2,130,519 (3.5% of total)');
+    expect(text).toContain('- **9999999** — &#95;Parus&#95; &#35;1 &#96;major&#96;: 10');
+    expect(text).toContain('- **2492462**: 1,842,224 (3.1% of total)');
+  });
+
+  it('keeps includeLabels off unless asked, and says what it names and costs', () => {
+    expect(gbifOccurrenceFacets.input.parse({ facet: 'SPECIES_KEY' }).includeLabels).toBe(false);
+    const described = gbifOccurrenceFacets.input.shape.includeLabels.description ?? '';
+    for (const text of [
+      'KINGDOM_KEY',
+      'PHYLUM_KEY',
+      'CLASS_KEY',
+      'ORDER_KEY',
+      'FAMILY_KEY',
+      'GENUS_KEY',
+      'SPECIES_KEY',
+      'DATASET_KEY',
+      'canonicalName',
+      'title',
+      'facetLimit',
+      '10 s',
+      'notice',
+    ])
+      expect(described).toContain(text);
+    expect(gbifOccurrenceFacets.description).toContain('includeLabels');
   });
 });
 

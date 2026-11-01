@@ -302,7 +302,7 @@ describe('gbifSearchOccurrences', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
           },
         },
       },
@@ -989,5 +989,77 @@ describe('gbifSearchOccurrences taxonomicStatus and eventTime (#44)', () => {
     expect(occ.eventTime).toBeUndefined();
     expect(occ.occurrenceStatus).toBeUndefined();
     expect(occ.iucnRedListCategory).toBeUndefined();
+  });
+});
+
+/**
+ * #78 — a specimen a paper cites is found by its institution code and catalog
+ * number, so each row carries both, on both surfaces, whenever GBIF supplies them.
+ * Fixture values are occurrence 2513888468 (catalog number L.1592880).
+ */
+describe('gbifSearchOccurrences specimen identity on rows (#78)', () => {
+  const mockSearchOccurrences = vi.fn();
+  const page = (record: Record<string, unknown>) => ({
+    results: [record],
+    count: 1,
+    offset: 0,
+    limit: 20,
+    endOfRecords: true,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+  });
+
+  it('carries institutionCode and catalogNumber on both surfaces when present', async () => {
+    mockSearchOccurrences.mockResolvedValue(
+      page(makeOccurrence({ key: 2513888468, institutionCode: 'L', catalogNumber: 'L.1592880' })),
+    );
+
+    const result = await runToolContract(gbifSearchOccurrences, { catalogNumber: 'l.1592880' });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ catalogNumber: 'l.1592880' }),
+      expect.anything(),
+    );
+    expect(result.structuredContent?.occurrences).toEqual([
+      expect.objectContaining({
+        key: 2513888468,
+        institutionCode: 'L',
+        catalogNumber: 'L.1592880',
+      }),
+    ]);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('**Institution:** L');
+    expect(text).toContain('**Catalog number:** L.1592880');
+  });
+
+  it('omits both from both surfaces when the record lacks them', async () => {
+    mockSearchOccurrences.mockResolvedValue(page(makeOccurrence()));
+
+    const result = await runToolContract(gbifSearchOccurrences, {});
+
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result.structuredContent)).not.toMatch(/institutionCode|catalogNumber/);
+    expect(JSON.stringify(result.content)).not.toMatch(/Institution:|Catalog number:/);
+  });
+
+  it('renders upstream codes literally in content while structuredContent keeps them as sent', async () => {
+    mockSearchOccurrences.mockResolvedValue(
+      page(makeOccurrence({ institutionCode: 'MCZ_*', catalogNumber: '[x](y) #1' })),
+    );
+
+    const result = await runToolContract(gbifSearchOccurrences, {});
+
+    expect(result.structuredContent?.occurrences).toEqual([
+      expect.objectContaining({ institutionCode: 'MCZ_*', catalogNumber: '[x](y) #1' }),
+    ]);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('**Institution:** MCZ&#95;&#42;');
+    expect(text).toContain('**Catalog number:** &#91;x&#93;&#40;y&#41; &#35;1');
   });
 });

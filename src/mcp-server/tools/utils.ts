@@ -5,14 +5,24 @@
 
 import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import type {
-  OccurrenceFilters,
-  OccurrenceStatusFilter,
-  RawContact,
-  RawDatasetRecord,
-  RawGeographicCoverage,
-  RawTemporalCoverage,
+import {
+  MEDIA_TYPE_VALUES,
+  OCCURRENCE_FILTER_KEYS,
+  type OccurrenceFilters,
+  type OccurrenceStatusFilter,
+  type RawContact,
+  type RawDatasetRecord,
+  type RawGeographicCoverage,
+  type RawTemporalCoverage,
 } from '@/services/gbif/types.js';
+
+/**
+ * The biological filters as an occurrence tool parses them: GBIF's own filter set,
+ * with `occurrenceStatus` widened to this server's `ANY` sentinel.
+ */
+export type OccurrenceFilterInput = Omit<OccurrenceFilters, 'occurrenceStatus'> & {
+  occurrenceStatus: OccurrenceStatusFilter;
+};
 
 /** Filter echo shared by occurrence search, count and facets on both response surfaces. */
 export const occurrenceScopeSchema = z
@@ -22,33 +32,117 @@ export const occurrenceScopeSchema = z
   );
 
 /** Preserve supplied filter bytes and false/zero values; controls never enter the scope. */
-export function occurrenceScope(
-  input: {
-    [K in keyof Omit<OccurrenceFilters, 'occurrenceStatus'>]?: OccurrenceFilters[K] | undefined;
-  } & { occurrenceStatus: OccurrenceStatusFilter },
-) {
-  const keys = [
-    'taxonKey',
-    'scientificName',
-    'country',
-    'publishingCountry',
-    'stateProvince',
-    'decimalLatitude',
-    'decimalLongitude',
-    'geometry',
-    'year',
-    'month',
-    'basisOfRecord',
-    'hasCoordinate',
-    'isInCluster',
-    'coordinateUncertaintyInMeters',
-    'datasetKey',
-    'occurrenceStatus',
-    'iucnRedListCategory',
-  ] as const satisfies readonly (keyof OccurrenceFilters)[];
+export function occurrenceScope(input: OccurrenceFilterInput) {
   return Object.fromEntries(
-    keys.flatMap((key) => (input[key] === undefined ? [] : [[key, input[key]]])),
+    OCCURRENCE_FILTER_KEYS.flatMap((key) => (input[key] === undefined ? [] : [[key, input[key]]])),
   );
+}
+
+/**
+ * The filter set to send upstream for a tool's parsed filter fields. GBIF has no
+ * term meaning "either", so `ANY` resolves to sending no `occurrenceStatus` at all.
+ * Callers pass their filter fields with the controls (limit, facet, …) already
+ * destructured off; the service forwards only filter keys regardless.
+ */
+export function occurrenceFilters({
+  occurrenceStatus,
+  ...filters
+}: OccurrenceFilterInput): OccurrenceFilters {
+  return { ...filters, ...(occurrenceStatus !== 'ANY' && { occurrenceStatus }) };
+}
+
+/**
+ * The characters a GADM GID is built from — `ESP`, `ESP.1_1`, `ESP.1.6.3_1`, and
+ * irregular real ones like `Z01`, `CHN.HKG`, and `GHA7_2`, which is why only the
+ * alphabet is checked and not a grammar. One anchored character class, so the scan
+ * is linear in the input.
+ */
+const GADM_GID = /^[A-Z0-9._]+$/;
+
+/**
+ * Message for the first unusable filter among the free-text and key-shaped ones
+ * the occurrence tools forward, or `undefined` when all are usable. Search, count,
+ * and facets each throw it as their own `invalid_filter`, so the tool's recovery
+ * hint rides along, and one check serves all three so no tool guards a filter the
+ * others let through.
+ *
+ * Checked on presence, not on a non-blank value: `/occurrence/search` ignores a
+ * parameter given with no value and answers the unfiltered scope, so a blank or
+ * whitespace-only filter is rejected rather than silently widening the query.
+ *
+ * datasetKey is checked whenever present. A malformed key fails here instead of as
+ * a bare upstream 400 that costs a round trip and the retry budget, and the empty
+ * string — which draws no error at all, `?datasetKey=` answering with the whole
+ * unfiltered scope — fails the same way. Letter case stays unchecked: this route
+ * resolves a key either way, unlike `/dataset/search`'s two organization filters.
+ *
+ * gadmGid is checked against the GID alphabet because GBIF matches a GID exactly
+ * and case-sensitively and answers any other form — `esp.1_1`, a place name, a
+ * padded value — with 200 and zero records rather than an error.
+ */
+export function occurrenceFilterViolation(
+  input: Omit<OccurrenceFilters, 'occurrenceStatus'>,
+): string | undefined {
+  const blank = firstBlankFilter({
+    scientificName: input.scientificName,
+    stateProvince: input.stateProvince,
+    decimalLatitude: input.decimalLatitude,
+    decimalLongitude: input.decimalLongitude,
+    geometry: input.geometry,
+    year: input.year,
+    coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
+    gadmGid: input.gadmGid,
+    catalogNumber: input.catalogNumber,
+    institutionCode: input.institutionCode,
+    recordedBy: input.recordedBy,
+  });
+  if (blank)
+    return `${blank} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`;
+  if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey))
+    return `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`;
+  if (input.gadmGid !== undefined && !GADM_GID.test(input.gadmGid))
+    return `gadmGid "${input.gadmGid}" is not a GADM GID: a GID holds only uppercase letters, digits, dots, and underscores (ESP, ESP.1_1, ESP.1.5_1), and GBIF matches any other form against nothing.`;
+  return;
+}
+
+/**
+ * Input fields search, count, and facets declare from one definition, so the
+ * three accept and describe them identically. A fresh set per call keeps each
+ * tool's emitted JSON Schema inline.
+ */
+export function sharedOccurrenceFilterFields() {
+  return {
+    gadmGid: z
+      .string()
+      .optional()
+      .describe(
+        "GADM administrative-area GID at any level: country (ESP), state or province (ESP.1_1), county or district (ESP.1.5_1), or municipality (ESP.1.6.3_1). GBIF derives a record's GIDs from its coordinates, so records without coordinates match none, and the unit can differ from the verbatim stateProvince the record carries. Matched exactly and case-sensitively, and a GID holds only uppercase letters, digits, dots, and underscores — any other character is rejected. Take one from a GADM_LEVEL_0_GID, GADM_LEVEL_1_GID, GADM_LEVEL_2_GID, or GADM_LEVEL_3_GID facet on gbif_occurrence_facets, or from the gadm field of gbif_get_occurrence; a well-formed GID GBIF does not hold matches zero records rather than erroring. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.",
+      ),
+    catalogNumber: z
+      .string()
+      .optional()
+      .describe(
+        'Catalog number a collection assigned to the specimen or record (e.g. "L.1592880"), matched as the whole value, case-insensitively. Not unique across collections — one number can name records in several datasets, so pair it with institutionCode or datasetKey to single one out. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    institutionCode: z
+      .string()
+      .optional()
+      .describe(
+        'Code of the institution holding the record (e.g. "K", "CLO"), matched as the whole value, case-insensitively — part of a code or of a multi-word code matches nothing. An INSTITUTION_CODE facet on gbif_occurrence_facets lists the codes in a scope, lowercased, and this filter takes them unchanged. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    recordedBy: z
+      .string()
+      .optional()
+      .describe(
+        'Collector or observer, matched against each name in the record\'s recordedBy list (GBIF splits it on "|") exactly and case-sensitively: "Charles Darwin" and "charles darwin" differ, and one person written two ways ("Charles Darwin", "Darwin, C.") is two values. Take a value from a RECORDED_BY facet on gbif_occurrence_facets scoped the same way and pass it back unchanged; an unmatched value matches zero records rather than erroring. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    mediaType: z
+      .enum(MEDIA_TYPE_VALUES)
+      .optional()
+      .describe(
+        'Only records carrying at least one media item of this type: StillImage (photographs, scans), MovingImage (video), Sound (audio), or InteractiveResource. Records without media are excluded when this is set.',
+      ),
+  };
 }
 
 /** Canonical 8-4-4-4-12 hex UUID — the form every GBIF dataset and organization key takes. */
@@ -134,7 +228,7 @@ export function overPaginationCapNotice(totalCount: number): string | undefined 
   if (totalCount <= PAGINATION_CAP) return;
   return (
     `${totalCount.toLocaleString('en-US')} records match, past the offset+limit ceiling of ${PAGINATION_CAP.toLocaleString('en-US')} that GBIF's search API serves; it offers no cursor or scroll, so records deeper than that cannot be paged to. ` +
-    'To cover the whole set, partition it: gbif_occurrence_facets with facet DATASET_KEY splits a scope with no gap and no overlap, and each datasetKey is then searchable as its own result set; a bucket still over the ceiling cuts further on basisOfRecord or publishingCountry, the other two dimensions whose buckets leave no record out. ' +
+    'To cover the whole set, partition it: gbif_occurrence_facets with facet DATASET_KEY splits a scope with no gap and no overlap, and each datasetKey is then searchable as its own result set; a bucket still over the ceiling cuts further on basisOfRecord or publishingCountry, which leave no record out either and have a matching filter on the occurrence tools. ' +
     "Repeat this query's filters on the facet call, or its buckets will not add up to this total — all three occurrence tools accept the same biological filters, so repeat them on the facet call and each per-datasetKey search. " +
     'Bucket sums also reconcile only against the occurrenceStatus this query applied. ' +
     "A bulk download is not available here — GBIF's Download API needs a GBIF.org account and returns an archive asynchronously, and GBIF's monthly Parquet snapshot on AWS Open Data is a bulk dataset; both are routes to take outside this server."
@@ -156,16 +250,68 @@ export function overPaginationCapNotice(totalCount: number): string | undefined 
  *
  * Scoped to an empty result on purpose. A value that matched is self-evidently
  * recognized, and repeating the caveat on every non-empty response would be noise.
+ *
+ * It also names `gadmGid`, the normalized alternative: a GADM unit GBIF assigns
+ * from coordinates covers every record placed inside it, whatever each dataset
+ * spelled the region, where the verbatim string matches one spelling at a time.
  */
 export function stateProvinceNoMatchNotice(
   stateProvince: string | undefined,
   matched: number,
 ): string | undefined {
   if (!stateProvince?.trim() || matched > 0) return;
-  return (
-    `Nothing matched, and stateProvince "${stateProvince}" was applied. GBIF matches that value verbatim — exactly and case-sensitively — and answers a value it does not hold with zero records instead of an error, so this result does not distinguish a misspelling from a region that holds nothing. ` +
-    'Confirm the string with a STATE_PROVINCE facet from gbif_occurrence_facets over the same scope, which lists the exact values the records carry, and pass one back unchanged.'
-  );
+  return `Nothing matched, and stateProvince "${stateProvince}" was applied. GBIF matches that value verbatim — exactly and case-sensitively — and answers a value it does not hold with zero records instead of an error, so this result does not distinguish a misspelling from a region that holds nothing. Confirm the string with a STATE_PROVINCE facet from gbif_occurrence_facets over the same scope, which lists the exact values the records carry, and pass one back unchanged. To match a region however datasets spell it, filter on gadmGid instead: a GADM GID GBIF derives from each record's coordinates (records without coordinates carry none), listed for states and provinces by a GADM_LEVEL_1_GID facet.`;
+}
+
+/**
+ * Agent-facing guidance when a query that carried `gadmGid` matched nothing, or
+ * `undefined` otherwise.
+ *
+ * The alphabet check rejects most malformed GIDs before the request, but GBIF also
+ * answers a well-formed GID it does not hold — `ESP.99_1`, or a level written
+ * without its version suffix, `ESP.1` — with 200 and zero records. That zero
+ * cannot be told apart from a real unit with no records in scope, so the notice
+ * names where the GIDs that do match come from.
+ */
+export function gadmGidNoMatchNotice(
+  gadmGid: string | undefined,
+  matched: number,
+): string | undefined {
+  if (!gadmGid?.trim() || matched > 0) return;
+  return `Nothing matched, and gadmGid "${gadmGid}" was applied. GBIF matches a GID exactly and answers one it does not hold with zero records instead of an error, so this result does not distinguish a GID that names no GADM unit from a unit with no records in this scope; GIDs come from each record's coordinates, so records without coordinates never match. Take a GID from a GADM_LEVEL_0_GID, GADM_LEVEL_1_GID, GADM_LEVEL_2_GID, or GADM_LEVEL_3_GID facet from gbif_occurrence_facets over the same scope without gadmGid, or from the gadm field of gbif_get_occurrence, and pass it back unchanged.`;
+}
+
+/**
+ * Agent-facing guidance when a query that carried `recordedBy` matched nothing, or
+ * `undefined` otherwise.
+ *
+ * GBIF splits a record's recordedBy on `|` and matches the filter against each
+ * name exactly and case-sensitively, answering a spelling no record carries with
+ * 200 and zero records: `Charles Darwin` matches 137, `charles darwin` none, and
+ * `Darwin, C.` a different 725. The facet is where the accepted spellings live.
+ */
+export function recordedByNoMatchNotice(
+  recordedBy: string | undefined,
+  matched: number,
+): string | undefined {
+  if (!recordedBy?.trim() || matched > 0) return;
+  return `Nothing matched, and recordedBy "${recordedBy}" was applied. GBIF matches it against each collector in a record's recordedBy list exactly and case-sensitively, and answers a spelling no record carries with zero records instead of an error, so this result does not distinguish a misspelling from a collector with no records in this scope — and one person written two ways ("Charles Darwin", "Darwin, C.") is two separate values. Confirm the spelling with a RECORDED_BY facet from gbif_occurrence_facets over the same scope without recordedBy, which lists the exact values records carry, and pass one back unchanged.`;
+}
+
+/**
+ * Every exact-match no-result notice that applies to an occurrence query — one
+ * call per tool, in a fixed order, so search, count, and facets explain an empty
+ * result identically. Entries that do not apply are `undefined`.
+ */
+export function occurrenceNoMatchNotices(
+  input: Pick<OccurrenceFilters, 'stateProvince' | 'gadmGid' | 'recordedBy'>,
+  matched: number,
+): (string | undefined)[] {
+  return [
+    stateProvinceNoMatchNotice(input.stateProvince, matched),
+    gadmGidNoMatchNotice(input.gadmGid, matched),
+    recordedByNoMatchNotice(input.recordedBy, matched),
+  ];
 }
 
 /**
@@ -183,6 +329,75 @@ export function occurrenceStatusNotice(status: OccurrenceStatusFilter): string |
     ? 'Absence records — occurrenceStatus ABSENT, meaning a survey looked for the taxon and did not find it — are excluded from these figures. Pass occurrenceStatus "ANY" to include them, or "ABSENT" for absences alone.'
     : 'Only absence records are included — occurrenceStatus ABSENT means a survey looked for the taxon and did not find it, so these are not sightings. Pass occurrenceStatus "ANY" for both, or "PRESENT" for sightings alone.';
 }
+
+const CLASSIFICATION_RANKS = [
+  'kingdom',
+  'phylum',
+  'class',
+  'order',
+  'family',
+  'genus',
+  'species',
+] as const;
+type ClassificationRank = (typeof CLASSIFICATION_RANKS)[number];
+
+/** The `/species/match` fields a HIGHERRANK disclosure reads; GBIF sends JSON null for absent ones. */
+type HigherRankMatch = {
+  usageKey?: number | null;
+  rank?: string | null;
+  canonicalName?: string | null;
+} & { [R in ClassificationRank]?: string | null } & {
+  [R in ClassificationRank as `${R}Key`]?: number | null;
+};
+
+/**
+ * Disclosure for a HIGHERRANK match, shared by gbif_match_species and gbif_bulk_match_species.
+ * GBIF answers a name it cannot place at its own rank with a taxon above it —
+ * `Panthera xyzzyqq` comes back as the kingdom Animalia at confidence 92 — and says so
+ * only through matchType, so the key reads like any other match. A bare genus (`Bombus`)
+ * also comes back HIGHERRANK, at its own genus, which is why this discloses rather than
+ * rejects. GBIF can omit rank or canonicalName (JSON null in practice); an omitted one is
+ * named as missing, never filled in.
+ *
+ * The taxon GBIF falls back to can itself be a synonym — `Nyctea xyzzyqq` comes back as
+ * the genus Nyctea, whose accepted genus is Bubo — and then taxonKey is that accepted
+ * taxon, not the one GBIF named. `/species/match` carries no accepted-name field, but its
+ * classification is the accepted taxon's: the rank field whose key equals taxonKey names
+ * it (genus "Bubo" under genusKey 5959091). Identity is proven by that key, never assumed
+ * from the rank — for `Chrysanthemum leucanthemum` the speciesKey 8848598 names
+ * Leucanthemum vulgare while the accepted taxon is 7222149 — so with no matching key the
+ * accepted taxon goes unnamed.
+ */
+export function higherRankNote(name: string, taxonKey: number, match: HigherRankMatch): string {
+  const { rank, canonicalName } = match;
+  const taxon =
+    canonicalName && rank
+      ? `${canonicalName}, rank ${rank}`
+      : canonicalName
+        ? `${canonicalName} (GBIF reported no rank)`
+        : rank
+          ? `a taxon of rank ${rank} (GBIF reported no name)`
+          : 'a higher taxon GBIF did not name';
+  const head = `GBIF returned a higher-rank match for "${name}" (matchType HIGHERRANK): ${taxon}`;
+  const reach = 'so the occurrence tools given it count and return records across all of it.';
+  if (match.usageKey == null || match.usageKey === taxonKey) {
+    const lookup = canonicalName ? '' : ` Call gbif_get_species with ${taxonKey} to see which.`;
+    return `${head}. taxonKey ${taxonKey} covers that whole taxon, ${reach}${lookup}`;
+  }
+  const acceptedRank = CLASSIFICATION_RANKS.find((r) => match[`${r}Key`] === taxonKey);
+  const accepted = acceptedRank ? match[acceptedRank] : undefined;
+  return accepted
+    ? `${head}, a synonym. taxonKey ${taxonKey} is its accepted taxon, ${accepted}, and covers all of ${accepted}, ${reach}`
+    : `${head}, a synonym. taxonKey ${taxonKey} is its accepted taxon and covers all of that taxon, ${reach} Call gbif_get_species with ${taxonKey} to see which taxon that is.`;
+}
+
+/**
+ * GBIF's `note` on a NONE when several candidates tie — `Oenanthe`, a bird genus and a
+ * plant genus, answers "Multiple equal matches for Oenanthe". The note is the only signal
+ * GBIF gives; it carries no list of the tied candidates.
+ */
+export const isAmbiguousMatchNote = (note: string | null | undefined): note is string =>
+  note?.startsWith('Multiple equal matches') === true;
 
 /**
  * Record count for a dataset detail response, shared by `gbif_get_dataset` and the

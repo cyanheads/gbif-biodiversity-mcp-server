@@ -244,6 +244,10 @@ describe('Blank filters reject before reaching GBIF', () => {
         geometry: 'POLYGON((-2 50,-1 50,-1 51,-2 51,-2 50))',
         year: '2020',
         coordinateUncertaintyInMeters: '0,1000',
+        gadmGid: 'ESP.1_1',
+        catalogNumber: 'L.1592880',
+        institutionCode: 'K',
+        recordedBy: 'Charles Darwin',
       },
     },
     {
@@ -258,6 +262,10 @@ describe('Blank filters reject before reaching GBIF', () => {
         geometry: 'POLYGON((-2 50,-1 50,-1 51,-2 51,-2 50))',
         year: '2020',
         coordinateUncertaintyInMeters: '0,1000',
+        gadmGid: 'ESP.1_1',
+        catalogNumber: 'L.1592880',
+        institutionCode: 'K',
+        recordedBy: 'Charles Darwin',
       },
     },
     {
@@ -272,6 +280,10 @@ describe('Blank filters reject before reaching GBIF', () => {
         stateProvince: 'England',
         year: '2020',
         geometry: 'POLYGON((-2 50,-1 50,-1 51,-2 51,-2 50))',
+        gadmGid: 'ESP.1_1',
+        catalogNumber: 'L.1592880',
+        institutionCode: 'K',
+        recordedBy: 'Charles Darwin',
       },
     },
     {
@@ -346,6 +358,11 @@ describe('Closed-vocabulary occurrence filters reject before the handler runs', 
       it(`${name}.iucnRedListCategory rejects "${injection.slice(0, 24)}"`, () => {
         expect(() => def.input.parse({ ...extra, iucnRedListCategory: injection })).toThrow();
       });
+
+      /** #78 — GBIF answers an unknown mediaType with a 400, so the enum fails it locally. */
+      it(`${name}.mediaType rejects "${injection.slice(0, 24)}"`, () => {
+        expect(() => def.input.parse({ ...extra, mediaType: injection })).toThrow();
+      });
     }
 
     /**
@@ -353,15 +370,17 @@ describe('Closed-vocabulary occurrence filters reject before the handler runs', 
      * undeclared key is stripped by Zod and every rejection assertion above would
      * hold against a tool that never had the filter.
      */
-    it(`${name} declares both filters rather than silently stripping them`, () => {
+    it(`${name} declares all three filters rather than silently stripping them`, () => {
       const parsed = def.input.parse({
         ...extra,
         occurrenceStatus: 'ABSENT',
         iucnRedListCategory: 'CR',
+        mediaType: 'InteractiveResource',
       }) as Record<string, unknown>;
 
       expect(parsed.occurrenceStatus).toBe('ABSENT');
       expect(parsed.iucnRedListCategory).toBe('CR');
+      expect(parsed.mediaType).toBe('InteractiveResource');
     });
   }
 });

@@ -5,9 +5,9 @@
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifDatasetResource } from '@/mcp-server/resources/definitions/gbif-dataset.resource.js';
+import { callWorker } from '../helpers/worker-request.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
   getGbifService: vi.fn(),
@@ -75,6 +75,58 @@ describe('gbifDatasetResource', () => {
     expect(result.publishingCountry).toBe('US');
     expect(result.recordCount).toBe(1500000000);
     expect(result.numConstituents).toBe(0);
+  });
+
+  /**
+   * Pins the whole record as it stands before the publishing-organization key
+   * arrives, through the resource's own output schema.
+   */
+  it('projects a record without a publishing-organization key to exactly the existing fields', async () => {
+    mockGetDataset.mockResolvedValue({
+      key: EBIRD_KEY,
+      title: 'eBird Basic Dataset',
+      type: 'OCCURRENCE',
+      license: 'CC_BY_NC_4_0',
+      publishingCountry: 'US',
+      numRecords: 42,
+    });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const result = gbifDatasetResource.output.parse(
+      await gbifDatasetResource.handler({ datasetKey: EBIRD_KEY }, ctx),
+    );
+
+    expect(result).toEqual({
+      key: EBIRD_KEY,
+      title: 'eBird Basic Dataset',
+      type: 'OCCURRENCE',
+      license: 'CC_BY_NC_4_0',
+      publishingCountry: 'US',
+      recordCount: 42,
+    });
+  });
+
+  /** #79 — the resource carries the same publishing organization key as the tool. */
+  it('returns the publishing organization key through the output schema', async () => {
+    mockGetDataset.mockResolvedValue({
+      key: INAT_KEY,
+      publishingOrganizationKey: '28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+      numRecords: 1,
+    });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const result = gbifDatasetResource.output.parse(
+      await gbifDatasetResource.handler({ datasetKey: INAT_KEY }, ctx),
+    );
+
+    expect(result).toEqual({
+      key: INAT_KEY,
+      publishingOrganizationKey: '28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+      recordCount: 1,
+    });
+    expect(gbifDatasetResource.output.shape.publishingOrganizationKey.description).toContain(
+      'publishingOrg',
+    );
   });
 
   it('throws not_found when key is missing from response', async () => {
@@ -309,43 +361,15 @@ describe('gbifDatasetResource', () => {
    * real `resources/read` served by the Worker handler.
    */
   it('puts the declared invalid_filter hint on the wire for a non-UUID datasetKey', async () => {
-    const worker = createWorkerHandler({
-      name: 'gbif-dataset-resource-test',
-      resources: [gbifDatasetResource],
-    });
     const uri = 'gbif://dataset/not-a-uuid';
-    const response = await worker.fetch(
-      new Request('http://localhost/mcp', {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json, text/event-stream',
-          'Content-Type': 'application/json',
-          'MCP-Protocol-Version': '2026-07-28',
-          'Mcp-Method': 'resources/read',
-          'Mcp-Name': uri,
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'resources/read',
-          params: {
-            uri,
-            _meta: {
-              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-              'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0.0' },
-              'io.modelcontextprotocol/clientCapabilities': {},
-            },
-          },
-        }),
-      }),
-      {} as never,
-      { waitUntil: () => {}, passThroughOnException: () => {} } as never,
-    );
-    const text = await response.text();
-    const frame = text.startsWith('{') ? text : (text.match(/^data:(.*)$/m)?.[1] ?? '');
-    const body = JSON.parse(frame) as {
+    const body = await callWorker<{
       error: { code: number; data: { reason: string; recovery: { hint: string } } };
-    };
+    }>(
+      { name: 'gbif-dataset-resource-test', resources: [gbifDatasetResource] },
+      'resources/read',
+      { uri },
+      uri,
+    );
 
     expect(body.error.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(body.error.data.reason).toBe('invalid_filter');

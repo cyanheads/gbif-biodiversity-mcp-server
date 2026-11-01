@@ -8,7 +8,7 @@ import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { clampReadLimit } from '../read-limits.js';
-import { escapeMarkdownText } from '../utils.js';
+import { escapeMarkdownText, higherRankNote, isAmbiguousMatchNote } from '../utils.js';
 
 const namesSchema = z
   .array(z.string().min(1).describe('A scientific name to match, e.g. "Panthera leo".'))
@@ -17,16 +17,7 @@ const namesSchema = z
 export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
   title: 'Bulk Match Species Names',
   description:
-    'Resolve up to 50 scientific names to GBIF backbone taxon keys in one call — the batch ' +
-    'counterpart to gbif_match_species for checklist, inventory, and species-list workflows that ' +
-    'would otherwise need one round trip per name. Each name is matched independently and results ' +
-    'are returned in input order, one entry per processed name. By default, an oversized batch processes the first 50 and returns the remainder in unprocessedNames. A name with no backbone match yields ' +
-    'matchType NONE (no taxonKey) instead of failing the batch; a per-name lookup failure yields ' +
-    "matchType ERROR carrying that name's error message and, when the failure was classified, " +
-    'a machine-readable reason — the rest of the batch is unaffected, and the call as a whole ' +
-    'still succeeds. When a queried name is a synonym, taxonKey is the accepted taxon it resolves ' +
-    "to and matchedTaxonKey carries the synonym's own key. Common names are not supported — use " +
-    'gbif_search_species for vernacular searches. Below confidence 80, review the match.',
+    "Resolve up to 50 scientific names to GBIF backbone taxon keys in one call — the batch counterpart to gbif_match_species for checklist, inventory, and species-list workflows that would otherwise need one round trip per name. Each name is matched independently and results are returned in input order, one entry per processed name. By default, an oversized batch processes the first 50 and returns the remainder in unprocessedNames. A name GBIF matched at a higher rank yields matchType HIGHERRANK with a note naming the taxon matched and what its taxonKey covers: that whole taxon, or its accepted taxon when it is a synonym — a misspelled species can fall back to its genus or kingdom at a confidence above 90, and a bare genus name carries the label too, matched as that genus. A name with no backbone match yields matchType NONE (no taxonKey) instead of failing the batch, with a note carrying GBIF's explanation when it gives one, such as several equal matches for a name shared across kingdoms; a per-name lookup failure yields matchType ERROR carrying that name's error message and, when the failure was classified, a machine-readable reason — the rest of the batch is unaffected, and the call as a whole still succeeds. When the name GBIF matched is a synonym — the queried name, or the higher taxon a HIGHERRANK match falls back to — taxonKey is the accepted taxon it resolves to and matchedTaxonKey carries the synonym's own key. Common names are not supported — use gbif_search_species for vernacular searches. Below confidence 80, review the match.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     names: (getServerConfig().clampReadLimits ? namesSchema : namesSchema.max(50)).describe(
@@ -55,7 +46,7 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
               .number()
               .optional()
               .describe(
-                "GBIF backbone taxon key to pass to gbif_search_occurrences, gbif_count_occurrences, and gbif_occurrence_facets — the accepted taxon's key when this name is a synonym, otherwise the matched taxon's own key. Absent when matchType is NONE or ERROR.",
+                "GBIF backbone taxon key to pass to gbif_search_occurrences, gbif_count_occurrences, and gbif_occurrence_facets — the accepted taxon's key when the name GBIF matched is a synonym, otherwise the matched taxon's own key. Absent when matchType is NONE or ERROR.",
               ),
             matchedTaxonKey: z
               .number()
@@ -79,11 +70,19 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
             confidence: z
               .number()
               .optional()
-              .describe('Match confidence 0–100. Below 80 warrants review. Absent on ERROR.'),
+              .describe(
+                'Match confidence 0–100. Below 80 warrants review; a HIGHERRANK match can score above 90, so read matchType too. Absent on ERROR.',
+              ),
             matchType: z
               .string()
               .describe(
-                'EXACT, FUZZY, or HIGHERRANK for a match; NONE when GBIF found no usable match; ERROR when the lookup itself failed for this name (see error).',
+                'EXACT or FUZZY for a match; HIGHERRANK when GBIF matched at a higher rank — a misspelled species falls back to its genus or kingdom, and a bare genus name carries it too — so taxonKey covers that whole taxon, or its accepted taxon when it is a synonym (see note); NONE when GBIF found no usable match; ERROR when the lookup itself failed for this name (see error).',
+              ),
+            note: z
+              .string()
+              .optional()
+              .describe(
+                "On HIGHERRANK, names the taxon and rank GBIF matched and what taxonKey covers: that whole taxon, or its accepted taxon when it is a synonym. On NONE, GBIF's own explanation when it gave one — for a name shared across kingdoms, its report of several equal matches, with a pointer to retry that name through gbif_match_species with kingdom. Absent on EXACT, FUZZY, and ERROR entries, and on a NONE GBIF did not explain.",
               ),
             error: z
               .string()
@@ -93,7 +92,7 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
               .string()
               .optional()
               .describe(
-                'Machine-readable failure identifier when matchType is ERROR — e.g. invalid_filter when GBIF rejected a supplied value. Absent when the failure carried no classification, and absent on every non-ERROR entry.',
+                'Machine-readable failure identifier when matchType is ERROR and the failure was classified. Absent when the failure carried no classification, and absent on every non-ERROR entry.',
               ),
           })
           .describe('Match outcome for one input name.'),
@@ -128,7 +127,16 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
         try {
           const raw = await gbif.matchSpecies({ name, strict: input.strict }, ctx);
           if (raw.usageKey == null || raw.matchType == null || raw.matchType === 'NONE') {
-            return { name, matchType: 'NONE' };
+            // GBIF's note is the only explanation a NONE carries; a tie across kingdoms
+            // is resolved per name through gbif_match_species, which takes kingdom.
+            const retry = isAmbiguousMatchNote(raw.note)
+              ? ' Retry this name with gbif_match_species and kingdom set (such as Animalia or Plantae) to choose between them.'
+              : '';
+            return {
+              name,
+              matchType: 'NONE',
+              ...(raw.note && { note: `GBIF reported "${raw.note}".${retry}` }),
+            };
           }
           // `/species/match` names the accepted taxon only as acceptedUsageKey; resolve
           // so taxonKey is safe to hand to the occurrence tools (see gbif_match_species).
@@ -144,6 +152,9 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
             status: raw.status ?? undefined,
             confidence: raw.confidence ?? undefined,
             matchType: raw.matchType,
+            ...(raw.matchType === 'HIGHERRANK' && {
+              note: `${higherRankNote(name, taxonKey, raw)} If a narrower taxon was meant, check the spelling; with strict: true GBIF matches each name itself or answers NONE, never a taxon above it.`,
+            }),
           };
         } catch (err) {
           // The per-name catch is the only place a classified failure can surface for this
@@ -178,13 +189,15 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
       if (r.taxonKey != null) lines.push(`**Taxon key:** ${r.taxonKey}`);
       if (r.matchedTaxonKey != null) {
         lines.push(
-          `**Matched taxon key:** ${r.matchedTaxonKey} — this name is a synonym; the taxon key above is the accepted taxon it resolves to.`,
+          `**Matched taxon key:** ${r.matchedTaxonKey} — the name GBIF matched is a synonym; the taxon key above is the accepted taxon it resolves to.`,
         );
       }
       if (r.rank) lines.push(`**Rank:** ${r.rank}`);
       if (r.status) lines.push(`**Status:** ${r.status}`);
       lines.push(`**Match type:** ${r.matchType}`);
       if (r.confidence != null) lines.push(`**Confidence:** ${r.confidence}/100`);
+      // The note embeds the queried name, GBIF's taxon name, and GBIF's own wording.
+      if (r.note) lines.push(`**Note:** ${escapeMarkdownText(r.note)}`);
       if (r.error) lines.push(`**Error:** ${r.error}`);
       if (r.reason) lines.push(`**Reason:** ${r.reason}`);
     }

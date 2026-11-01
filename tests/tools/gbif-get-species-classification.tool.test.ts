@@ -3,15 +3,24 @@
  * @module tests/tools/gbif-get-species-classification.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpeciesClassification } from '@/mcp-server/tools/definitions/gbif-get-species-classification.tool.js';
+import { listedInputSchema as listedWorkerInputSchema } from '../helpers/worker-request.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
   getGbifService: vi.fn(),
 }));
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+
+/** The input schema a client receives from tools/list, as the server advertises it. */
+const listedInputSchema = () =>
+  listedWorkerInputSchema(
+    { name: 'gbif-get-species-classification-test', tools: [gbifGetSpeciesClassification] },
+    'gbif_get_species_classification',
+  );
 
 describe('gbifGetSpeciesClassification', () => {
   const mockGetSpeciesParents = vi.fn();
@@ -133,28 +142,67 @@ describe('gbifGetSpeciesClassification', () => {
     expect(getEnrichment(ctx).notice).toBeUndefined();
   });
 
-  /** #47 — GBIF answers 400 for a taxonKey it cannot parse, not 404. */
+  /**
+   * #47 — GBIF answers 400 for a taxonKey it cannot parse, not 404. Since #75 a fraction
+   * fails at the schema, so the key that still reaches GBIF and 400s is an integer past
+   * the 32-bit range.
+   */
   it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
-    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
     mockGetSpeciesParents.mockRejectedValue(
       new McpError(
         JsonRpcErrorCode.InvalidParams,
-        'GBIF API returned HTTP 400 Bad Request. For input string: "1.5"',
+        'GBIF API returned HTTP 400 Bad Request. For input string: "999999999999"',
         { status: 400, reason: 'invalid_filter' },
       ),
     );
 
     const ctx = createMockContext({ errors: gbifGetSpeciesClassification.errors });
-    const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 1.5 });
+    const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 999999999999 });
 
     const err = await gbifGetSpeciesClassification.handler(input, ctx).catch((e: unknown) => e);
     expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect(mockGetSpeciesParents).toHaveBeenCalledWith(999999999999, ctx);
 
     const declared = gbifGetSpeciesClassification.errors?.find(
       (e) => e.reason === 'invalid_filter',
     );
     expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(declared?.recovery).toBeTruthy();
+    expect(declared?.when).not.toMatch(/fraction/i);
+    expect(declared?.when).toContain('32-bit signed integer range');
+    expect(declared?.recovery).not.toContain('whole numbers');
+  });
+
+  /** #75 — the advertised schema says integer, and 0 (incertae sedis) is its floor. */
+  it('advertises taxonKey as a non-negative integer in tools/list', async () => {
+    const schema = await listedInputSchema();
+    expect(schema.properties.taxonKey).toMatchObject({ type: 'integer', minimum: 0 });
+  });
+
+  it.each([1.5, -5])('rejects taxonKey %s at the schema before any request', async (taxonKey) => {
+    const result = await runToolContract(gbifGetSpeciesClassification, { taxonKey });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_arguments' },
+    });
+    expect(mockGetSpeciesParents).not.toHaveBeenCalled();
+    expect(mockGetSpecies).not.toHaveBeenCalled();
+  });
+
+  /** Characterization — key 0 (incertae sedis) is a root taxon and stays answerable. */
+  it('answers taxonKey 0 as a root taxon with an empty chain', async () => {
+    mockGetSpeciesParents.mockResolvedValue([]);
+    mockGetSpecies.mockResolvedValue({ key: 0, rank: 'KINGDOM', canonicalName: 'incertae sedis' });
+
+    const result = await runToolContract(gbifGetSpeciesClassification, { taxonKey: 0 });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockGetSpeciesParents).toHaveBeenCalledWith(0, expect.anything());
+    expect(result.structuredContent?.classification).toEqual([]);
+    expect(result.structuredContent?.notice).toContain('root');
   });
 
   it('normalizes canonicalName to name field', async () => {

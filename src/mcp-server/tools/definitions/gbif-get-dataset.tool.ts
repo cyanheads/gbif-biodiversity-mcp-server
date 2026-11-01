@@ -22,7 +22,8 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
   title: 'Get Dataset',
   description:
     'Fetch full dataset metadata by UUID key — title, description, citation text, contacts, license, ' +
-    'DOI, record count, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
+    'DOI, record count, numConstituents (sub-datasets), temporal/geographic coverage, and the publishing ' +
+    'organization key, which gbif_search_datasets takes as publishingOrg. Use after gbif_search_datasets ' +
     "or when an occurrence record's datasetKey needs provenance detail. " +
     'Contacts are capped by contactLimit (default 10); contactsTotal and contactsReturned report the full count.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -51,6 +52,12 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .string()
       .optional()
       .describe('Country code of the publishing organization.'),
+    publishingOrganizationKey: z
+      .string()
+      .optional()
+      .describe(
+        "UUID of the organization that published the dataset. Pass it to gbif_search_datasets as publishingOrg for every dataset this organization published; gbif_search_datasets rows also carry the organization's name. Absent when GBIF omits it.",
+      ),
     recordCount: z
       .number()
       .optional()
@@ -260,6 +267,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       doi: raw.doi,
       citationText: raw.citation?.text,
       publishingCountry: raw.publishingCountry,
+      publishingOrganizationKey: raw.publishingOrganizationKey,
       ...(await resolveDatasetRecordCount(raw, ctx)),
       numConstituents: raw.numConstituents,
       ...contactFields,
@@ -278,6 +286,9 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       doi: rawResult.doi && escapeMarkdownText(rawResult.doi),
       publishingCountry:
         rawResult.publishingCountry && escapeMarkdownText(rawResult.publishingCountry),
+      publishingOrganizationKey:
+        rawResult.publishingOrganizationKey &&
+        escapeMarkdownText(rawResult.publishingOrganizationKey),
       citationText: rawResult.citationText && escapeMarkdownText(rawResult.citationText),
       description: rawResult.description && escapeMarkdownText(rawResult.description, false),
       geographicCoverages: rawResult.geographicCoverages?.map((entry) => ({
@@ -298,6 +309,8 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     if (result.license) lines.push(`**License:** ${result.license}`);
     if (result.doi) lines.push(`**DOI:** ${result.doi}`);
     if (result.publishingCountry) lines.push(`**Publishing country:** ${result.publishingCountry}`);
+    if (result.publishingOrganizationKey)
+      lines.push(`**Publishing organization key:** ${result.publishingOrganizationKey}`);
     /**
      * The scope qualifier is rendered inline rather than left to the output
      * schema: a `content[]`-only client never reads the field's description, and

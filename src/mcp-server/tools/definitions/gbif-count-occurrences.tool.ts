@@ -12,13 +12,14 @@ import {
   OCCURRENCE_STATUS_VALUES,
 } from '@/services/gbif/types.js';
 import {
-  firstBlankFilter,
-  isGbifUuid,
+  occurrenceFilters,
+  occurrenceFilterViolation,
+  occurrenceNoMatchNotices,
   occurrenceScope,
   occurrenceScopeSchema,
   occurrenceStatusNotice,
   overPaginationCapNotice,
-  stateProvinceNoMatchNotice,
+  sharedOccurrenceFilterFields,
 } from '../utils.js';
 
 export const gbifCountOccurrences = tool('gbif_count_occurrences', {
@@ -27,7 +28,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     'Count occurrences matching a taxon + location filter without fetching records. ' +
     'Use for quick totals ("how many Aves records in Sweden?") or before deciding whether ' +
     'to paginate a full search. Accepts taxonKey, country (uppercase ISO 3166-1 alpha-2), ' +
-    'publishingCountry, stateProvince, scientificName, spatial ranges and geometry (intersected), month, basisOfRecord, hasCoordinate (alias isGeoreferenced), isInCluster, coordinateUncertaintyInMeters, datasetKey, year, ' +
+    'publishingCountry, stateProvince, gadmGid, scientificName, spatial ranges and geometry (intersected), month, basisOfRecord, hasCoordinate (alias isGeoreferenced), isInCluster, coordinateUncertaintyInMeters, datasetKey, year, catalogNumber, institutionCode, recordedBy, mediaType, ' +
     'occurrenceStatus, and iucnRedListCategory. Counts sightings only by default, matching ' +
     'gbif_search_occurrences — GBIF also indexes absence records, and for some taxa they are ' +
     'the overwhelming majority. A count above 100,001 is the signal to partition rather than ' +
@@ -61,6 +62,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       ),
     month: z
       .number()
+      .int()
       .min(1)
       .max(12)
       .optional()
@@ -91,6 +93,8 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       ),
     taxonKey: z
       .number()
+      .int()
+      .nonnegative()
       .optional()
       .describe(
         'GBIF backbone taxon key from gbif_match_species. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
@@ -151,6 +155,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .describe(
         'Count only records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Records with no category are excluded when this is set.',
       ),
+    ...sharedOccurrenceFilterFields(),
   }),
   output: z.object({
     count: z.number().describe('Total occurrences matching the supplied filters.'),
@@ -168,7 +173,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when the count is zero under a verbatim stateProvince filter, larger than gbif_search_occurrences can page to, or narrowed by a presence/absence filter. Absent when none applies.',
+        'Guidance when the count is zero under an exact-match stateProvince, gadmGid, or recordedBy filter, larger than gbif_search_occurrences can page to, or narrowed by a presence/absence filter. Absent when none applies.',
       ),
   },
 
@@ -178,9 +183,9 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A filter was supplied blank or whitespace-only, hasCoordinate conflicts with isGeoreferenced, datasetKey is not an 8-4-4-4-12 hex UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
+      when: 'A string filter other than country and publishingCountry was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), hasCoordinate conflicts with isGeoreferenced, datasetKey is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
       recovery:
-        'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
+        'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
     },
   ],
 
@@ -190,46 +195,8 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       country: input.country,
     });
 
-    /**
-     * String filters are checked on presence rather than on a
-     * non-blank value. `/occurrence/search` ignores a parameter it is given with no
-     * value and answers the unfiltered total, so the `?.trim()` spread these fields
-     * used to sit behind widened the count and reported it as the caller's own.
-     * Reject a blank value rather than silently dropping its constraint.
-     */
-    const blankFilter = firstBlankFilter({
-      scientificName: input.scientificName,
-      decimalLatitude: input.decimalLatitude,
-      decimalLongitude: input.decimalLongitude,
-      geometry: input.geometry,
-      coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
-      stateProvince: input.stateProvince,
-      year: input.year,
-    });
-    if (blankFilter) {
-      throw ctx.fail(
-        'invalid_filter',
-        `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-      );
-    }
-
-    /**
-     * Checked whenever datasetKey is present, not only when it is non-blank. A
-     * malformed key is rejected locally so the failure carries this tool's recovery
-     * hint instead of a bare upstream 400 that costs a round trip and the retry
-     * budget. The empty string is rejected for the opposite reason: it draws no error
-     * at all — `/occurrence/search?datasetKey=` answers 200 with the unfiltered scope,
-     * so a `?.trim()` guard dropped the filter and returned all 2,351,689,943 records
-     * under taxonKey 212 to a caller who believed the count was scoped to one dataset.
-     * Letter case stays unchecked: this route resolves a key either way, unlike
-     * `/dataset/search`'s two organization filters.
-     */
-    if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey)) {
-      throw ctx.fail(
-        'invalid_filter',
-        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
-      );
-    }
+    const violation = occurrenceFilterViolation(input);
+    if (violation) throw ctx.fail('invalid_filter', violation);
 
     if (
       input.hasCoordinate !== undefined &&
@@ -241,39 +208,13 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
         'hasCoordinate and isGeoreferenced conflict. Supply one or give both the same value.',
       );
     }
-    const hasCoordinate = input.hasCoordinate ?? input.isGeoreferenced;
-    const scope = occurrenceScope({
-      ...input,
-      hasCoordinate,
-    });
-    const count = await getGbifService().countOccurrences(
-      {
-        ...(input.scientificName !== undefined && { scientificName: input.scientificName }),
-        ...(input.decimalLatitude !== undefined && { decimalLatitude: input.decimalLatitude }),
-        ...(input.decimalLongitude !== undefined && { decimalLongitude: input.decimalLongitude }),
-        ...(input.geometry !== undefined && { geometry: input.geometry }),
-        ...(input.month !== undefined && { month: input.month }),
-        ...(input.basisOfRecord !== undefined && { basisOfRecord: input.basisOfRecord }),
-        ...(hasCoordinate !== undefined && { hasCoordinate }),
-        ...(input.isInCluster !== undefined && { isInCluster: input.isInCluster }),
-        ...(input.coordinateUncertaintyInMeters !== undefined && {
-          coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
-        }),
-        ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
-        ...(input.country && { country: input.country }),
-        ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
-        ...(input.stateProvince !== undefined && { stateProvince: input.stateProvince }),
-        ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
-        ...(input.year !== undefined && { year: input.year }),
-        ...(input.occurrenceStatus !== 'ANY' && { occurrenceStatus: input.occurrenceStatus }),
-        ...(input.iucnRedListCategory && { iucnRedListCategory: input.iucnRedListCategory }),
-      },
-      ctx,
-    );
+    const { isGeoreferenced, ...supplied } = input;
+    const filters = { ...supplied, hasCoordinate: supplied.hasCoordinate ?? isGeoreferenced };
+    const count = await getGbifService().countOccurrences(occurrenceFilters(filters), ctx);
 
-    ctx.enrich({ occurrenceStatus: input.occurrenceStatus, scope });
+    ctx.enrich({ occurrenceStatus: input.occurrenceStatus, scope: occurrenceScope(filters) });
     const notice = [
-      stateProvinceNoMatchNotice(input.stateProvince, count),
+      ...occurrenceNoMatchNotices(input, count),
       overPaginationCapNotice(count),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]

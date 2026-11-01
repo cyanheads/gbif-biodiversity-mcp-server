@@ -87,6 +87,74 @@ describe('gbifGetDataset', () => {
     expect(result.contacts![0].email).toEqual(['bls63@cornell.edu']);
   });
 
+  /**
+   * Pins the whole record as it stands before the publishing-organization key
+   * arrives: a detail record without it must project to exactly these fields.
+   */
+  it('projects a record without a publishing-organization key to exactly the existing fields', async () => {
+    mockGetDataset.mockResolvedValue({
+      key: EBIRD_KEY,
+      title: 'eBird Basic Dataset',
+      type: 'OCCURRENCE',
+      license: 'CC_BY_NC_4_0',
+      doi: '10.15468/aomfnb',
+      citation: { text: 'Sullivan et al. 2009.' },
+      publishingCountry: 'US',
+      numRecords: 42,
+      numConstituents: 0,
+    });
+
+    const result = await runToolContract(gbifGetDataset, { datasetKey: EBIRD_KEY });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual({
+      key: EBIRD_KEY,
+      title: 'eBird Basic Dataset',
+      type: 'OCCURRENCE',
+      license: 'CC_BY_NC_4_0',
+      doi: '10.15468/aomfnb',
+      citationText: 'Sullivan et al. 2009.',
+      publishingCountry: 'US',
+      recordCount: 42,
+      numConstituents: 0,
+    });
+    expect(JSON.stringify(result.content)).not.toContain('Publishing organization');
+  });
+
+  /**
+   * #79 — `/dataset/{key}` names the publishing organization by key only (no
+   * title), and that key is what gbif_search_datasets takes as publishingOrg.
+   */
+  it('returns the publishing organization key on both surfaces', async () => {
+    mockGetDataset.mockResolvedValue({
+      key: INAT_KEY,
+      title: 'iNaturalist Research-grade Observations',
+      publishingOrganizationKey: '28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+      numRecords: 1,
+    });
+
+    const result = await runToolContract(gbifGetDataset, { datasetKey: INAT_KEY });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      key: INAT_KEY,
+      title: 'iNaturalist Research-grade Observations',
+      publishingOrganizationKey: '28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+      recordCount: 1,
+    });
+    expect(result.structuredContent?.publishingOrganizationTitle).toBeUndefined();
+    expect(JSON.stringify(result.content)).toContain(
+      '**Publishing organization key:** 28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+    );
+  });
+
+  it('names the publishingOrg chain on the publishing organization key description', () => {
+    const description = gbifGetDataset.output.shape.publishingOrganizationKey.description ?? '';
+
+    expect(description).toContain('publishingOrg');
+    expect(description).toContain('gbif_search_datasets');
+  });
+
   it('throws not_found when key is missing', async () => {
     mockGetDataset.mockResolvedValue({ key: undefined });
 

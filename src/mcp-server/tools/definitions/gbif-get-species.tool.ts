@@ -19,8 +19,11 @@ export const gbifGetSpecies = tool('gbif_get_species', {
     'The extinct field is absent (not false) on most records — only present on explicitly flagged taxa.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    // 0 is the backbone kingdom incertae sedis; no negative key names a taxon.
     taxonKey: z
       .number()
+      .int()
+      .nonnegative()
       .describe('GBIF backbone taxon key from gbif_match_species or another taxonomy tool.'),
   }),
   output: z.object({
@@ -40,7 +43,12 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       .number()
       .optional()
       .describe('Count of child taxa in the backbone under this taxon.'),
-    numOccurrences: z.number().optional().describe('Occurrence record count in GBIF.'),
+    numOccurrences: z
+      .number()
+      .optional()
+      .describe(
+        'Occurrence record count, when GBIF includes one. Its taxon record endpoint does not, so this is normally absent — count with gbif_count_occurrences and the taxonKey instead.',
+      ),
     publishedIn: z.string().optional().describe('Original description citation when available.'),
     extinct: z
       .boolean()
@@ -83,9 +91,9 @@ export const gbifGetSpecies = tool('gbif_get_species', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'GBIF rejected the taxonKey as unparseable — a fraction, or a value outside the 32-bit signed integer range.',
+      when: 'GBIF rejected the taxonKey as unparseable — a value outside the 32-bit signed integer range.',
       recovery:
-        'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+        'Backbone taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
       thrownBy: 'service',
     },
   ],
@@ -102,7 +110,8 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       throw err;
     }
 
-    if (!raw.key) {
+    // Presence, not truthiness: key 0 is the backbone kingdom incertae sedis.
+    if (raw.key == null) {
       throw ctx.fail('not_found', `Taxon key ${input.taxonKey} not found in the GBIF backbone.`);
     }
 
@@ -189,42 +198,43 @@ export const gbifGetSpecies = tool('gbif_get_species', {
     // Each rank renders "Name (key)" when the name is present, and a key-only entry when the
     // name is absent but GBIF still supplies the key (sparse records, e.g. Panthera leo's classKey
     // with no class name). Mirrors this file's accepted/parent key-only fallback so text-only
-    // clients never lose the rank key that structuredContent already carries.
+    // clients never lose the rank key that structuredContent already carries. Keys are tested
+    // with `!= null`, never truthiness: key 0 is the backbone kingdom incertae sedis.
     const classificationParts: string[] = [];
     if (result.kingdom)
       classificationParts.push(
-        `Kingdom: ${result.kingdom}${result.kingdomKey ? ` (${result.kingdomKey})` : ''}`,
+        `Kingdom: ${result.kingdom}${result.kingdomKey != null ? ` (${result.kingdomKey})` : ''}`,
       );
     else if (result.kingdomKey != null)
       classificationParts.push(`Kingdom key: ${result.kingdomKey}`);
     if (result.phylum)
       classificationParts.push(
-        `Phylum: ${result.phylum}${result.phylumKey ? ` (${result.phylumKey})` : ''}`,
+        `Phylum: ${result.phylum}${result.phylumKey != null ? ` (${result.phylumKey})` : ''}`,
       );
     else if (result.phylumKey != null) classificationParts.push(`Phylum key: ${result.phylumKey}`);
     if (result.class)
       classificationParts.push(
-        `Class: ${result.class}${result.classKey ? ` (${result.classKey})` : ''}`,
+        `Class: ${result.class}${result.classKey != null ? ` (${result.classKey})` : ''}`,
       );
     else if (result.classKey != null) classificationParts.push(`Class key: ${result.classKey}`);
     if (result.order)
       classificationParts.push(
-        `Order: ${result.order}${result.orderKey ? ` (${result.orderKey})` : ''}`,
+        `Order: ${result.order}${result.orderKey != null ? ` (${result.orderKey})` : ''}`,
       );
     else if (result.orderKey != null) classificationParts.push(`Order key: ${result.orderKey}`);
     if (result.family)
       classificationParts.push(
-        `Family: ${result.family}${result.familyKey ? ` (${result.familyKey})` : ''}`,
+        `Family: ${result.family}${result.familyKey != null ? ` (${result.familyKey})` : ''}`,
       );
     else if (result.familyKey != null) classificationParts.push(`Family key: ${result.familyKey}`);
     if (result.genus)
       classificationParts.push(
-        `Genus: ${result.genus}${result.genusKey ? ` (${result.genusKey})` : ''}`,
+        `Genus: ${result.genus}${result.genusKey != null ? ` (${result.genusKey})` : ''}`,
       );
     else if (result.genusKey != null) classificationParts.push(`Genus key: ${result.genusKey}`);
     if (result.species)
       classificationParts.push(
-        `Species: ${result.species}${result.speciesKey ? ` (${result.speciesKey})` : ''}`,
+        `Species: ${result.species}${result.speciesKey != null ? ` (${result.speciesKey})` : ''}`,
       );
     else if (result.speciesKey != null)
       classificationParts.push(`Species key: ${result.speciesKey}`);

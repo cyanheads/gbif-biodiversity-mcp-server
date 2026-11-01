@@ -3,7 +3,9 @@
  * @module tests/tools/gbif-search-datasets.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchDatasets } from '@/mcp-server/tools/definitions/gbif-search-datasets.tool.js';
 
@@ -57,6 +59,154 @@ describe('gbifSearchDatasets', () => {
     expect(enrichment.totalCount).toBe(50000);
     expect(enrichment.endOfRecords).toBe(false);
     expect(enrichment.notice).toBeUndefined();
+  });
+
+  /**
+   * Pins the whole row as it stands before the publishing-organization fields
+   * arrive: a record GBIF returns without them must project to exactly this,
+   * with no new key appearing and no existing value moving.
+   */
+  it('projects a row without publishing-organization fields to exactly the existing fields', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [makeDataset({ description: '<p>Cornell Lab checklist data.</p>' })],
+      count: 1,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const result = await runToolContract(gbifSearchDatasets, { q: 'eBird' });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.datasets).toEqual([
+      {
+        key: 'abc-def-123',
+        title: 'eBird Basic Dataset',
+        type: 'OCCURRENCE',
+        description: 'Cornell Lab checklist data.',
+        descriptionTruncated: false,
+        license: 'CC_BY_NC_4_0',
+        doi: '10.15468/aomfnb',
+        publishingCountry: 'US',
+        recordCount: 1500000000,
+      },
+    ]);
+    expect(JSON.stringify(result.content)).not.toContain('Publishing organization');
+  });
+
+  /**
+   * #79 — `/dataset/search` names the publishing organization on every row, by
+   * key and by title, and the key is what `publishingOrg` takes. A page mixes rows
+   * that carry the pair, rows that carry only the key, and rows that carry
+   * neither; each projects what GBIF sent and nothing else, on both surfaces.
+   */
+  it('returns the publishing organization key and title per row on both surfaces', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [
+        makeDataset({
+          key: 'row-with-both',
+          publishingOrganizationKey: '28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+          publishingOrganizationTitle: 'Museum *of* [Natural] History_ & <Co>',
+        }),
+        makeDataset({
+          key: 'row-with-key',
+          publishingOrganizationKey: 'e2e717bf-551a-4917-bdc9-4fa0f342c530',
+        }),
+        makeDataset({ key: 'row-with-neither' }),
+      ],
+      count: 3,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const result = await runToolContract(gbifSearchDatasets, { q: 'museum' });
+
+    expect(result.isError).not.toBe(true);
+    const rows = result.structuredContent?.datasets as Record<string, unknown>[];
+    expect(rows).toHaveLength(3);
+    const [both, keyOnly, neither] = rows;
+    expect(both).toMatchObject({
+      key: 'row-with-both',
+      publishingOrganizationKey: '28eb1a3f-1c15-4a95-931a-4af90ecb574d',
+      publishingOrganizationTitle: 'Museum *of* [Natural] History_ & <Co>',
+      title: 'eBird Basic Dataset',
+      recordCount: 1500000000,
+    });
+    expect(keyOnly).toMatchObject({
+      publishingOrganizationKey: 'e2e717bf-551a-4917-bdc9-4fa0f342c530',
+    });
+    expect(keyOnly?.publishingOrganizationTitle).toBeUndefined();
+    expect(neither?.publishingOrganizationKey).toBeUndefined();
+    expect(neither?.publishingOrganizationTitle).toBeUndefined();
+
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('28eb1a3f-1c15-4a95-931a-4af90ecb574d');
+    expect(text).toContain('e2e717bf-551a-4917-bdc9-4fa0f342c530');
+    expect(text).toContain('Museum &#42;of&#42; &#91;Natural&#93; History&#95; &#38; &#60;Co&#62;');
+    expect(text).not.toContain('Museum *of*');
+  });
+
+  it('names the publishingOrg chain on the publishing organization key description', () => {
+    const description =
+      gbifSearchDatasets.output.shape.datasets.element.shape.publishingOrganizationKey
+        .description ?? '';
+
+    expect(description).toContain('publishingOrg');
+    expect(description).toContain('gbif_search_datasets');
+  });
+
+  /** offset 0 and limit 1 are the lower bounds and reach GBIF as sent. */
+  it('accepts and forwards the lowest limit and offset', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 1,
+      endOfRecords: true,
+    });
+
+    const result = await runToolContract(gbifSearchDatasets, { limit: 1, offset: 0 });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockSearchDatasets).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 1, offset: 0 }),
+      expect.anything(),
+    );
+  });
+
+  /**
+   * #75 — `/dataset/search` answers `limit=2.5&offset=1.5` with its defaults
+   * (20 rows from offset 0) and a 200, so a fraction that reached it returned the
+   * wrong page as a success. It now fails at the schema, naming the field.
+   */
+  it.each([
+    ['offset', { offset: 1.5 }],
+    ['limit', { limit: 2.5 }],
+  ])('rejects a fractional %s at the schema before any request', async (field, paging) => {
+    const result = await runToolContract(gbifSearchDatasets, paging);
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_arguments' },
+    });
+    expect(JSON.stringify(result.content)).toContain(field);
+    expect(mockSearchDatasets).not.toHaveBeenCalled();
+  });
+
+  it('advertises limit and offset as integers with their bounds and defaults', () => {
+    const { properties } = z.toJSONSchema(gbifSearchDatasets.input) as {
+      properties: Record<string, Record<string, unknown>>;
+    };
+
+    expect(properties.limit).toMatchObject({ type: 'integer', minimum: 1, default: 20 });
+    expect(properties.offset).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+      default: 0,
+    });
   });
 
   it('uses numRecords over recordCount when both present', async () => {

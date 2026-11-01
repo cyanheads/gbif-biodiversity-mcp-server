@@ -3,7 +3,9 @@
  * @module tests/tools/gbif-search-publishers.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchPublishers } from '@/mcp-server/tools/definitions/gbif-search-publishers.tool.js';
 
@@ -57,6 +59,59 @@ describe('gbifSearchPublishers', () => {
     expect(enrichment.totalCount).toBe(200);
     expect(enrichment.endOfRecords).toBe(false);
     expect(enrichment.notice).toBeUndefined();
+  });
+
+  /** offset 0 and limit 1 are the lower bounds and reach GBIF as sent. */
+  it('accepts and forwards the lowest limit and offset', async () => {
+    mockSearchPublishers.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 1,
+      endOfRecords: true,
+    });
+
+    const result = await runToolContract(gbifSearchPublishers, { limit: 1, offset: 0 });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockSearchPublishers).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 1, offset: 0 }),
+      expect.anything(),
+    );
+  });
+
+  /**
+   * #75 — `/organization` answers `limit=2.5&offset=1.5` with its defaults (20
+   * rows from offset 0) and a 200, so a fraction that reached it returned the
+   * wrong page as a success. It now fails at the schema, naming the field.
+   */
+  it.each([
+    ['offset', { offset: 1.5 }],
+    ['limit', { limit: 2.5 }],
+  ])('rejects a fractional %s at the schema before any request', async (field, paging) => {
+    const result = await runToolContract(gbifSearchPublishers, paging);
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_arguments' },
+    });
+    expect(JSON.stringify(result.content)).toContain(field);
+    expect(mockSearchPublishers).not.toHaveBeenCalled();
+  });
+
+  it('advertises limit and offset as integers with their bounds and defaults', () => {
+    const { properties } = z.toJSONSchema(gbifSearchPublishers.input) as {
+      properties: Record<string, Record<string, unknown>>;
+    };
+
+    expect(properties.limit).toMatchObject({ type: 'integer', minimum: 1, default: 20 });
+    expect(properties.offset).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+      default: 0,
+    });
   });
 
   it('enriches with notice on empty results', async () => {

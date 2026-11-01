@@ -26,7 +26,8 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
   name: 'gbif-dataset',
   title: 'GBIF Dataset',
   description:
-    'Dataset metadata — title, description, citation, license, contacts, coverage. ' +
+    'Dataset metadata — title, description, citation, license, contacts, coverage, and the ' +
+    'publishing organization key that gbif_search_datasets takes as publishingOrg. ' +
     'Stable URI for provenance context. Use the dataset UUID from gbif_search_datasets or ' +
     "an occurrence record's datasetKey field.",
   mimeType: 'application/json',
@@ -42,6 +43,12 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
     doi: z.string().optional().describe('DOI for citation. May be absent.'),
     citationText: z.string().optional().describe('Full citation text. May be absent.'),
     publishingCountry: z.string().optional().describe('Publishing organization country.'),
+    publishingOrganizationKey: z
+      .string()
+      .optional()
+      .describe(
+        'UUID of the organization that published the dataset. Pass it to gbif_search_datasets as publishingOrg for every dataset this organization published. Absent when GBIF omits it.',
+      ),
     recordCount: z
       .number()
       .optional()
@@ -186,6 +193,7 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       doi: raw.doi,
       citationText: raw.citation?.text,
       publishingCountry: raw.publishingCountry,
+      publishingOrganizationKey: raw.publishingOrganizationKey,
       ...(await resolveDatasetRecordCount(raw, ctx)),
       numConstituents: raw.numConstituents,
       ...projectContacts(raw.contacts, CONTACT_CAP),

@@ -1,4 +1,5 @@
 /** @fileoverview Read-cap validation and bounded upstream workload contracts. */
+import { z } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
@@ -32,7 +33,37 @@ const cases = [
   ),
 ];
 
-afterEach(() => vi.unstubAllGlobals());
+/** Fresh definition modules, keyed by tool name, for the tests that change the clamp flag. */
+const definitionModules = {
+  gbif_search_occurrences: () =>
+    import('@/mcp-server/tools/definitions/gbif-search-occurrences.tool.js'),
+  gbif_occurrence_facets: () =>
+    import('@/mcp-server/tools/definitions/gbif-occurrence-facets.tool.js'),
+  gbif_get_dataset: () => import('@/mcp-server/tools/definitions/gbif-get-dataset.tool.js'),
+  gbif_search_species: () => import('@/mcp-server/tools/definitions/gbif-search-species.tool.js'),
+  gbif_search_datasets: () => import('@/mcp-server/tools/definitions/gbif-search-datasets.tool.js'),
+  gbif_search_publishers: () =>
+    import('@/mcp-server/tools/definitions/gbif-search-publishers.tool.js'),
+  gbif_get_species_children: () =>
+    import('@/mcp-server/tools/definitions/gbif-get-species-children.tool.js'),
+} as const;
+
+async function loadDefinition(name: string): Promise<{ input: z.ZodObject }> {
+  const module = await definitionModules[name as keyof typeof definitionModules]();
+  const definition = Object.values(module).find((value) => value.name === name);
+  if (!definition) throw new Error(`No definition named ${name}`);
+  return definition;
+}
+
+/** The JSON Schema `tools/list` advertises for one input field. */
+function jsonSchemaProperty(input: z.ZodObject, field: string) {
+  return (z.toJSONSchema(input) as { properties: Record<string, unknown> }).properties[field];
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 beforeEach(() => {
   initGbifService(
     { mcpServerName: 'gbif-biodiversity-mcp-server', mcpServerVersion: 'test' } as AppConfig,
@@ -261,20 +292,58 @@ describe('read limit contract', () => {
       expect(tool.input.safeParse({ ...input, [field]: cap + 1 }).success).toBe(true);
     },
   );
+  /**
+   * #75 — clamping applies to whole numbers only. An over-cap fraction used to
+   * clamp to the cap and run; it now fails at the schema like any other fraction,
+   * before a request is built.
+   */
+  it.each(cases)(
+    'rejects an over-cap fraction on $tool.name at the schema instead of clamping it',
+    async ({ tool, field, cap, input }) => {
+      const fetch = fixture();
+      const result = await runToolContract(tool, { ...input, [field]: cap + 0.5 } as never);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({
+        data: { reason: 'invalid_arguments' },
+      });
+      expect(JSON.stringify(result.content)).toContain(field);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
   it('admits a bulk remainder while still rejecting an invalid tail name', () => {
     const names = Array.from({ length: 51 }, (_, index) => `Species ${index}`);
     expect(gbifBulkMatchSpecies.input.safeParse({ names }).success).toBe(true);
     expect(gbifBulkMatchSpecies.input.safeParse({ names: [...names, ''] }).success).toBe(false);
   });
   it.each(cases)(
-    'preserves $tool.name cap, lower bound and numeric type',
+    'preserves $tool.name cap, lower bound and integer type',
     ({ tool, field, cap, input }) => {
       expect(tool.input.safeParse({ ...input, [field]: cap }).success).toBe(true);
       expect(tool.input.safeParse({ ...input, [field]: -1 }).success).toBe(false);
       expect(tool.input.safeParse({ ...input, [field]: String(cap) }).success).toBe(false);
-      expect(tool.input.safeParse({ ...input, [field]: 1.5 }).success).toBe(
-        field !== 'contactLimit',
-      );
+      expect(tool.input.safeParse({ ...input, [field]: 1.5 }).success).toBe(false);
+      expect(jsonSchemaProperty(tool.input, field)).toMatchObject({ type: 'integer' });
+    },
+  );
+  /**
+   * `GBIF_CLAMP_READ_LIMITS=false` appends the workload maximum to the schema each
+   * tool passes in, so the integer constraint has to survive that path too. The
+   * flag is read when a definition module builds its schema, hence the fresh import.
+   */
+  it.each(cases)(
+    'keeps $tool.name integer-only when read-limit clamping is off',
+    async ({ tool, field, cap, input }) => {
+      vi.stubEnv('GBIF_CLAMP_READ_LIMITS', 'false');
+      vi.resetModules();
+      const strict = await loadDefinition(tool.name);
+      expect(strict.input.safeParse({ ...input, [field]: cap }).success).toBe(true);
+      expect(strict.input.safeParse({ ...input, [field]: cap + 1 }).success).toBe(false);
+      for (const fraction of [1.5, cap - 0.5, cap + 0.5])
+        expect(strict.input.safeParse({ ...input, [field]: fraction }).success).toBe(false);
+      expect(jsonSchemaProperty(strict.input, field)).toMatchObject({
+        type: 'integer',
+        maximum: cap,
+      });
     },
   );
   it('preserves duplicate names and omission of an unprocessed remainder at the cap', async () => {

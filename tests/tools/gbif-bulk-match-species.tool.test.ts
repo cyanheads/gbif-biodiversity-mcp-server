@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-bulk-match-species.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifBulkMatchSpecies } from '@/mcp-server/tools/definitions/gbif-bulk-match-species.tool.js';
 
@@ -43,7 +43,42 @@ const MATCHES: Record<string, unknown> = {
     status: null,
     confidence: 100,
   },
+  // A misspelled species falls back to its genus at confidence 92.
+  'Turdus imaginarius': {
+    matchType: 'HIGHERRANK',
+    usageKey: 2490714,
+    scientificName: 'Turdus Linnaeus, 1758',
+    canonicalName: 'Turdus',
+    rank: 'GENUS',
+    status: 'ACCEPTED',
+    confidence: 92,
+  },
+  // The genus it falls back to is itself a synonym (Nyctea → Bubo); the classification
+  // fields are the accepted taxon's, genus "Bubo" under genusKey = acceptedUsageKey.
+  'Nyctea xyzzyqq': {
+    matchType: 'HIGHERRANK',
+    usageKey: 2497867,
+    acceptedUsageKey: 5959091,
+    scientificName: 'Nyctea Stephens, 1826',
+    canonicalName: 'Nyctea',
+    rank: 'GENUS',
+    status: 'SYNONYM',
+    confidence: 94,
+    kingdom: 'Animalia',
+    genus: 'Bubo',
+    kingdomKey: 1,
+    genusKey: 5959091,
+  },
+  // A bird genus and a plant genus share the name.
+  Oenanthe: {
+    confidence: 100,
+    note: 'Multiple equal matches for Oenanthe',
+    matchType: 'NONE',
+    synonym: false,
+  },
 };
+
+const textOf = (content: unknown) => JSON.stringify(content);
 
 describe('gbifBulkMatchSpecies', () => {
   const mockMatchSpecies = vi.fn();
@@ -85,6 +120,74 @@ describe('gbifBulkMatchSpecies', () => {
     expect(fuzzy.matchType).toBe('FUZZY');
     expect(fuzzy.taxonKey).toBe(5219404);
     expect(fuzzy.confidence).toBe(85);
+
+    // Characterization — EXACT, FUZZY, and a NONE GBIF gave no note on carry no note.
+    expect(exact).not.toHaveProperty('note');
+    expect(fuzzy).not.toHaveProperty('note');
+    expect(none).not.toHaveProperty('note');
+  });
+
+  /**
+   * #73 — a misspelled species came back as its genus with nothing on the row saying
+   * so. The row keeps its taxonKey and carries a note naming the higher taxon.
+   */
+  it('notes a HIGHERRANK row on both surfaces without changing its taxonKey', async () => {
+    const result = await runToolContract(gbifBulkMatchSpecies, {
+      names: ['Panthera leo', 'Turdus imaginarius'],
+    });
+
+    expect(result.isError).not.toBe(true);
+    const [exact, higher] = (result.structuredContent as { results: Record<string, unknown>[] })
+      .results;
+    expect(exact).not.toHaveProperty('note');
+    expect(higher).toMatchObject({ taxonKey: 2490714, matchType: 'HIGHERRANK' });
+    const note = higher.note as string;
+    for (const text of [
+      'HIGHERRANK',
+      'Turdus, rank GENUS',
+      'taxonKey 2490714 covers that whole taxon',
+      'strict: true',
+    ])
+      expect(note).toContain(text);
+    expect(textOf(result.content)).toContain('Turdus, rank GENUS');
+    expect(textOf(result.content)).toContain('taxonKey 2490714 covers that whole taxon');
+  });
+
+  /**
+   * The genus GBIF falls back to is a synonym, so taxonKey 5959091 is the accepted genus
+   * Bubo. The note must say that key covers Bubo rather than Nyctea, and content[] must
+   * attribute the synonym to the name GBIF matched, not to the queried name.
+   */
+  it('notes a HIGHERRANK synonym row on both surfaces with what taxonKey covers', async () => {
+    const result = await runToolContract(gbifBulkMatchSpecies, { names: ['Nyctea xyzzyqq'] });
+
+    expect(result.isError).not.toBe(true);
+    const [entry] = (result.structuredContent as { results: Record<string, unknown>[] }).results;
+    expect(entry).toMatchObject({ taxonKey: 5959091, matchedTaxonKey: 2497867 });
+    const note = entry.note as string;
+    expect(note).toContain('Nyctea, rank GENUS, a synonym');
+    expect(note).toContain('taxonKey 5959091 is its accepted taxon, Bubo, and covers all of Bubo');
+    expect(note).not.toContain('covers that whole taxon');
+    const text = textOf(result.content);
+    expect(text).toContain('taxonKey 5959091 is its accepted taxon, Bubo, and covers all of Bubo');
+    expect(text).toContain(
+      '**Matched taxon key:** 2497867 — the name GBIF matched is a synonym; the taxon key above is the accepted taxon it resolves to.',
+    );
+    expect(text).not.toContain('this name is a synonym');
+  });
+
+  /** #73 — GBIF's own explanation for a NONE was dropped. */
+  it('carries the ambiguity note onto a NONE row with a single-name kingdom retry', async () => {
+    const result = await runToolContract(gbifBulkMatchSpecies, { names: ['Oenanthe'] });
+
+    expect(result.isError).not.toBe(true);
+    const [entry] = (result.structuredContent as { results: Record<string, unknown>[] }).results;
+    expect(entry).toMatchObject({ name: 'Oenanthe', matchType: 'NONE' });
+    expect(entry).not.toHaveProperty('taxonKey');
+    expect(entry.note).toContain('Multiple equal matches for Oenanthe');
+    expect(entry.note).toContain('gbif_match_species');
+    expect(entry.note).toContain('kingdom');
+    expect(textOf(result.content)).toContain('Multiple equal matches for Oenanthe');
   });
 
   it('returns matchType NONE for an unmatched name without sinking the batch', async () => {
@@ -118,6 +221,7 @@ describe('gbifBulkMatchSpecies', () => {
     expect(result.results[1].matchType).toBe('ERROR');
     expect(result.results[1].error).toContain('GBIF API unavailable');
     expect(result.results[1].taxonKey).toBeUndefined();
+    expect(result.results[1]).not.toHaveProperty('note');
   });
 
   /** #35 — same resolution as gbif_match_species, applied per entry. */
@@ -140,6 +244,8 @@ describe('gbifBulkMatchSpecies', () => {
     expect(result.results[0].taxonKey).toBe(5219404);
     expect(result.results[0].matchedTaxonKey).toBe(7630906);
     expect(result.results[0].status).toBe('SYNONYM');
+    // A plain (non-HIGHERRANK) synonym carries no note.
+    expect(result.results[0]).not.toHaveProperty('note');
   });
 
   it('omits matchedTaxonKey on an accepted entry', async () => {
@@ -231,6 +337,10 @@ describe('gbifBulkMatchSpecies', () => {
     expect(entry.status).toBeUndefined();
     // No null leaks into the typed output.
     expect(entry.scientificName).not.toBeNull();
+    // The HIGHERRANK note discloses the fallback without inventing the missing rank.
+    expect(entry.note).toContain('Aves');
+    expect(entry.note).toContain('no rank');
+    expect(entry.note).not.toContain('null');
   });
 
   it('admits additional names for explicit remainder reporting', () => {
@@ -269,6 +379,11 @@ describe('gbifBulkMatchSpecies', () => {
         },
         { name: 'Zzxqq notaspecies', matchType: 'NONE' },
         {
+          name: 'Oenanthe',
+          matchType: 'NONE',
+          note: 'GBIF reported "Multiple equal matches for Oenanthe". *Retry* with kingdom.',
+        },
+        {
           name: 'boom',
           matchType: 'ERROR',
           error: 'GBIF API unavailable',
@@ -286,8 +401,14 @@ describe('gbifBulkMatchSpecies', () => {
     expect(text).toContain('ERROR');
     expect(text).toContain('GBIF API unavailable');
     // The resolved-synonym key and the failure classification reach content[] too.
-    expect(text).toContain('7630906');
+    expect(text).toContain(
+      '**Matched taxon key:** 7630906 — the name GBIF matched is a synonym; the taxon key above is the accepted taxon it resolves to.',
+    );
     expect(text).toContain('invalid_filter');
+    // The note reaches content[] escaped, so CommonMark renders GBIF's text literally.
+    expect(text).toContain(
+      '**Note:** GBIF reported "Multiple equal matches for Oenanthe". &#42;Retry&#42; with kingdom.',
+    );
     expect(text).not.toContain('undefined');
     expect(text).not.toContain('null');
   });

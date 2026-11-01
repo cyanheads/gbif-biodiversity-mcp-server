@@ -3,15 +3,41 @@
  * @module tests/tools/gbif-get-species.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
+import { listedInputSchema as listedWorkerInputSchema } from '../helpers/worker-request.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
   getGbifService: vi.fn(),
 }));
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+
+/** Live /species/0 response: key 0 is the backbone kingdom incertae sedis. */
+const INCERTAE_SEDIS = {
+  key: 0,
+  nubKey: 0,
+  kingdom: 'incertae sedis',
+  kingdomKey: 0,
+  scientificName: 'incertae sedis',
+  canonicalName: 'incertae sedis',
+  authorship: '',
+  nameType: 'PLACEHOLDER',
+  rank: 'KINGDOM',
+  taxonomicStatus: 'DOUBTFUL',
+  numDescendants: 3613,
+};
+
+const textOf = (content: unknown) => JSON.stringify(content);
+
+/** The input schema a client receives from tools/list, as the server advertises it. */
+const listedInputSchema = () =>
+  listedWorkerInputSchema(
+    { name: 'gbif-get-species-test', tools: [gbifGetSpecies] },
+    'gbif_get_species',
+  );
 
 describe('gbifGetSpecies', () => {
   const mockGetSpecies = vi.fn();
@@ -267,9 +293,83 @@ describe('gbifGetSpecies', () => {
 
     const err = await gbifGetSpecies.handler(input, ctx).catch((e: unknown) => e);
     expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    // An integer past the 32-bit range still passes the schema and reaches GBIF (#75).
+    expect(mockGetSpecies).toHaveBeenCalledWith(999999999999, ctx);
 
     const declared = gbifGetSpecies.errors?.find((e) => e.reason === 'invalid_filter');
     expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(declared?.recovery).toBeTruthy();
+  });
+
+  /** #75 — a fraction can no longer reach GBIF, so the contract no longer cites one. */
+  it('declares invalid_filter for an out-of-range key without citing a fraction', () => {
+    const declared = gbifGetSpecies.errors?.find((e) => e.reason === 'invalid_filter');
+    expect(declared?.when).not.toMatch(/fraction/i);
+    expect(declared?.when).toContain('32-bit signed integer range');
+    expect(declared?.recovery).not.toContain('whole numbers');
+  });
+
+  /** #75 — the advertised schema says integer, and 0 (incertae sedis) is its floor. */
+  it('advertises taxonKey as a non-negative integer in tools/list', async () => {
+    const schema = await listedInputSchema();
+    expect(schema.properties.taxonKey).toMatchObject({ type: 'integer', minimum: 0 });
+  });
+
+  it.each([1.5, -5])('rejects taxonKey %s at the schema before any request', async (taxonKey) => {
+    const result = await runToolContract(gbifGetSpecies, { taxonKey });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_arguments' },
+    });
+    expect(mockGetSpecies).not.toHaveBeenCalled();
+  });
+
+  /** #80 — key 0 answered not_found though GBIF serves the record. */
+  it('returns the incertae sedis record for taxonKey 0 on both surfaces', async () => {
+    mockGetSpecies.mockResolvedValue(INCERTAE_SEDIS);
+
+    const result = await runToolContract(gbifGetSpecies, { taxonKey: 0 });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockGetSpecies).toHaveBeenCalledWith(0, expect.anything());
+    expect(result.structuredContent).toMatchObject({
+      key: 0,
+      canonicalName: 'incertae sedis',
+      rank: 'KINGDOM',
+      kingdom: 'incertae sedis',
+      kingdomKey: 0,
+    });
+    const text = textOf(result.content);
+    expect(text).toContain('**Taxon key:** 0');
+    expect(text).toContain('Kingdom: incertae sedis (0)');
+  });
+
+  it.each(['kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species'] as const)(
+    'renders %sKey 0 beside its name (#80)',
+    (rank) => {
+      const blocks = gbifGetSpecies.format!({
+        key: 9,
+        [rank]: 'Xname',
+        [`${rank}Key`]: 0,
+      } as never);
+      const text = blocks[0].type === 'text' ? blocks[0].text : '';
+      expect(text).toContain('Xname (0)');
+    },
+  );
+
+  /** Characterization — an absent key still renders no parenthetical. */
+  it('renders no parenthetical when the rank key is absent', () => {
+    const blocks = gbifGetSpecies.format!({ key: 9, kingdom: 'Animalia' });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('Kingdom: Animalia');
+    expect(text).not.toContain('Animalia (');
+  });
+
+  /** /species/{key} sends no numOccurrences; the field description must not promise one. */
+  it('describes numOccurrences without promising GBIF sends it', () => {
+    const described = gbifGetSpecies.output.shape.numOccurrences.description ?? '';
+    expect(described).toContain('gbif_count_occurrences');
   });
 });

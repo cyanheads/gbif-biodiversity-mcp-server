@@ -45,7 +45,8 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     'The two organization filters answer different questions — publishingOrg matches the ' +
     'organization whose data it is, hostingOrg the organization whose installation serves it — ' +
     'and an organization key from gbif_search_publishers usually wants publishingOrg. ' +
-    'Returns dataset title, description, license, record count, and DOI. ' +
+    'Returns dataset title, description, license, record count, DOI, and the publishing ' +
+    "organization's key and name; the key goes back in as publishingOrg. " +
     'Use to find the source dataset behind a set of records, or to explore what data collections ' +
     'are available for a taxon, country, or organization.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -54,7 +55,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       .string()
       .optional()
       .describe(
-        'Free-text search across dataset title and description. Omit the field to browse without a term — a blank or whitespace-only value is rejected rather than sent, because GBIF answers a blank one with all 123,527 indexed datasets and a whitespace-only one with none, and neither is the search a caller who filled the field was asking for.',
+        'Free-text search across dataset title and description. Omit the field to browse without a term — a blank or whitespace-only value is rejected rather than sent, because GBIF answers a blank one with every indexed dataset and a whitespace-only one with none, and neither is the search a caller who filled the field was asking for.',
       ),
     type: z
       .enum(['OCCURRENCE', 'CHECKLIST', 'METADATA', 'SAMPLING_EVENT'])
@@ -84,10 +85,10 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       .describe(
         'UUID (8-4-4-4-12 hex, lowercase — matched case-sensitively, as publishingOrg is) of the organization whose installation serves the dataset — distinct from the organization that published it, which is publishingOrg. Most organizations publish through an installation someone else runs, so a key from gbif_search_publishers matches nothing here for them. Supplied together the two filters are intersected, not combined.',
       ),
-    limit: readLimitSchema(z.number().min(1), 1000)
+    limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of datasets to return (default 20, max 1000).'),
-    offset: z.number().min(0).default(0).describe('Pagination offset.'),
+    offset: z.number().int().min(0).default(0).describe('Pagination offset.'),
   }),
   output: z.object({
     datasets: z
@@ -110,6 +111,18 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
             license: z.string().optional().describe('License identifier. May be absent.'),
             doi: z.string().optional().describe('DOI for citation. May be absent.'),
             publishingCountry: z.string().optional().describe('Country code of the publisher.'),
+            publishingOrganizationKey: z
+              .string()
+              .optional()
+              .describe(
+                'UUID of the organization that published the dataset. Pass it back to gbif_search_datasets as publishingOrg for every dataset this organization published. Absent when GBIF omits it.',
+              ),
+            publishingOrganizationTitle: z
+              .string()
+              .optional()
+              .describe(
+                'Name of the organization that published the dataset, as GBIF records it. Absent when GBIF omits it.',
+              ),
             recordCount: z
               .number()
               .optional()
@@ -140,7 +153,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A filter was supplied blank or whitespace-only, publishingOrg or hostingOrg is not a lowercase 8-4-4-4-12 hex UUID, publishingCountry is a two-letter code GBIF does not assign, or GBIF rejected another filter value as malformed.',
+      when: 'A string filter other than publishingCountry was supplied blank or whitespace-only (a blank publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), publishingOrg or hostingOrg is not a lowercase 8-4-4-4-12 hex UUID, publishingCountry is a two-letter code GBIF does not assign, or GBIF rejected another filter value as malformed.',
       recovery:
         'A blank filter is not a way to skip one — omit the field instead. Supply publishingOrg and hostingOrg exactly as gbif_search_publishers returns them in its key field — lowercase 8-4-4-4-12 hex; an organization name is not a key, and an upper-cased rendering matches nothing. publishingCountry is a code GBIF assigns, so take one from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
@@ -217,6 +230,8 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
         license: r.license,
         doi: r.doi,
         publishingCountry: r.publishingCountry,
+        publishingOrganizationKey: r.publishingOrganizationKey,
+        publishingOrganizationTitle: r.publishingOrganizationTitle,
         recordCount: r.numRecords ?? r.recordCount,
       };
     });
@@ -260,6 +275,10 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
         license: raw.license && escapeMarkdownText(raw.license),
         doi: raw.doi && escapeMarkdownText(raw.doi),
         publishingCountry: raw.publishingCountry && escapeMarkdownText(raw.publishingCountry),
+        publishingOrganizationKey:
+          raw.publishingOrganizationKey && escapeMarkdownText(raw.publishingOrganizationKey),
+        publishingOrganizationTitle:
+          raw.publishingOrganizationTitle && escapeMarkdownText(raw.publishingOrganizationTitle),
         description: raw.description && escapeMarkdownText(raw.description, false),
       };
       lines.push(`\n## ${ds.title ?? 'Untitled dataset'}`);
@@ -268,6 +287,10 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       if (ds.license) lines.push(`**License:** ${ds.license}`);
       if (ds.doi) lines.push(`**DOI:** ${ds.doi}`);
       if (ds.publishingCountry) lines.push(`**Publishing country:** ${ds.publishingCountry}`);
+      if (ds.publishingOrganizationTitle)
+        lines.push(`**Publishing organization:** ${ds.publishingOrganizationTitle}`);
+      if (ds.publishingOrganizationKey)
+        lines.push(`**Publishing organization key:** ${ds.publishingOrganizationKey}`);
       if (ds.recordCount != null) lines.push(`**Records:** ${ds.recordCount.toLocaleString()}`);
       if (ds.description)
         lines.push(

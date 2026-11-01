@@ -3,8 +3,11 @@
  * @module tests/tools/gbif-get-species-children.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpeciesChildren } from '@/mcp-server/tools/definitions/gbif-get-species-children.tool.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
@@ -12,6 +15,13 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 }));
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+
+/** The input JSON Schema `tools/list` advertises; the SDK reads it from `~standard.jsonSchema`. */
+function advertisedInput(definition: typeof gbifGetSpeciesChildren) {
+  return definition.input['~standard'].jsonSchema.input({ target: 'draft-2020-12' }) as {
+    properties: Record<string, Record<string, unknown>>;
+  };
+}
 
 describe('gbifGetSpeciesChildren', () => {
   const mockGetSpeciesChildren = vi.fn();
@@ -24,6 +34,8 @@ describe('gbifGetSpeciesChildren', () => {
       getSpecies: mockGetSpecies,
     } as never);
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it('returns children and enrichment with pagination metadata', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
@@ -133,28 +145,45 @@ describe('gbifGetSpeciesChildren', () => {
   });
 
   /**
-   * #47 — GBIF answers 400 (not 404) for a taxonKey it cannot parse, e.g. a fraction
-   * or a value past the 32-bit signed range, both of which the bare z.number() accepts.
+   * #47 — GBIF answers 400 (not 404) for a taxonKey it cannot parse. Since #75 the
+   * schema takes integers only, so the one such key left is a safe integer past the
+   * 32-bit signed range: live, `/species/999999999999/children` answers 400 with
+   * `For input string: "999999999999"`. Run through the real service so the 400 →
+   * `invalid_filter` mapping and the declared recovery hint are both exercised.
    */
-  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
-    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
-    mockGetSpeciesChildren.mockRejectedValue(
-      new McpError(
-        JsonRpcErrorCode.InvalidParams,
-        'GBIF API returned HTTP 400 Bad Request. For input string: "1.5"',
-        { status: 400, reason: 'invalid_filter' },
+  it('maps a key past the 32-bit range to the declared invalid_filter reason (issue #47)', async () => {
+    const { GbifService } = await vi.importActual<typeof import('@/services/gbif/gbif-service.js')>(
+      '@/services/gbif/gbif-service.js',
+    );
+    vi.mocked(getGbifService).mockReturnValue(
+      new GbifService(
+        { mcpServerName: 'gbif-biodiversity-mcp-server', mcpServerVersion: 'test' } as AppConfig,
+        {} as StorageService,
+        { baseUrl: 'https://api.gbif.org/v1', timeoutMs: 1000 },
       ),
     );
+    const fetch = vi.fn((address: string) => {
+      const url = new URL(address);
+      if (url.hostname === 'api.gbif.org' && url.pathname === '/v1/species/999999999999/children')
+        return Promise.resolve(new Response('For input string: "999999999999"', { status: 400 }));
+      return Promise.reject(new Error(`Unmocked request: ${address}`));
+    });
+    vi.stubGlobal('fetch', fetch);
 
-    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
-    const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 1.5 });
-
-    const err = await gbifGetSpeciesChildren.handler(input, ctx).catch((e: unknown) => e);
-    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    const result = await runToolContract(gbifGetSpeciesChildren, { taxonKey: 999999999999 });
 
     const declared = gbifGetSpeciesChildren.errors?.find((e) => e.reason === 'invalid_filter');
     expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
-    expect(declared?.recovery).toBeTruthy();
+    expect(declared?.when).not.toMatch(/fraction/i);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_filter', recovery: { hint: declared?.recovery } },
+    });
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('For input string');
+    expect(text).toContain(declared?.recovery);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('enriches with notice when valid taxon has no children', async () => {
@@ -279,5 +308,111 @@ describe('gbifGetSpeciesChildren', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
 
     expect(text).toContain('Unknown');
+  });
+
+  /**
+   * Live, `/species/{key}/children` rows carry no `numOccurrences` key at all (checked
+   * on the children of Puma, 2435098), so the field's description must not present
+   * it as something GBIF reports here.
+   */
+  it('describes numOccurrences as absent from this listing and names where a count comes from', () => {
+    const description =
+      gbifGetSpeciesChildren.output.shape.children.element.shape.numOccurrences.description;
+    expect(description).toContain('gbif_count_occurrences');
+    expect(description).toMatch(/absent/);
+  });
+
+  /**
+   * #75 — `taxonKey`, `limit`, and `offset` were `z.number()`, so a fraction reached
+   * GBIF: a fractional key failed as a 400 after the round trip, and a fractional
+   * limit or offset was replaced by GBIF's default and answered as a success.
+   */
+  describe('integer inputs (#75)', () => {
+    it('advertises taxonKey, limit, and offset as integers with their bounds', () => {
+      const { properties } = advertisedInput(gbifGetSpeciesChildren);
+      expect(properties.taxonKey).toMatchObject({
+        type: 'integer',
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+      });
+      expect(properties.limit).toMatchObject({
+        type: 'integer',
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 20,
+      });
+      expect(properties.offset).toMatchObject({
+        type: 'integer',
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 0,
+      });
+    });
+
+    it.each([
+      { field: 'taxonKey', args: { taxonKey: 2435098.5 } },
+      { field: 'taxonKey', args: { taxonKey: -5 } },
+      { field: 'limit', args: { taxonKey: 2435098, limit: 2.5 } },
+      { field: 'limit', args: { taxonKey: 2435098, limit: 1000.5 } },
+      { field: 'offset', args: { taxonKey: 2435098, offset: 1.5 } },
+      { field: 'offset', args: { taxonKey: 2435098, offset: -1 } },
+    ])('rejects $args at the schema before any request', async ({ field, args }) => {
+      const result = await runToolContract(gbifGetSpeciesChildren, args);
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({
+        code: JsonRpcErrorCode.InvalidParams,
+        data: { reason: 'invalid_arguments' },
+      });
+      expect(JSON.stringify(result.content)).toContain(field);
+      expect(mockGetSpeciesChildren).not.toHaveBeenCalled();
+      expect(mockGetSpecies).not.toHaveBeenCalled();
+    });
+
+    /** Key 0 is the backbone's incertae sedis kingdom; live, its children answer 200. */
+    it('passes taxonKey 0 and the boundary paging integers through to GBIF', async () => {
+      mockGetSpeciesChildren.mockResolvedValue({
+        results: [{ key: 11856190, canonicalName: 'Incertae sedis child' }],
+        offset: 0,
+        limit: 1,
+        endOfRecords: false,
+      });
+
+      const result = await runToolContract(gbifGetSpeciesChildren, {
+        taxonKey: 0,
+        limit: 1,
+        offset: 0,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockGetSpeciesChildren).toHaveBeenCalledWith(
+        0,
+        { limit: 1, offset: 0 },
+        expect.anything(),
+      );
+      expect(result.structuredContent).toMatchObject({ children: [{ key: 11856190 }] });
+    });
+
+    it('holds the integer constraints with read-limit clamping off', async () => {
+      vi.stubEnv('GBIF_CLAMP_READ_LIMITS', 'false');
+      vi.resetModules();
+      try {
+        const { gbifGetSpeciesChildren: strict } = await import(
+          '@/mcp-server/tools/definitions/gbif-get-species-children.tool.js'
+        );
+        expect(strict.input.safeParse({ taxonKey: 1, limit: 1000 }).success).toBe(true);
+        expect(strict.input.safeParse({ taxonKey: 1, limit: 1001 }).success).toBe(false);
+        expect(strict.input.safeParse({ taxonKey: 1, limit: 999.5 }).success).toBe(false);
+        expect(strict.input.safeParse({ taxonKey: 1.5 }).success).toBe(false);
+        expect(advertisedInput(strict).properties.limit).toMatchObject({
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
+    });
   });
 });

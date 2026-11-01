@@ -43,11 +43,32 @@ describe('individual tool guidance', () => {
       'STATE_PROVINCE',
       'SPECIES_KEY',
       'occurrenceStatus',
+      'GADM_LEVEL_0_GID',
+      'GADM_LEVEL_3_GID',
+      'coordinates',
+      'INSTITUTION_CODE',
+      'lowercased',
+      'MEDIA_TYPE',
+      'RECORDED_BY',
+      'overlap',
     ])
       expect(description).toContain(text);
-    for (const text of ['550', '60,290,950', '59,407,400', '883,550', '9 and 41'])
+    for (const text of ['550', '60,290,950', '59,407,400', '883,550', '9 and 41', '2,263', '508'])
       expect(description).not.toContain(text);
   });
+  it.each([gbifSearchOccurrences, gbifCountOccurrences, gbifOccurrenceFacets])(
+    'names every #77/#78 filter in the $name description',
+    (tool) => {
+      for (const filter of [
+        'gadmGid',
+        'catalogNumber',
+        'institutionCode',
+        'recordedBy',
+        'mediaType',
+      ])
+        expect(tool.description).toContain(filter);
+    },
+  );
   it('keeps organization roles, key casing and intersection without listing history', () => {
     for (const field of ['publishingOrg', 'hostingOrg'] as const) {
       const description = gbifSearchDatasets.input.shape[field].description ?? '';

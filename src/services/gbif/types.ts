@@ -106,13 +106,29 @@ export type RawSpeciesRecord = {
   terrestrial?: boolean;
 };
 
+/** One entry of a `/species/search` row's `vernacularNames[]`. */
+export type RawVernacularName = {
+  vernacularName?: string;
+  /** ISO 639-2 code (`eng`, `fra`); GBIF omits it on many entries. */
+  language?: string;
+};
+
+/**
+ * One `/species/search` result row. Unlike `/species/{key}`, the row leaves the
+ * singular `vernacularName` unset and carries its common names, in every language,
+ * in `vernacularNames[]`; `numOccurrences` arrives as a 0 placeholder on every row.
+ */
+export type RawSpeciesSearchRecord = RawSpeciesRecord & {
+  vernacularNames?: RawVernacularName[];
+};
+
 /** Raw paginated response from /species/search */
 export type RawSpeciesSearchResponse = {
   offset?: number;
   limit?: number;
   endOfRecords?: boolean;
   count?: number;
-  results?: RawSpeciesRecord[];
+  results?: RawSpeciesSearchRecord[];
 };
 
 /** Raw parent node from /species/{key}/parents */
@@ -127,7 +143,8 @@ export type RawParentNode = {
 /**
  * Raw children response from /species/{key}/children.
  * GBIF omits any `count` field here (unlike /species/search) — the endpoint returns
- * only results, offset, limit, and endOfRecords. See issue #3.
+ * only results, offset, limit, and endOfRecords. See issue #3. Its rows carry no
+ * `numOccurrences` key either.
  */
 export type RawChildrenResponse = {
   offset?: number;
@@ -191,26 +208,87 @@ export const IUCN_RED_LIST_CATEGORY_VALUES = [
 
 export type IucnRedListCategory = (typeof IUCN_RED_LIST_CATEGORY_VALUES)[number];
 
-/** Biological occurrence filters accepted by GBIF occurrence search. */
+/**
+ * GBIF's `MediaType` vocabulary, every member of which carries indexed records.
+ * `/occurrence/search` answers a value outside it with HTTP 400 `Cannot parse …
+ * into a known MediaType`.
+ */
+export const MEDIA_TYPE_VALUES = [
+  'StillImage',
+  'MovingImage',
+  'Sound',
+  'InteractiveResource',
+] as const;
+
+export type MediaType = (typeof MEDIA_TYPE_VALUES)[number];
+
+/**
+ * Biological occurrence filters accepted by GBIF occurrence search. A member left
+ * `undefined` is not sent, so a tool can hand over its parsed filter fields as-is.
+ */
 export type OccurrenceFilters = {
-  taxonKey?: number;
-  scientificName?: string;
-  country?: string;
-  publishingCountry?: string;
-  stateProvince?: string;
-  decimalLatitude?: string;
-  decimalLongitude?: string;
-  geometry?: string;
-  year?: string;
-  month?: number;
-  basisOfRecord?: BasisOfRecord;
-  hasCoordinate?: boolean;
-  isInCluster?: boolean;
-  coordinateUncertaintyInMeters?: string;
-  datasetKey?: string;
-  occurrenceStatus?: OccurrenceStatus;
-  iucnRedListCategory?: IucnRedListCategory;
+  taxonKey?: number | undefined;
+  scientificName?: string | undefined;
+  country?: string | undefined;
+  publishingCountry?: string | undefined;
+  stateProvince?: string | undefined;
+  decimalLatitude?: string | undefined;
+  decimalLongitude?: string | undefined;
+  geometry?: string | undefined;
+  year?: string | undefined;
+  month?: number | undefined;
+  basisOfRecord?: BasisOfRecord | undefined;
+  hasCoordinate?: boolean | undefined;
+  isInCluster?: boolean | undefined;
+  coordinateUncertaintyInMeters?: string | undefined;
+  datasetKey?: string | undefined;
+  occurrenceStatus?: OccurrenceStatus | undefined;
+  iucnRedListCategory?: IucnRedListCategory | undefined;
+  gadmGid?: string | undefined;
+  catalogNumber?: string | undefined;
+  institutionCode?: string | undefined;
+  recordedBy?: string | undefined;
+  mediaType?: MediaType | undefined;
 };
+
+/**
+ * Exhaustive over `OccurrenceFilters` by construction — `satisfies` rejects a
+ * missing key as well as an extra one — so a filter cannot be added to the type
+ * without a place in the table the service forwards and the tools echo.
+ */
+const OCCURRENCE_FILTER_TABLE = {
+  taxonKey: true,
+  scientificName: true,
+  country: true,
+  publishingCountry: true,
+  stateProvince: true,
+  gadmGid: true,
+  decimalLatitude: true,
+  decimalLongitude: true,
+  geometry: true,
+  year: true,
+  month: true,
+  basisOfRecord: true,
+  hasCoordinate: true,
+  isInCluster: true,
+  coordinateUncertaintyInMeters: true,
+  datasetKey: true,
+  catalogNumber: true,
+  institutionCode: true,
+  recordedBy: true,
+  mediaType: true,
+  occurrenceStatus: true,
+  iucnRedListCategory: true,
+} as const satisfies Record<keyof OccurrenceFilters, true>;
+
+/**
+ * Every occurrence filter, in the order search, count, and facets forward it to
+ * `/occurrence/search` and echo it in `scope`. One table for all three is what
+ * keeps them answering the same population for the same arguments.
+ */
+export const OCCURRENCE_FILTER_KEYS = Object.keys(
+  OCCURRENCE_FILTER_TABLE,
+) as readonly (keyof OccurrenceFilters)[];
 
 /** Raw occurrence record from /occurrence/search or /occurrence/{key} */
 export type RawOccurrenceRecord = {
@@ -326,6 +404,14 @@ export type RawFacet = {
   }>;
 };
 
+/**
+ * What a facet bucket key identifies, and so where its label is read: a backbone
+ * taxon key resolves through `/species/{key}` to its `canonicalName`, a dataset
+ * UUID through `/dataset/{key}` to its `title`. A facet response carries only
+ * `name` and `count`, and GBIF has no multi-key lookup for either.
+ */
+export type FacetLabelKind = 'taxon' | 'dataset';
+
 // ─── Datasets ─────────────────────────────────────────────────────────────────
 
 export type RawDatasetRecord = {
@@ -379,12 +465,17 @@ export type RawGeographicCoverage = {
   description?: string;
 };
 
+/** A `/dataset/search` row, which names the publishing organization; `/dataset/{key}` carries its key only. */
+export type RawDatasetSearchRecord = RawDatasetRecord & {
+  publishingOrganizationTitle?: string;
+};
+
 export type RawDatasetSearchResponse = {
   offset?: number;
   limit?: number;
   endOfRecords?: boolean;
   count?: number;
-  results?: RawDatasetRecord[];
+  results?: RawDatasetSearchRecord[];
 };
 
 // ─── Organizations/Publishers ─────────────────────────────────────────────────

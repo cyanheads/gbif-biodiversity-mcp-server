@@ -15,7 +15,7 @@ const gadmLevel = () =>
       .string()
       .optional()
       .describe(
-        'GADM GID — stable administrative-unit identifier (e.g. SWE, SWE.2_1). May be absent.',
+        'GADM GID — stable administrative-unit identifier (e.g. SWE, SWE.2_1). Pass it as gadmGid to gbif_search_occurrences, gbif_count_occurrences, or gbif_occurrence_facets to filter on this unit. May be absent.',
       ),
     name: z.string().optional().describe('Administrative-unit name. May be absent.'),
   });
@@ -50,7 +50,11 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     'taxon and did not find it. Use the occurrence key from gbif_search_occurrences results.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    occurrenceKey: z.number().describe('GBIF occurrence key from gbif_search_occurrences results.'),
+    occurrenceKey: z
+      .number()
+      .int()
+      .positive()
+      .describe('GBIF occurrence key from gbif_search_occurrences results.'),
   }),
   output: z.object({
     key: z.number().optional().describe('GBIF occurrence key.'),
@@ -195,14 +199,6 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       code: JsonRpcErrorCode.NotFound,
       when: 'The occurrenceKey does not exist in GBIF.',
       recovery: 'Use gbif_search_occurrences to find valid occurrence keys.',
-    },
-    {
-      reason: 'invalid_filter',
-      code: JsonRpcErrorCode.InvalidParams,
-      when: 'GBIF rejected the occurrenceKey as unparseable — a fraction, or a value past the largest integer the endpoint accepts.',
-      recovery:
-        'Occurrence keys are whole numbers; take one from the key field of a gbif_search_occurrences result rather than constructing it.',
-      thrownBy: 'service',
     },
   ],
 

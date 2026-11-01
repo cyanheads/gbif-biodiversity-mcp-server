@@ -33,11 +33,13 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   input: z.object({
     taxonKey: z
       .number()
+      .int()
+      .nonnegative()
       .describe('GBIF backbone taxon key from gbif_match_species or another taxonomy tool.'),
-    limit: readLimitSchema(z.number().min(1), 1000)
+    limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of children to return (default 20, max 1000).'),
-    offset: z.number().min(0).default(0).describe('Pagination offset.'),
+    offset: z.number().int().min(0).default(0).describe('Pagination offset.'),
   }),
   output: z.object({
     children: z
@@ -50,7 +52,12 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
             rank: z.string().optional().describe('Taxonomic rank.'),
             taxonomicStatus: z.string().optional().describe('ACCEPTED, SYNONYM, DOUBTFUL, etc.'),
             vernacularName: z.string().optional().describe('Common name when available.'),
-            numOccurrences: z.number().optional().describe('Occurrence record count.'),
+            numOccurrences: z
+              .number()
+              .optional()
+              .describe(
+                "Occurrence record count, present only when GBIF supplies one. GBIF's children listing does not, so this is normally absent; for a count, pass key as taxonKey to gbif_count_occurrences.",
+              ),
             numDescendants: z.number().optional().describe('Count of child taxa under this node.'),
           })
           .describe('A direct child taxon with key, name, rank, and status.'),
@@ -95,9 +102,9 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'GBIF rejected the taxonKey as unparseable — a fraction, or a value outside the 32-bit signed integer range.',
+      when: 'GBIF rejected the taxonKey as unparseable — a value outside the 32-bit signed integer range.',
       recovery:
-        'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+        'Backbone taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
       thrownBy: 'service',
     },
   ],

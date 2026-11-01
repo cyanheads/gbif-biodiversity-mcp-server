@@ -3,7 +3,9 @@
  * @module tests/tools/gbif-get-occurrence.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetOccurrence } from '@/mcp-server/tools/definitions/gbif-get-occurrence.tool.js';
 
@@ -257,28 +259,67 @@ describe('gbifGetOccurrence', () => {
   });
 
   /**
-   * #47 — a fractional occurrenceKey passes the bare z.number() and GBIF answers 400
-   * ("For input string: \"1.5\""), unlike an out-of-range integer key, which 404s.
+   * #47, #75 — a fractional occurrenceKey used to pass the bare z.number() and draw
+   * an upstream 400 ("For input string: \"1.5\""), which is what an invalid_filter
+   * entry existed to explain. The key is a positive integer at the schema now, and
+   * every key it admits answers 200 or 404 upstream (live: 0, 1, -5, 2^31, 10^13,
+   * and 2^53-1 each 404), so the schema rejects the rest before any request and the
+   * contract declares not_found alone.
    */
-  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
-    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+  it('rejects fractional and non-positive keys at the schema, before any request', async () => {
+    for (const occurrenceKey of [1.5, 0, -5]) {
+      const result = await runToolContract(gbifGetOccurrence, { occurrenceKey });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({
+        data: { reason: 'invalid_arguments' },
+      });
+      expect(JSON.stringify(result.content)).toContain('occurrenceKey');
+    }
+    expect(mockGetOccurrence).not.toHaveBeenCalled();
+    expect(gbifGetOccurrence.errors?.map((e) => e.reason)).toEqual(['not_found']);
+  });
+
+  it('admits every positive safe integer and advertises the key as one', () => {
+    for (const occurrenceKey of [1, 2513888468, Number.MAX_SAFE_INTEGER])
+      expect(gbifGetOccurrence.input.safeParse({ occurrenceKey }).success).toBe(true);
+    const { properties } = z.toJSONSchema(gbifGetOccurrence.input) as {
+      properties: Record<string, unknown>;
+    };
+    expect(properties.occurrenceKey).toMatchObject({
+      type: 'integer',
+      exclusiveMinimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
+  it('answers a positive key GBIF does not hold as not_found', async () => {
     mockGetOccurrence.mockRejectedValue(
-      new McpError(
-        JsonRpcErrorCode.InvalidParams,
-        'GBIF API returned HTTP 400 Bad Request. For input string: "1.5"',
-        { status: 400, reason: 'invalid_filter' },
-      ),
+      new McpError(JsonRpcErrorCode.NotFound, 'GBIF API returned HTTP 404 Not Found.', {
+        status: 404,
+      }),
     );
 
-    const ctx = createMockContext({ errors: gbifGetOccurrence.errors });
-    const input = gbifGetOccurrence.input.parse({ occurrenceKey: 1.5 });
+    const result = await runToolContract(gbifGetOccurrence, {
+      occurrenceKey: Number.MAX_SAFE_INTEGER,
+    });
 
-    const err = await gbifGetOccurrence.handler(input, ctx).catch((e: unknown) => e);
-    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect(result.structuredContent?.error).toMatchObject({ data: { reason: 'not_found' } });
+    expect(mockGetOccurrence).toHaveBeenCalledWith(Number.MAX_SAFE_INTEGER, expect.anything());
+  });
 
-    const declared = gbifGetOccurrence.errors?.find((e) => e.reason === 'invalid_filter');
-    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
-    expect(declared?.recovery).toBeTruthy();
+  /** #77 — a GID from this record is the value the occurrence tools' gadmGid filter takes. */
+  it('names the gadmGid filter on every GADM level GID', () => {
+    const gadm = gbifGetOccurrence.output.shape.gadm.unwrap().shape;
+    for (const level of [gadm.level0, gadm.level1, gadm.level2, gadm.level3]) {
+      const description = level.unwrap().shape.gid.description ?? '';
+      expect(description).toContain('gadmGid');
+      for (const tool of [
+        'gbif_search_occurrences',
+        'gbif_count_occurrences',
+        'gbif_occurrence_facets',
+      ])
+        expect(description).toContain(tool);
+    }
   });
 });
 

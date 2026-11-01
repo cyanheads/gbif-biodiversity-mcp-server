@@ -18,8 +18,11 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
     'Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
+    // 0 is the backbone kingdom incertae sedis; no negative key names a taxon.
     taxonKey: z
       .number()
+      .int()
+      .nonnegative()
       .describe('GBIF backbone taxon key from gbif_match_species or another taxonomy tool.'),
   }),
   output: z.object({
@@ -60,9 +63,9 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'GBIF rejected the taxonKey as unparseable — a fraction, or a value outside the 32-bit signed integer range.',
+      when: 'GBIF rejected the taxonKey as unparseable — a value outside the 32-bit signed integer range.',
       recovery:
-        'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+        'Backbone taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
       thrownBy: 'service',
     },
   ],

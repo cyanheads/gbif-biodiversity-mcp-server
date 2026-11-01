@@ -88,14 +88,15 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       raw = await getGbifService().getSpecies(taxonKey, ctx);
     } catch (err) {
       // Map the upstream GBIF 404 envelope to a clean domain not_found, mirroring
-      // gbif_get_species — the service throws before the !raw.key check can run.
+      // gbif_get_species — the service throws before the missing-key check can run.
       if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
         throw ctx.fail('not_found', `Taxon key ${taxonKey} not found in the GBIF backbone.`);
       }
       throw err;
     }
 
-    if (!raw.key) {
+    // Presence, not truthiness: key 0 is the backbone kingdom incertae sedis.
+    if (raw.key == null) {
       throw ctx.fail('not_found', `Taxon key ${taxonKey} not found in the GBIF backbone.`);
     }
 

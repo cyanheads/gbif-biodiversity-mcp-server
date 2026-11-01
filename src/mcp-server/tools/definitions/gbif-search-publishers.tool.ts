@@ -40,7 +40,7 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       .string()
       .optional()
       .describe(
-        'Name fragment to search for. Matches organization names. Omit the field to browse without a term — a blank or whitespace-only value is rejected rather than sent, because the registry answers either with all 3,561 registered organizations.',
+        'Name fragment to search for. Matches organization names. Omit the field to browse without a term — a blank or whitespace-only value is rejected rather than sent, because the registry answers either with every registered organization.',
       ),
     /**
      * Deliberately unpatterned, unlike the country codes on the occurrence tools
@@ -59,12 +59,12 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       .string()
       .optional()
       .describe(
-        'ISO 3166-1 country code to filter organizations by country. The alpha-2 form ("GB") is canonical; unlike the country codes on the occurrence tools and gbif_search_datasets, this one also resolves the alpha-3 form ("GBR") and is case-insensitive, because the registry endpoint matches the parsed country rather than the string. A value GBIF cannot parse as a country errors rather than returning an empty list. Omit the field to search every country — an empty string is rejected rather than read as no filter, because the registry answers a blank country with all 3,561 organizations.',
+        'ISO 3166-1 country code to filter organizations by country. The alpha-2 form ("GB") is canonical; unlike the country codes on the occurrence tools and gbif_search_datasets, this one also resolves the alpha-3 form ("GBR") and is case-insensitive, because the registry endpoint matches the parsed country rather than the string. A value GBIF cannot parse as a country errors rather than returning an empty list. Omit the field to search every country — an empty string is rejected rather than read as no filter, because the registry answers a blank country with every registered organization.',
       ),
-    limit: readLimitSchema(z.number().min(1), 1000)
+    limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of organizations to return (default 20, max 1000).'),
-    offset: z.number().min(0).default(0).describe('Pagination offset.'),
+    offset: z.number().int().min(0).default(0).describe('Pagination offset.'),
   }),
   output: z.object({
     publishers: z

@@ -9,9 +9,9 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import type { RawSpeciesMatch } from '@/services/gbif/types.js';
+import type { RawSpeciesMatch, RawSpeciesSearchRecord } from '@/services/gbif/types.js';
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
-import { firstBlankFilter, isGbifUuid } from '../utils.js';
+import { escapeMarkdownText, firstBlankFilter, isGbifUuid } from '../utils.js';
 
 /** GBIF Backbone Taxonomy checklist; name scopes resolve keys within this dataset. */
 const BACKBONE_DATASET_KEY = 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c';
@@ -55,6 +55,35 @@ function rankNameOf(field: ScopeField, match: RawSpeciesMatch): string | undefin
   if (field === 'kingdom') return match.kingdom;
   if (field === 'family') return match.family;
   return match.genus;
+}
+
+/**
+ * Common name for one `/species/search` row.
+ *
+ * The endpoint leaves the singular `vernacularName` unset and puts a row's common
+ * names in `vernacularNames[]`, every language mixed together, each tagged with an
+ * ISO 639-2 `language` or with none. A singular name GBIF does send is kept as is.
+ * Otherwise the English entries decide: the first one containing `q`, so a
+ * vernacular search shows the name it matched on ("great tit" picks "Southern Great
+ * Tit" over the row's first English name, "Cinereous Tit"), else the first one. An
+ * entry with no language is not taken for English.
+ *
+ * The `q` match is skipped when `q` is part of the row's own scientific name, since
+ * then the query was not a common name and the only English entry that contains it
+ * is likely a scientific name GBIF tagged `eng`: on Lynx pardinus (2435261), 22
+ * English entries open with "Iberian lynx", and the 17th, "Lynx pardinus pardinus",
+ * is the one that contains "Lynx pardinus".
+ */
+function commonNameOf(row: RawSpeciesSearchRecord, q: string | undefined): string | undefined {
+  if (row.vernacularName) return row.vernacularName;
+  const english = (row.vernacularNames ?? []).flatMap((entry) =>
+    entry.language === 'eng' && entry.vernacularName ? [entry.vernacularName] : [],
+  );
+  const term = q?.trim().toLowerCase();
+  const contains = (name: string | undefined) =>
+    term !== undefined && name?.toLowerCase().includes(term) === true;
+  if (contains(row.canonicalName) || contains(row.scientificName)) return english[0];
+  return english.find(contains) ?? english[0];
 }
 
 /** Empty-result and pagination-overshoot guidance. */
@@ -105,7 +134,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .string()
       .optional()
       .describe(
-        'Name fragment to search for. Matches scientific and vernacular names. Omit the field to browse without a name term — a blank or whitespace-only value is rejected rather than sent, because GBIF answers a blank one with the whole 46,623,754-name index and a whitespace-only one with nothing, and neither is the search a caller who filled the field was asking for.',
+        'Name fragment to search for. Matches scientific and vernacular names. Omit the field to browse without a name term — a blank or whitespace-only value is rejected rather than sent, because GBIF answers a blank one with the whole name index and a whitespace-only one with nothing, and neither is the search a caller who filled the field was asking for.',
       ),
     rank: z
       .enum(['KINGDOM', 'PHYLUM', 'CLASS', 'ORDER', 'FAMILY', 'GENUS', 'SPECIES', 'SUBSPECIES'])
@@ -136,10 +165,10 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .describe(
         'Scope to a specific checklist dataset UUID (8-4-4-4-12 hex). Omit the field to search the GBIF backbone — an empty string is rejected rather than read as no scope, because GBIF answers a blank datasetKey with the unfiltered backbone result.',
       ),
-    limit: readLimitSchema(z.number().min(1), 1000)
+    limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of records to return (default 20, max 1000).'),
-    offset: z.number().min(0).default(0).describe('Pagination offset.'),
+    offset: z.number().int().min(0).default(0).describe('Pagination offset.'),
   }),
   output: z.object({
     taxa: z
@@ -172,12 +201,24 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
             order: z.string().optional().describe('Order classification.'),
             family: z.string().optional().describe('Family classification.'),
             genus: z.string().optional().describe('Genus classification.'),
-            vernacularName: z.string().optional().describe('Common name when available.'),
-            numOccurrences: z.number().optional().describe('Occurrence record count in GBIF.'),
+            vernacularName: z
+              .string()
+              .optional()
+              .describe(
+                "Common name. GBIF's own vernacularName when the row carries one. Otherwise one of the row's English (eng) vernacular names: the first that contains q, case-insensitively, when q is set and does not occur in the row's canonicalName or scientificName; else the first English one. Absent when the row carries neither.",
+              ),
+            numOccurrences: z
+              .number()
+              .optional()
+              .describe(
+                "Occurrence record count, present only when GBIF supplies a positive value. GBIF's species search sends 0 on every row as a placeholder, so this is normally absent; for a count, pass nubKey as taxonKey to gbif_count_occurrences, or facet by SPECIES_KEY with gbif_occurrence_facets.",
+              ),
             numDescendants: z.number().optional().describe('Count of child taxa in the backbone.'),
             extinct: z.boolean().optional().describe('True when explicitly flagged as extinct.'),
           })
-          .describe('A checklist taxon usage with classification, status, and occurrence counts.'),
+          .describe(
+            'A checklist taxon usage with classification, status, common name, and descendant count.',
+          ),
       )
       .describe('Matching taxa.'),
   }),
@@ -386,8 +427,10 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       order: r.order,
       family: r.family,
       genus: r.genus,
-      vernacularName: r.vernacularName,
-      numOccurrences: r.numOccurrences,
+      vernacularName: commonNameOf(r, input.q),
+      // A 0 here is GBIF's placeholder on every search row, not a count of zero records.
+      ...(typeof r.numOccurrences === 'number' &&
+        r.numOccurrences > 0 && { numOccurrences: r.numOccurrences }),
       numDescendants: r.numDescendants,
       ...(typeof r.extinct === 'boolean' && { extinct: r.extinct }),
     }));
@@ -433,7 +476,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       if (t.nubKey != null) lines.push(`**Backbone key:** ${t.nubKey}`);
       if (t.rank) lines.push(`**Rank:** ${t.rank}`);
       if (t.taxonomicStatus) lines.push(`**Status:** ${t.taxonomicStatus}`);
-      if (t.vernacularName) lines.push(`**Common name:** ${t.vernacularName}`);
+      if (t.vernacularName) lines.push(`**Common name:** ${escapeMarkdownText(t.vernacularName)}`);
       const classificationParts: string[] = [];
       if (t.kingdom) classificationParts.push(`Kingdom: ${t.kingdom}`);
       if (t.phylum) classificationParts.push(`Phylum: ${t.phylum}`);

@@ -13,14 +13,16 @@ import {
 } from '@/services/gbif/types.js';
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
-  firstBlankFilter,
-  isGbifUuid,
+  escapeMarkdownText,
+  occurrenceFilters,
+  occurrenceFilterViolation,
+  occurrenceNoMatchNotices,
   occurrenceScope,
   occurrenceScopeSchema,
   occurrenceStatusNotice,
   overPaginationCapNotice,
   PAGINATION_CAP,
-  stateProvinceNoMatchNotice,
+  sharedOccurrenceFilterFields,
 } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
@@ -42,12 +44,12 @@ function buildNotice(args: {
 export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   title: 'Search Occurrences',
   description:
-    'Search 3.9B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
+    'Search GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
     'for reliable results — it resolves synonyms automatically. Accepts country (uppercase ISO 3166-1 ' +
     "alpha-2, where the record was observed), publishingCountry (the publishing organization's country — a different " +
-    'question), stateProvince, bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon ' +
+    'question), stateProvince, gadmGid (a GADM administrative-area code GBIF derives from coordinates), bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon ' +
     'geometry, year range, month, ' +
-    'basis of record, coordinate filter, and dataset key. Returns sightings only by default — GBIF also ' +
+    'basis of record, coordinate filter, dataset key, catalogNumber, institutionCode, recordedBy (collector), and mediaType. Returns sightings only by default — GBIF also ' +
     'indexes absence records (surveys that looked and found nothing), and occurrenceStatus controls ' +
     'whether they are included. Pagination is capped at offset+limit=100,001 and GBIF offers no ' +
     'cursor or scroll, so a larger result set is covered only by partitioning it — facet it by ' +
@@ -56,6 +58,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   input: z.object({
     taxonKey: z
       .number()
+      .int()
+      .nonnegative()
       .optional()
       .describe(
         'GBIF backbone taxon key from gbif_match_species. Preferred over scientificName — matches all synonyms automatically. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
@@ -118,6 +122,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       ),
     month: z
       .number()
+      .int()
       .min(1)
       .max(12)
       .optional()
@@ -166,11 +171,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .describe(
         'Restrict to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Records with no category are excluded when this is set.',
       ),
-    limit: readLimitSchema(z.number().min(1), 300)
+    ...sharedOccurrenceFilterFields(),
+    limit: readLimitSchema(z.number().int().min(1), 300)
       .default(20)
       .describe('Number of records to return (default 20, max 300).'),
     offset: z
       .number()
+      .int()
       .min(0)
       .default(0)
       .describe(
@@ -258,6 +265,18 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .optional()
               .describe('Country code of the publishing organization.'),
             recordedBy: z.string().optional().describe('Collector name(s). May be absent.'),
+            institutionCode: z
+              .string()
+              .optional()
+              .describe(
+                'Code of the institution holding the record — the value the institutionCode filter matches. May be absent.',
+              ),
+            catalogNumber: z
+              .string()
+              .optional()
+              .describe(
+                'Catalog number the holding collection assigned — the value the catalogNumber filter matches. May be absent.',
+              ),
             issues: z
               .array(z.string())
               .optional()
@@ -298,14 +317,14 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'offset + limit exceeds 100,001, the deepest page GBIF serves.',
       recovery:
-        "Reduce offset or limit so their sum is at most 100,001; GBIF exposes no cursor or scroll, so no parameter continues past it. To cover a result set larger than the cap, partition it instead of paging deeper: call gbif_occurrence_facets with facet DATASET_KEY, repeating this search's filters (every occurrence carries exactly one datasetKey, so the buckets cover the scope with no gaps or overlap, and facetOffset pages through them), then re-run this search once per datasetKey. A bucket still over the cap cuts further on BASIS_OF_RECORD or PUBLISHING_COUNTRY — the only other dimensions whose buckets leave no record out, and both have a matching filter here (basisOfRecord, publishingCountry). Do not take YEAR as the first cut — records without a year fall outside every year bucket, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way, stateProvince included even though this tool can filter on it. Either second cut can also return a single bucket inside one dataset, so compare any sub-split's sum against the bucket total before relying on it. gbif_occurrence_facets accepts the same biological filters: repeat all of them on the facet call and each per-datasetKey search to preserve the population. Bucket counts reconcile against the occurrenceStatus in force, PRESENT by default here. Retrieving the set in one piece is not possible through this server: the GBIF Download API requires a GBIF.org account, runs asynchronously, and returns a ZIP archive, and the monthly GBIF Parquet snapshot on AWS Open Data is a bulk dataset — both are routes for the caller to take directly.",
+        "Reduce offset or limit so their sum is at most 100,001; GBIF exposes no cursor or scroll, so no parameter continues past it. To cover a result set larger than the cap, partition it instead of paging deeper: call gbif_occurrence_facets with facet DATASET_KEY, repeating this search's filters (every occurrence carries exactly one datasetKey, so the buckets cover the scope with no gaps or overlap, and facetOffset pages through them), then re-run this search once per datasetKey. A bucket still over the cap cuts further on BASIS_OF_RECORD or PUBLISHING_COUNTRY — gap-free dimensions that split a PRESENT-scoped bucket further (OCCURRENCE_STATUS is gap-free too, but yields a single bucket under the PRESENT default), both with a matching filter here (basisOfRecord, publishingCountry). Do not take YEAR as the first cut — records without a year fall outside every year bucket, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way, stateProvince included even though this tool can filter on it. Either second cut can also return a single bucket inside one dataset, so compare any sub-split's sum against the bucket total before relying on it. gbif_occurrence_facets accepts the same biological filters: repeat all of them on the facet call and each per-datasetKey search to preserve the population. Bucket counts reconcile against the occurrenceStatus in force, PRESENT by default here. Retrieving the set in one piece is not possible through this server: the GBIF Download API requires a GBIF.org account, runs asynchronously, and returns a ZIP archive, and the monthly GBIF Parquet snapshot on AWS Open Data is a bulk dataset — both are routes for the caller to take directly.",
     },
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A filter value is unusable — any filter supplied blank or whitespace-only, a datasetKey that is not an 8-4-4-4-12 hex UUID, a two-letter country or publishingCountry code GBIF does not know, or a WKT geometry or range GBIF rejects.',
+      when: 'A filter value is unusable — a string filter other than country and publishingCountry supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), a datasetKey that is not an 8-4-4-4-12 hex UUID, a gadmGid holding a character other than an uppercase letter, digit, dot, or underscore, a two-letter country or publishingCountry code GBIF does not know, or a WKT geometry or range GBIF rejects.',
       recovery:
-        'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+        'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
   ],
 
@@ -326,71 +345,12 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       );
     }
 
-    /**
-     * Every string filter this tool forwards, checked on presence rather than on a
-     * non-blank value. `/occurrence/search` ignores a parameter it is given with no
-     * value and answers the unfiltered scope, so the `?.trim()` spread these fields
-     * used to sit behind turned a narrowed query into a wide one and reported it as
-     * the caller's own. Reject a blank value rather than silently dropping its constraint.
-     */
-    const blankFilter = firstBlankFilter({
-      scientificName: input.scientificName,
-      stateProvince: input.stateProvince,
-      decimalLatitude: input.decimalLatitude,
-      decimalLongitude: input.decimalLongitude,
-      geometry: input.geometry,
-      year: input.year,
-      coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
-    });
-    if (blankFilter) {
-      throw ctx.fail(
-        'invalid_filter',
-        `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
-      );
-    }
+    const violation = occurrenceFilterViolation(input);
+    if (violation) throw ctx.fail('invalid_filter', violation);
 
-    /**
-     * Checked whenever datasetKey is present, not only when it is non-blank. A
-     * malformed key is rejected locally so the failure carries this tool's recovery
-     * hint instead of a bare upstream 400 that costs a round trip and the retry
-     * budget. The empty string is rejected for the opposite reason: it draws no error
-     * at all — `/occurrence/search?datasetKey=` answers 200 with the unfiltered scope,
-     * so a `?.trim()` guard dropped the filter and returned all 2,351,689,943 records
-     * under taxonKey 212, down to the same first record, to a caller who believed the
-     * search was scoped to one dataset. Letter case stays unchecked: this route
-     * resolves a key either way, unlike `/dataset/search`'s two organization filters.
-     */
-    if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey)) {
-      throw ctx.fail(
-        'invalid_filter',
-        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
-      );
-    }
-
+    const { limit: requestedLimit, offset: requestedOffset, ...filters } = input;
     const raw = await getGbifService().searchOccurrences(
-      {
-        ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
-        ...(input.scientificName !== undefined && { scientificName: input.scientificName }),
-        ...(input.country && { country: input.country }),
-        ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
-        ...(input.stateProvince !== undefined && { stateProvince: input.stateProvince }),
-        ...(input.decimalLatitude !== undefined && { decimalLatitude: input.decimalLatitude }),
-        ...(input.decimalLongitude !== undefined && { decimalLongitude: input.decimalLongitude }),
-        ...(input.geometry !== undefined && { geometry: input.geometry }),
-        ...(input.year !== undefined && { year: input.year }),
-        ...(input.month !== undefined && { month: input.month }),
-        ...(input.basisOfRecord && { basisOfRecord: input.basisOfRecord }),
-        ...(input.hasCoordinate !== undefined && { hasCoordinate: input.hasCoordinate }),
-        ...(input.isInCluster !== undefined && { isInCluster: input.isInCluster }),
-        ...(input.coordinateUncertaintyInMeters !== undefined && {
-          coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
-        }),
-        ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
-        ...(input.occurrenceStatus !== 'ANY' && { occurrenceStatus: input.occurrenceStatus }),
-        ...(input.iucnRedListCategory && { iucnRedListCategory: input.iucnRedListCategory }),
-        limit: input.limit,
-        offset: input.offset,
-      },
+      { ...occurrenceFilters(filters), limit: requestedLimit, offset: requestedOffset },
       ctx,
     );
 
@@ -421,6 +381,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       datasetName: r.datasetName,
       publishingCountry: r.publishingCountry,
       recordedBy: r.recordedBy,
+      institutionCode: r.institutionCode,
+      catalogNumber: r.catalogNumber,
       issues: r.issues?.length ? r.issues : undefined,
     }));
 
@@ -440,7 +402,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     const notice = [
       clamp.notice,
       buildNotice({ totalCount, occurrenceCount: occurrences.length, offset }),
-      stateProvinceNoMatchNotice(input.stateProvince, totalCount),
+      ...occurrenceNoMatchNotices(input, totalCount),
       overPaginationCapNotice(totalCount),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
@@ -498,6 +460,10 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       else if (occ.countryCode) lines.push(`**Country code:** ${occ.countryCode}`);
       if (occ.publishingCountry) lines.push(`**Publishing country:** ${occ.publishingCountry}`);
       if (occ.recordedBy) lines.push(`**Recorded by:** ${occ.recordedBy}`);
+      if (occ.institutionCode)
+        lines.push(`**Institution:** ${escapeMarkdownText(occ.institutionCode)}`);
+      if (occ.catalogNumber)
+        lines.push(`**Catalog number:** ${escapeMarkdownText(occ.catalogNumber)}`);
       if (occ.individualCount != null) lines.push(`**Count:** ${occ.individualCount}`);
       if (occ.datasetKey)
         lines.push(`**Dataset:** ${occ.datasetName ?? occ.datasetKey} (key: ${occ.datasetKey})`);

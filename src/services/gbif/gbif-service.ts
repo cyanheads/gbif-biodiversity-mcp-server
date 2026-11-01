@@ -12,19 +12,21 @@ import {
   timeout,
 } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
-import { httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
-import type {
-  OccurrenceFilters,
-  RawChildrenResponse,
-  RawDatasetRecord,
-  RawDatasetSearchResponse,
-  RawOccurrenceRecord,
-  RawOccurrenceSearchResponse,
-  RawOrganizationSearchResponse,
-  RawParentNode,
-  RawSpeciesMatch,
-  RawSpeciesRecord,
-  RawSpeciesSearchResponse,
+import { createPacer, httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  type FacetLabelKind,
+  OCCURRENCE_FILTER_KEYS,
+  type OccurrenceFilters,
+  type RawChildrenResponse,
+  type RawDatasetRecord,
+  type RawDatasetSearchResponse,
+  type RawOccurrenceRecord,
+  type RawOccurrenceSearchResponse,
+  type RawOrganizationSearchResponse,
+  type RawParentNode,
+  type RawSpeciesMatch,
+  type RawSpeciesRecord,
+  type RawSpeciesSearchResponse,
 } from './types.js';
 
 /**
@@ -43,6 +45,18 @@ const HTML_RESPONSE = /^\s*<(!DOCTYPE\s+html|html[\s>])/i;
  * for a field that is allowed to be absent.
  */
 const RECORD_COUNT_TIMEOUT_MS = 3_000;
+
+/**
+ * Label lookups in flight at once, shared by every concurrent facet call. A labeled
+ * page costs one request per bucket — up to 100 — so the lookups queue rather than
+ * leave as one burst. Measured live, 100 `/species` lookups at this bound finish in
+ * about 3 s, well inside the label deadline.
+ */
+const FACET_LABEL_CONCURRENCY = 8;
+
+/** The one field each kind of label lookup reads from the record it fetches. */
+const TAXON_LABEL = z.object({ canonicalName: z.string().min(1) });
+const DATASET_LABEL = z.object({ title: z.string().min(1) });
 
 /**
  * Converts a non-2xx GBIF response into an `McpError`.
@@ -78,12 +92,33 @@ async function gbifHttpError(response: Response): Promise<McpError> {
   );
 }
 
+/**
+ * `/occurrence/search` parameters for one filter set — the single table search,
+ * count, and facets forward through, so the three send the same query for the
+ * same filters. Every supplied value goes out byte-identically, `0` and `false`
+ * included; an `undefined` one is not sent. Blank strings never arrive: the tools
+ * reject them first, because the endpoint reads a parameter with no value as no
+ * filter and answers the unfiltered scope.
+ */
+function occurrenceParams(filters: OccurrenceFilters): Record<string, unknown> {
+  return Object.fromEntries(OCCURRENCE_FILTER_KEYS.map((key) => [key, filters[key]]));
+}
+
 // ─── Service class ─────────────────────────────────────────────────────────────
 
 export class GbifService {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly userAgent: string;
+  /**
+   * One per service, and the service is one per process, so the concurrency bound
+   * holds across concurrent facet calls. Concurrency alone binds, so the pacer
+   * never arms a dispatch timer and needs no disposal.
+   */
+  private readonly labelPacer = createPacer({
+    name: 'gbif-facet-labels',
+    maxConcurrent: FACET_LABEL_CONCURRENCY,
+  });
 
   constructor(
     config: AppConfig,
@@ -111,12 +146,19 @@ export class GbifService {
     return url.toString();
   }
 
+  /**
+   * `deadline` is a caller-owned signal that ends the attempt the way `ctx.signal`
+   * does: aborting it aborts the fetch, and the attempt rejects with its reason, by
+   * identity. It bounds attempts only — the retry loop between them watches
+   * `ctx.signal` alone — so it is for single-attempt (`maxRetries: 0`) requests.
+   */
   private getJson<T>(
     url: string,
     ctx: Context,
-    opts: { maxRetries?: number; timeoutMs?: number } = {},
+    opts: { maxRetries?: number; timeoutMs?: number; deadline?: AbortSignal } = {},
   ): Promise<T> {
     const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
+    const { deadline } = opts;
     const request = async () => {
       ctx.signal.throwIfAborted();
       const controller = new AbortController();
@@ -136,9 +178,11 @@ export class GbifService {
       // Propagate ctx.signal cancellation; once:true cleans up after each attempt
       const onAbort = () => controller.abort(ctx.signal.reason);
       ctx.signal.addEventListener('abort', onAbort, { once: true });
+      const onDeadline = () => controller.abort(deadline?.reason);
+      deadline?.addEventListener('abort', onDeadline, { once: true });
       const rethrowTransportError = (error: unknown): never => {
         if (opts.maxRetries === 0 && error instanceof TypeError && !controller.signal.aborted) {
-          throw serviceUnavailable('GBIF API count transport failed.', undefined, { cause: error });
+          throw serviceUnavailable('GBIF API transport failed.', undefined, { cause: error });
         }
         throw error;
       };
@@ -166,10 +210,14 @@ export class GbifService {
             { cause: err },
           );
         }
+        // By identity too: what `fetch` rejects with on an abort varies by runtime.
+        if (deadline?.aborted && controller.signal.reason === deadline.reason)
+          throw deadline.reason;
         throw err;
       } finally {
         clearTimeout(timeoutId);
         ctx.signal.removeEventListener('abort', onAbort);
+        deadline?.removeEventListener('abort', onDeadline);
       }
     };
     if (opts.maxRetries === 0) return request();
@@ -279,28 +327,11 @@ export class GbifService {
     },
     ctx: Context,
   ): Promise<RawOccurrenceSearchResponse> {
-    const queryParams: Record<string, unknown> = {};
-    if (params.taxonKey !== undefined) queryParams.taxonKey = params.taxonKey;
-    if (params.scientificName) queryParams.scientificName = params.scientificName;
-    if (params.country) queryParams.country = params.country;
-    if (params.publishingCountry) queryParams.publishingCountry = params.publishingCountry;
-    if (params.stateProvince) queryParams.stateProvince = params.stateProvince;
-    if (params.decimalLatitude) queryParams.decimalLatitude = params.decimalLatitude;
-    if (params.decimalLongitude) queryParams.decimalLongitude = params.decimalLongitude;
-    if (params.geometry) queryParams.geometry = params.geometry;
-    if (params.year) queryParams.year = params.year;
-    if (params.month !== undefined) queryParams.month = params.month;
-    if (params.basisOfRecord) queryParams.basisOfRecord = params.basisOfRecord;
-    if (params.hasCoordinate !== undefined) queryParams.hasCoordinate = params.hasCoordinate;
-    if (params.isInCluster !== undefined) queryParams.isInCluster = params.isInCluster;
-    if (params.coordinateUncertaintyInMeters)
-      queryParams.coordinateUncertaintyInMeters = params.coordinateUncertaintyInMeters;
-    if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
-    if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
-    if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;
-    if (params.limit !== undefined) queryParams.limit = params.limit;
-    if (params.offset !== undefined) queryParams.offset = params.offset;
-    const url = this.buildUrl('/occurrence/search', queryParams);
+    const url = this.buildUrl('/occurrence/search', {
+      ...occurrenceParams(params),
+      limit: params.limit,
+      offset: params.offset,
+    });
     ctx.log.debug('Searching occurrences', { taxonKey: params.taxonKey, country: params.country });
     return this.getJson<RawOccurrenceSearchResponse>(url, ctx);
   }
@@ -356,30 +387,85 @@ export class GbifService {
     },
     ctx: Context,
   ): Promise<RawOccurrenceSearchResponse> {
-    const queryParams: Record<string, unknown> = { limit: 0, facet: params.facet };
-    if (params.taxonKey !== undefined) queryParams.taxonKey = params.taxonKey;
-    if (params.scientificName) queryParams.scientificName = params.scientificName;
-    if (params.country) queryParams.country = params.country;
-    if (params.publishingCountry) queryParams.publishingCountry = params.publishingCountry;
-    if (params.stateProvince) queryParams.stateProvince = params.stateProvince;
-    if (params.year) queryParams.year = params.year;
-    if (params.basisOfRecord) queryParams.basisOfRecord = params.basisOfRecord;
-    if (params.geometry) queryParams.geometry = params.geometry;
-    if (params.decimalLatitude) queryParams.decimalLatitude = params.decimalLatitude;
-    if (params.decimalLongitude) queryParams.decimalLongitude = params.decimalLongitude;
-    if (params.month !== undefined) queryParams.month = params.month;
-    if (params.hasCoordinate !== undefined) queryParams.hasCoordinate = params.hasCoordinate;
-    if (params.isInCluster !== undefined) queryParams.isInCluster = params.isInCluster;
-    if (params.coordinateUncertaintyInMeters)
-      queryParams.coordinateUncertaintyInMeters = params.coordinateUncertaintyInMeters;
-    if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
-    if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
-    if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;
-    if (params.facetLimit !== undefined) queryParams.facetLimit = params.facetLimit;
-    if (params.facetOffset !== undefined) queryParams.facetOffset = params.facetOffset;
-    const url = this.buildUrl('/occurrence/search', queryParams);
+    const url = this.buildUrl('/occurrence/search', {
+      limit: 0,
+      facet: params.facet,
+      ...occurrenceParams(params),
+      facetLimit: params.facetLimit,
+      facetOffset: params.facetOffset,
+    });
     ctx.log.debug('Fetching occurrence facets', { facet: params.facet });
     return this.getJson<RawOccurrenceSearchResponse>(url, ctx);
+  }
+
+  /**
+   * Names for facet bucket keys, keyed by bucket key: a taxon key's `canonicalName`
+   * from `/species/{key}`, a dataset UUID's `title` from `/dataset/{key}`. Each key
+   * becomes a path segment, so the caller passes only digit strings for `taxon` and
+   * UUIDs for `dataset`.
+   *
+   * Supplementary to counts already in hand, and one request per key, so bounded:
+   * one attempt per key with no retry; at most `FACET_LABEL_CONCURRENCY` lookups in
+   * flight across every concurrent call; and one `deadlineMs` over the whole set,
+   * queue time included, which ends lookups still queued or in flight when it
+   * passes.
+   *
+   * A key is absent from the result when its lookup fails upstream (404, 5xx, 429,
+   * transport, timeout), misses the deadline, or returns a record without the
+   * field. Caller cancellation rejects with `ctx.signal.reason`; any other failure —
+   * a malformed body, a programming error — propagates.
+   */
+  async getFacetLabels(
+    params: { kind: FacetLabelKind; keys: readonly string[]; deadlineMs: number },
+    ctx: Context,
+  ): Promise<Map<string, string>> {
+    const { kind, keys, deadlineMs } = params;
+    const labels = new Map<string, string>();
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () =>
+        deadline.abort(
+          timeout(`GBIF facet label lookups reached their ${deadlineMs}ms deadline.`, {
+            timeoutMs: deadlineMs,
+          }),
+        ),
+      deadlineMs,
+    );
+    // A queued lookup leaves the line on either signal; getJson watches both in flight.
+    const queueSignal = AbortSignal.any([ctx.signal, deadline.signal]);
+    const path = kind === 'taxon' ? '/species' : '/dataset';
+    try {
+      await Promise.all(
+        keys.map(async (key) => {
+          try {
+            const record = await this.labelPacer.run(
+              () =>
+                this.getJson<unknown>(this.buildUrl(`${path}/${key}`), ctx, {
+                  maxRetries: 0,
+                  deadline: deadline.signal,
+                }),
+              { signal: queueSignal },
+            );
+            const label =
+              kind === 'taxon'
+                ? TAXON_LABEL.safeParse(record).data?.canonicalName
+                : DATASET_LABEL.safeParse(record).data?.title;
+            if (label !== undefined) labels.set(key, label);
+          } catch (err) {
+            ctx.signal.throwIfAborted();
+            if (!(err instanceof McpError)) throw err;
+            ctx.log.debug('Facet label lookup failed', { kind, key, code: err.code });
+          }
+        }),
+      );
+    } finally {
+      clearTimeout(timer);
+      // Ends lookups still queued or in flight when one of them threw.
+      deadline.abort();
+    }
+    // A cancellation landing after the last lookup settled still ends the call.
+    ctx.signal.throwIfAborted();
+    return labels;
   }
 
   // ─── Datasets ─────────────────────────────────────────────────────────────────

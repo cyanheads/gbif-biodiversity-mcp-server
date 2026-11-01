@@ -6,26 +6,32 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `gbif_match_species` | Match a species name (scientific or common) against the GBIF backbone taxonomy. Returns the best-matching taxon with full classification and a confidence score. The starting point for any workflow involving a species name. | `name`, `strict`, `kingdom`, `rank` | `readOnlyHint: true` |
+| `gbif_match_species` | Match a scientific name against the GBIF backbone taxonomy (common names go to `gbif_search_species`). Returns the best-matching taxon with full classification and a confidence score. The starting point for any workflow involving a species name. | `name`, `strict`, `kingdom`, `rank` | `readOnlyHint: true` |
 | `gbif_bulk_match_species` | Match up to 50 scientific names to backbone keys, preserving input order and isolating per-name failures. | `names`, `strict` | `readOnlyHint: true` |
-| `gbif_get_species` | Fetch a taxon record by GBIF taxon key — full classification, authorship, taxonomic status (accepted/synonym/doubtful), vernacular name, and descendant count. Use after `gbif_match_species` to get the full record for a backbone taxon key. | `taxonKey` | `readOnlyHint: true` |
-| `gbif_search_species` | Search or browse the GBIF backbone taxonomy, or an explicitly selected checklist. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Returns matching species/genera/families with taxonomy, vernacular names, and record counts. | `q`, `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `datasetKey`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_get_species_classification` | Return the full parent chain from kingdom down to the given taxon — each rank as a named node with its own taxon key. Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level. | `taxonKey` | `readOnlyHint: true` |
+| `gbif_get_species` | Fetch a taxon record by GBIF taxon key (0 is the kingdom *incertae sedis*) — full classification, authorship, taxonomic status (accepted/synonym/doubtful), vernacular name, and descendant count. Use after `gbif_match_species` to get the full record for a backbone taxon key. | `taxonKey` | `readOnlyHint: true` |
+| `gbif_search_species` | Search or browse the GBIF backbone taxonomy, or an explicitly selected checklist. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Returns matching species/genera/families with taxonomy, common names, and descendant counts. | `q`, `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `datasetKey`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_get_species_classification` | Return the parent chain from kingdom down to the immediate parent of the given taxon (the taxon itself is excluded) — each rank as a named node with its own taxon key. Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level. | `taxonKey` | `readOnlyHint: true` |
 | `gbif_get_species_children` | List direct children of a taxon in the GBIF backbone (e.g., species within a genus, genera within a family). Paginated. | `taxonKey`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, bounding box, date range, basis of record, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. Filters to presences by default. | `taxonKey`, `scientificName`, `country`, `publishingCountry`, `stateProvince`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `isInCluster`, `coordinateUncertaintyInMeters`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, GADM area, bounding box, date range, basis of record, collection and collector filters, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. Filters to presences by default. | `taxonKey`, `scientificName`, `country`, `publishingCountry`, `stateProvince`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `isInCluster`, `coordinateUncertaintyInMeters`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory`, `gadmGid`, `catalogNumber`, `institutionCode`, `recordedBy`, `mediaType`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_count_occurrences` | Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. Applies the same presence/absence default as `gbif_search_occurrences`. | Every biological filter on `gbif_search_occurrences`, plus `isGeoreferenced` as an alias for `hasCoordinate` | `readOnlyHint: true` |
 | `gbif_get_occurrence` | Fetch a single occurrence record by GBIF occurrence key — full Darwin Core fields, coordinates, date, collector, media, dataset provenance. | `occurrenceKey` | `readOnlyHint: true` |
-| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | Every biological filter on `gbif_search_occurrences`, plus `facet`, `facetLimit`, `facetOffset` | `readOnlyHint: true` |
-| `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, publishing organization, or hosting organization. Returns dataset title, description, license, record count, and DOI. | `q`, `type`, `publishingCountry`, `publishingOrg`, `hostingOrg`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, and record count. | `datasetKey`, `contactLimit` | `readOnlyHint: true` |
-| `gbif_search_publishers` | Search organizations (publishers/institutions) that contribute data to GBIF by name or country. Returns organization name, country, and key for chaining into dataset and occurrence queries. | `q`, `country`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom, GADM level, institution, media type, collector). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`; `includeLabels` names taxon and dataset keys. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | Every biological filter on `gbif_search_occurrences`, plus `facet`, `facetLimit`, `facetOffset`, `includeLabels` | `readOnlyHint: true` |
+| `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, publishing organization, or hosting organization. Returns dataset title, description, license, record count, DOI, and the publishing organization's key and name. | `q`, `type`, `publishingCountry`, `publishingOrg`, `hostingOrg`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, record count, and the publishing organization key. | `datasetKey`, `contactLimit` | `readOnlyHint: true` |
+| `gbif_search_publishers` | Search organizations (publishers/institutions) that contribute data to GBIF by name or country. Returns organization name, country, and key for chaining into `gbif_search_datasets` (`publishingOrg` or `hostingOrg`). | `q`, `country`, `limit`, `offset` | `readOnlyHint: true` |
 
 ### Resources
 
 | URI Template | Description | Pagination |
 |:-------------|:------------|:-----------|
 | `gbif://species/{taxonKey}` | Taxon record from the GBIF backbone — classification, authorship, synonymy status, vernacular name. Stable URI for caching and injection as context. | No |
-| `gbif://dataset/{datasetKey}` | Dataset metadata — title, description, citation, license, contacts, coverage. Stable URI for provenance context. | No |
+| `gbif://dataset/{datasetKey}` | Dataset metadata — title, description, citation, license, contacts, coverage, and the publishing organization key. Stable URI for provenance context. | No |
+
+### Skills
+
+| Name | Description |
+|:-----|:------------|
+| `gbif-biodiversity-guide` | Agent guide: where each key comes from, which region filter selects which records, and the checks before quoting a count, a trend, or an absence. Installed with the Claude Code and Codex plugins and the `.mcpb`, and served over MCP at `skill://gbif-biodiversity-guide/SKILL.md`. |
 
 ### Prompts
 
@@ -75,7 +81,8 @@ One service handles all API communication. The GBIF REST API is a single base UR
 |:--------|:---------|:------------|
 | `GBIF_BASE_URL` | No | Override the GBIF API base URL. Defaults to `https://api.gbif.org/v1`. |
 | `GBIF_REQUEST_TIMEOUT_MS` | No | HTTP request timeout in milliseconds. Defaults to `10000`. |
-| `GBIF_CLAMP_READ_LIMITS` | No | Defaults to `true`: oversized read limits clamp to the existing workload caps, with requested/applied notices, logs, and a counter. Bulk matching processes the first 50 names and returns the ordered remainder in `unprocessedNames`. `false` restores advertised and enforced rejecting maxima. Parsed with `z.stringbool()`; malformed values fail startup. |
+| `GBIF_USER_AGENT` | No | `User-Agent` sent on every GBIF request. GBIF asks integrators to identify themselves with a contact URL or email. Defaults to the server name, version, and repository URL. |
+| `GBIF_CLAMP_READ_LIMITS` | No | Defaults to `true`: oversized whole-number read limits clamp to the existing workload caps, with requested/applied notices, logs, and a counter. Bulk matching processes the first 50 names and returns the ordered remainder in `unprocessedNames`. `false` restores advertised and enforced rejecting maxima. Parsed with `z.stringbool()`; malformed values fail startup. |
 
 ---
 
@@ -119,16 +126,16 @@ Operations left out:
 
 ### `gbif_match_species`
 
-The entry point for any species workflow. Resolves a name string (scientific or vernacular) against the GBIF taxonomic backbone and returns the best-matching accepted taxon. Critically, it returns the backbone `usageKey` (exposed by the handler as `taxonKey`) that other tools (`gbif_search_occurrences`, `gbif_count_occurrences`, `gbif_occurrence_facets`) accept directly.
+The entry point for any species workflow. Resolves a scientific name string against the GBIF taxonomic backbone and returns the best-matching accepted taxon. Critically, it returns the backbone `usageKey` (exposed by the handler as `taxonKey`) that other tools (`gbif_search_occurrences`, `gbif_count_occurrences`, `gbif_occurrence_facets`) accept directly.
 
 **Input schema:**
 
 ```ts
 z.object({
   name: z.string()
-    .describe('Scientific or common name to match. Examples: "Parus major", "Great Tit", "Homo sapiens". Fuzzy matching handles minor typos.'),
+    .describe('Scientific name to match. Examples: "Parus major", "Agaricus bisporus", "Homo sapiens". Fuzzy matching handles minor typos. Common names are not supported — use gbif_search_species.'),
   strict: z.boolean().default(false)
-    .describe('When true, only return an exact match. When false (default), GBIF applies fuzzy matching — useful for misspellings and vernacular names. Set to true when you need a confirmed scientific name match.'),
+    .describe('When true, only return an exact match. When false (default), GBIF applies fuzzy matching — useful for minor spelling variations and abbreviated names. Set to true when you need a confirmed scientific name match.'),
   kingdom: z.string().optional()
     .describe('Narrow the match to a specific kingdom (e.g., "Animalia", "Plantae", "Fungi") to disambiguate names that appear in multiple kingdoms.'),
   rank: z.enum(['KINGDOM','PHYLUM','CLASS','ORDER','FAMILY','GENUS','SPECIES','SUBSPECIES']).optional()
@@ -144,14 +151,14 @@ z.object({
 - `scientificName` — full name with authority
 - `canonicalName` — name without authority
 - `rank`, `status` (ACCEPTED | SYNONYM | DOUBTFUL)
-- `confidence` (0–100) — GBIF's match confidence; below 80 warrants user review
-- `matchType` (EXACT | FUZZY | HIGHERRANK | NONE)
+- `confidence` (0–100) — GBIF's match confidence; below 80 warrants user review. A `HIGHERRANK` fallback can score above 90 (a misspelled species falling back to its kingdom scored 92), so `matchType` is read first.
+- `matchType` (EXACT | FUZZY | HIGHERRANK | NONE) — `HIGHERRANK` is disclosed in a `notice` naming the taxon and rank, and `taxonKey` covers that whole taxon — or, when that taxon is a synonym, its accepted taxon, named when the classification carries it under the same key (*Nyctea xyzzyqq* → genus *Nyctea*, accepted *Bubo* 5959091); the notice and the synonym disclosure compose into one. It is never rejected; see decision 18.
 - Classification fields are returned **flat at the top level** (not nested): `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species` and corresponding `kingdomKey`, `phylumKey`, `classKey`, `orderKey`, `familyKey`, `genusKey`, `speciesKey` fields. There is no nested `classification` object.
 - Note: `alternatives` is **not returned** by the `/species/match` endpoint — it is absent from real API responses regardless of match quality.
 
 **Errors:**
 
-- `no_match` — `matchType === 'NONE'`, no candidate met threshold. Recovery: try a broader name or remove the `strict` flag.
+- `no_match` — `matchType === 'NONE'`: no candidate met threshold, or several equal candidates tied, in which case the message carries GBIF's note ("Multiple equal matches for Oenanthe") and, while `kingdom` is unset, a retry with `kingdom`. Recovery: broaden the name, remove `strict`, set `kingdom`, or use `gbif_search_species`.
 - `invalid_filter` — `kingdom` supplied blank or whitespace-only. `/species/match` drops one and matches against the whole backbone, so the answer comes back looking disambiguated when it is not; see decision 16. Nothing upstream raises this reason — `/species/match` answers HTTP 200 for every input this schema can produce.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
@@ -162,18 +169,19 @@ z.object({
 
 Fetch a single backbone taxon by key. Companion to `gbif_match_species` — call this when you need the full record (authorship, descendant count, synonymy status, vernacular name, publication reference) rather than just the classification summary that `gbif_match_species` returns.
 
-**Input:** `taxonKey: z.number()`
+**Input:** `taxonKey: z.number().int().nonnegative()` (0 is the backbone kingdom *incertae sedis*)
 
 **Output:**
 
 - Full species record: `key`, `scientificName`, `canonicalName`, `authorship`, `rank`, `taxonomicStatus`, `kingdom`/`phylum`/`class`/`order`/`family`/`genus`/`species` + `*Key` fields
 - `vernacularName` — English common name if present (may be absent)
 - `numDescendants` — count of child taxa in backbone
+- `numOccurrences` — normally absent: GBIF's taxon record carries no occurrence count, so a count comes from `gbif_count_occurrences`
 - `taxonomicStatus` — `ACCEPTED`, `SYNONYM`, `DOUBTFUL`, etc. When `SYNONYM`, `acceptedKey` (number) and `accepted` (accepted name string) are also present. Note: there is no `synonym: boolean` field — use `taxonomicStatus === 'SYNONYM'` instead.
 - `publishedIn` — original description citation if populated (may be absent)
 - `extinct: boolean` — present only on taxa explicitly flagged as extinct; absent (not false) on most records
 
-**Errors:** `not_found` when the taxonKey doesn't exist in the backbone.
+**Errors:** `not_found` when the taxonKey doesn't exist in the backbone; `invalid_filter` for a key past the 32-bit range. A fraction or negative key fails at the schema.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
@@ -183,11 +191,11 @@ Fetch a single backbone taxon by key. Companion to `gbif_match_species` — call
 
 Browses or searches the backbone taxonomy. The primary tool for exploring what species exist under a higher taxon — e.g., "list all families of Coleoptera" or "find all Quercus species in the backbone". Also handles simple name-fragment searches when `gbif_match_species` returns too narrow a result.
 
-**Key inputs:** `q` (name fragment) and `datasetKey` (to scope to a specific checklist), both validated whenever present since `/species/search` answers a blank one with the unfiltered backbone result; `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `limit` (default 20, max 1000), `offset`. Every one of the five string filters is rejected blank, per decision 16.
+**Key inputs:** `q` (name fragment) and `datasetKey` (to scope to a specific checklist), both validated whenever present since `/species/search` answers a blank one with the unfiltered backbone result; `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `limit` (integer, default 20, max 1000), `offset` (integer). Every one of the five string filters is rejected blank, per decision 16.
 
 `kingdom`, `family`, and `genus` are name filters over an endpoint that scopes by key alone. Each is resolved through `/species/match` and the narrowest one is forwarded as `higherTaxonKey`; the resolved scope is reported in the enrichment. See decision 17.
 
-**Output:** paginated list of taxon usages, each with classification, vernacular name, `numOccurrences` count, checklist usage `key`, and optional raw `datasetKey` and mapped backbone `nubKey`. The effective checklist defaults to GBIF Backbone Taxonomy `d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`; an explicit checklist is preserved. This makes the advertised backbone default explicit while retaining checklist provenance. Occurrence queries chain from `nubKey` when supplied, otherwise resolve the name with `gbif_match_species`; missing mapping is never inferred from the usage key. Empty-scope checklist incompatibility guidance applies only to a foreign checklist, with UUID case ignored for backbone equivalence.
+**Output:** paginated list of taxon usages, each with classification, a common name (GBIF's own `vernacularName`, else the first English `vernacularNames[]` entry containing `q` when `q` does not occur in the row's `canonicalName` or `scientificName`, else the first English one — GBIF tags some scientific names as English, so a scientific-name query would otherwise pick one, as "Lynx pardinus" picked "Lynx pardinus pardinus"), `numDescendants`, checklist usage `key`, and optional raw `datasetKey` and mapped backbone `nubKey`. `numOccurrences` appears only when GBIF supplies a positive value, since `/species/search` sends a 0 placeholder on every row. The effective checklist defaults to GBIF Backbone Taxonomy `d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`; an explicit checklist is preserved. This makes the advertised backbone default explicit while retaining checklist provenance. Occurrence queries chain from `nubKey` when supplied, otherwise resolve the name with `gbif_match_species`; missing mapping is never inferred from the usage key. Empty-scope checklist incompatibility guidance applies only to a foreign checklist, with UUID case ignored for backbone equivalence.
 
 **Errors:** `invalid_filter` when any string filter is supplied blank or `datasetKey` is not a UUID; `unresolved_taxon_scope` when a `kingdom`, `family`, or `genus` name matches no backbone taxon at that rank; `conflicting_taxon_scope` when the supplied `family` and `genus` resolve into different lineages.
 
@@ -197,13 +205,13 @@ Browses or searches the backbone taxonomy. The primary tool for exploring what s
 
 ### `gbif_get_species_classification`
 
-Returns the complete parent chain for a taxon — from kingdom (or domain) down to the taxon itself — as an ordered array. Each entry has its rank, canonical name, and taxon key. Avoids requiring callers to navigate the hierarchy one level at a time.
+Returns the parent chain for a taxon — from kingdom (or domain) down to its immediate parent, excluding the taxon itself — as an ordered array. Each entry has its rank, canonical name, and taxon key. Avoids requiring callers to navigate the hierarchy one level at a time.
 
 The GBIF API exposes `/species/{taxonKey}/parents` which returns the full ancestor array. The result is already ordered root-first (kingdom → phylum → class → … → parent of the given taxon). No reversal is needed — the handler returns the array as-is.
 
-**Input:** `taxonKey: z.number()`
+**Input:** `taxonKey: z.number().int().nonnegative()` (0 is *incertae sedis*)
 
-**Output:** `classification: Array<{ rank, name, key }>` ordered root → leaf
+**Output:** `classification: Array<{ key, rank, name, scientificName }>` ordered root-first, ending at the immediate parent of the queried taxon. A taxon at the root of the backbone returns an empty array with a `notice`.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
@@ -213,9 +221,9 @@ The GBIF API exposes `/species/{taxonKey}/parents` which returns the full ancest
 
 Lists direct children of a backbone taxon — genera within a family, species within a genus, subspecies within a species. Paginated.
 
-**Key inputs:** `taxonKey`, `limit` (default 20), `offset`
+**Key inputs:** `taxonKey` (non-negative integer), `limit` (integer, default 20), `offset` (integer)
 
-**Output:** paginated list of child taxon records with rank, canonical name, key, and synonym status.
+**Output:** paginated list of child taxon records with rank, canonical name, key, and synonym status. No occurrence count: `/species/{key}/children` sends none.
 
 **Annotations:** `readOnlyHint: true`
 
@@ -223,7 +231,7 @@ Lists direct children of a backbone taxon — genera within a family, species wi
 
 ### `gbif_search_occurrences`
 
-The core data retrieval tool. Searches 3.9B+ occurrence records with Darwin Core filters. Supports taxon key, country (ISO 3166-1 alpha-2 code), publishing country, state/province, bounding box (decimalLatitude/decimalLongitude range or WKT polygon via `geometry`), year range, month, basis of record, and georeference filter.
+The core data retrieval tool. Searches 3.9B+ occurrence records with Darwin Core filters. Supports taxon key, country (ISO 3166-1 alpha-2 code), publishing country, state/province, GADM area (`gadmGid`), bounding box (decimalLatitude/decimalLongitude range or WKT polygon via `geometry`), year range, month, basis of record, georeference filter, and the collection filters `catalogNumber`, `institutionCode`, `recordedBy`, and `mediaType`.
 
 **Important nuances:**
 - `taxonKey` is the backbone key from `gbif_match_species`. Passing a raw name as `scientificName` also works but may miss synonyms — the backbone key is preferred. GBIF ORs the two rather than intersecting them, so passing both widens the result set instead of narrowing it (`taxonKey=212` alone and `taxonKey=212&scientificName=Puma concolor` differ by exactly the *Puma concolor* total).
@@ -234,13 +242,15 @@ The core data retrieval tool. Searches 3.9B+ occurrence records with Darwin Core
 - `/occurrence/search` silently ignores parameter names it does not recognize, answering 200 with the unfiltered total. A misspelled filter is a wrong answer, not an error.
 - `country` and `publishingCountry` are different questions — where the record was observed versus the country of the organization that published it — and they disagree on most records (of 60,290,950 records observed in GB, 1,548,928 were published by US organizations). Both descriptions name the other, and the server `instructions` do too; see decision 13.
 - `stateProvince` is verbatim, exact, and case-sensitive, with no controlled vocabulary — `England` matches 47,672,439 records on one scope while `england` and `ENGLAND` each match none, and an unmatched value answers 200 with zero records rather than an error. Constrained where it can be (`country` and `publishingCountry` each carry a `^[A-Z]{2}$` pattern) and announced where it cannot (an empty result under a `stateProvince` filter carries a notice naming the semantics); see decisions 13 and 14.
-- Every string filter is validated whenever it is present, not only when it is non-blank. The endpoint ignores a parameter given with no value, so a blank one used to drop the filter and hand back the whole scope under the caller's own belief that it was narrowed — `stateProvince: ""` returns the 60,290,950-record `country=GB` scope where `England` returns 47,672,439. A blank or whitespace-only value now fails as `invalid_filter`. See decision 16.
+- `gadmGid` is a GADM GID at any level (`ESP`, `ESP.1_1`, `ESP.1.5_1`) that GBIF derives from each record's coordinates, so records without coordinates match none, and the unit can differ from the verbatim `stateProvince` a record carries. It is matched exactly and case-sensitively; the schema-level guard is the GID alphabet (`[A-Z0-9._]`), and a well-formed GID GBIF does not hold answers zero. See decision 20.
+- `catalogNumber` and `institutionCode` match the whole value case-insensitively; `recordedBy` matches each name in a record's `|`-separated list exactly and case-sensitively, so one person written two ways is two values; `mediaType` is a closed enum (`StillImage`, `MovingImage`, `Sound`, `InteractiveResource`).
+- Every string filter is validated whenever it is present, not only when it is non-blank. The endpoint ignores a parameter given with no value, so a blank one used to drop the filter and hand back the whole scope under the caller's own belief that it was narrowed — `stateProvince: ""` returns the 60,290,950-record `country=GB` scope where `England` returns 47,672,439. A blank or whitespace-only value now fails as `invalid_filter`; a blank `country` or `publishingCountry` fails earlier, at its uppercase pattern, as `-32602 invalid_arguments`. See decision 16.
 
 **Key inputs:**
 
 ```ts
 z.object({
-  taxonKey: z.number().optional()
+  taxonKey: z.number().int().nonnegative().optional()
     .describe('GBIF backbone taxon key from gbif_match_species. Preferred over scientificName — matches all synonyms automatically.'),
   scientificName: z.string().optional()
     .describe('Scientific name filter. Less precise than taxonKey — does not match synonyms. Use taxonKey from gbif_match_species for reliable results.'),
@@ -258,7 +268,7 @@ z.object({
     .describe('WKT polygon for geographic filtering (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. All supplied spatial filters intersect; latitude and longitude ranges remain active alongside geometry.'),
   year: z.string().optional()
     .describe('Year or year range. Single year: "2024". Range: "2020,2024". Filters by observation year.'),
-  month: z.number().min(1).max(12).optional()
+  month: z.number().int().min(1).max(12).optional()
     .describe('Calendar month (1–12). Useful for seasonal distribution queries.'),
   basisOfRecord: z.enum(BASIS_OF_RECORD_VALUES).optional()
     .describe('Filter by how the occurrence was recorded. HUMAN_OBSERVATION covers citizen science (eBird, iNaturalist). PRESERVED_SPECIMEN covers natural history collections.'),
@@ -268,9 +278,10 @@ z.object({
     .describe('Filter to records flagged as likely duplicates (true) or exclude them (false). Omit to include all.'),
   datasetKey: z.string().optional()
     .describe('Restrict results to a single dataset by its GBIF dataset UUID.'),
-  limit: readLimitSchema(z.number().min(1), 300).default(20)
+  ...sharedOccurrenceFilterFields(), // gadmGid, catalogNumber, institutionCode, recordedBy, mediaType
+  limit: readLimitSchema(z.number().int().min(1), 300).default(20)
     .describe('Number of records to return (default 20, max 300).'),
-  offset: z.number().min(0).default(0)
+  offset: z.number().int().min(0).default(0)
     .describe('Pagination offset. GBIF serves offset+limit up to 100,001 and rejects anything past it, with no cursor or scroll to continue from — to reach a larger result set, split it into per-datasetKey searches using a DATASET_KEY facet from gbif_occurrence_facets.'),
 })
 ```
@@ -285,12 +296,13 @@ z.object({
 - `eventDate`, `eventTime` (time of day with UTC offset), `year`, `month`, `day`
 - `basisOfRecord`, `occurrenceStatus`, `iucnRedListCategory`, `individualCount`
 - `datasetKey`, `datasetName`, `publishingCountry`
+- `institutionCode`, `catalogNumber` (may be absent)
 - `recordedBy` (may be absent)
 - `issues` — array of GBIF quality flags
 
 **Pagination output:** `totalCount` (total matches), `endOfRecords`, `offset`, `limit`, the applied `occurrenceStatus` and `scope`, and an enrichment `notice` when the result set is empty, the offset overshot the total, or a presence/absence filter narrowed the result.
 
-**Errors:** `pagination_cap_exceeded` when offset+limit passes 100,001, `invalid_filter` when any string filter is supplied blank or whitespace-only, when a datasetKey is not a UUID, or when GBIF rejects the geometry or a range.
+**Errors:** `pagination_cap_exceeded` when offset+limit passes 100,001, `invalid_filter` when a string filter other than `country` and `publishingCountry` is supplied blank or whitespace-only (those two fail earlier, at their uppercase pattern, as `-32602 invalid_arguments`), when a datasetKey is not a UUID, when a `gadmGid` holds a character outside the GID alphabet, or when GBIF rejects the geometry or a range.
 
 **Annotations:** `readOnlyHint: true`
 
@@ -302,7 +314,7 @@ Returns a single integer count, read from `/occurrence/search` at `limit=0` — 
 
 **Key inputs:** every biological filter on `gbif_search_occurrences`, with the same types and constraints. `isGeoreferenced` is retained as an alias for `hasCoordinate`: either alone or both equal is accepted; conflicts fail as `invalid_filter`. Blank string filters fail rather than widening the population; see decision 16.
 
-**Output:** `count: number`, plus enrichment carrying `scope`, the applied `occurrenceStatus` and a `notice` when it narrowed the count, when the count is past what paging can reach, or when a verbatim `stateProvince` filter matched nothing.
+**Output:** `count: number`, plus enrichment carrying `scope`, the applied `occurrenceStatus` and a `notice` when it narrowed the count, when the count is past what paging can reach, or when a verbatim `stateProvince`, `gadmGid`, or `recordedBy` filter matched nothing.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
@@ -312,11 +324,11 @@ Returns a single integer count, read from `/occurrence/search` at `limit=0` — 
 
 Fetches a full occurrence record by its GBIF key. Returns the complete Darwin Core record — all coordinates, administrative geography (GADM), dates, collections metadata, collector identifiers, media links, and quality issue flags.
 
-**Input:** `occurrenceKey: z.number()`
+**Input:** `occurrenceKey: z.number().int().positive()`
 
-**Output:** Full record with normalized key fields plus `gadm` (GADM administrative divisions, levels 0–3), `taxonomicStatus`, `eventTime`, `occurrenceStatus`, `iucnRedListCategory`, `media` array, and `issues` array.
+**Output:** Full record with normalized key fields plus `gadm` (GADM administrative divisions, levels 0–3, each `gid` a value for the `gadmGid` filter), `taxonomicStatus`, `eventTime`, `occurrenceStatus`, `iucnRedListCategory`, `media` array, and `issues` array.
 
-**Errors:** `not_found` when the key doesn't exist.
+**Errors:** `not_found` when the key doesn't exist. There is no `invalid_filter`: the schema rejects a non-positive or fractional key, and every positive safe-integer key answers 200 or 404.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
@@ -330,19 +342,23 @@ Accepts every biological filter on `gbif_search_occurrences`, with the same type
 
 Returns aggregated occurrence counts for a given facet dimension. Backed by the occurrence search endpoint with `limit=0` and `facet=<field>`, so it returns only the facet counts with no record payload — efficient for distribution analysis.
 
-Available facet dimensions: `BASIS_OF_RECORD`, `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`.
+Available facet dimensions: `BASIS_OF_RECORD`, `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`, `GADM_LEVEL_0_GID`, `GADM_LEVEL_1_GID`, `GADM_LEVEL_2_GID`, `GADM_LEVEL_3_GID`, `INSTITUTION_CODE`, `MEDIA_TYPE`, `RECORDED_BY`.
 
-`stateProvince`, `year`, `geometry`, and `datasetKey` are validated whenever present and fail as `invalid_filter` when blank, on the same ground as the search tool's filters — a dropped scope filter here partitions a wider scope than the caller asked about, and the buckets say nothing about which scope they cover. See decision 16.
+Dimensions a record can lack drop that record from every bucket: `YEAR`, `MONTH`, `STATE_PROVINCE`, `SPECIES_KEY`, `INSTITUTION_CODE`, `MEDIA_TYPE`, and `RECORDED_BY`, and the GADM levels (records without coordinates or outside every GADM unit at that level). `MEDIA_TYPE` and `RECORDED_BY` buckets also overlap, since a record with two media types or two collectors counts in each. `INSTITUTION_CODE` buckets come back lowercased, and `institutionCode` takes them unchanged. `GADM_LEVEL_*_GID` buckets are GIDs to pass back as `gadmGid`.
+
+With `includeLabels`, a `KINGDOM_KEY`…`SPECIES_KEY` page reads each bucket's `canonicalName` from `/species/{key}`, and a `DATASET_KEY` page each `title` from `/dataset/{key}`, into `counts[].label`. The facet response carries only `name` and `count` and GBIF has no multi-key lookup, so this is one request per exposed bucket (never the lookahead), through a service-wide pacer (8 in flight), one attempt each, under one 10 s deadline per page, queue time included. A bucket name becomes a path only in its dimension's key shape (digits; a UUID). A lookup that fails (404, 5xx, 429, transport, timeout) or misses the deadline leaves the bucket without `label` and is counted in `notice`. Caller cancellation ends the call cancelled. Code dimensions never look anything up. See decision 22.
+
+`scientificName`, `stateProvince`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `coordinateUncertaintyInMeters`, `datasetKey`, `gadmGid`, `catalogNumber`, `institutionCode`, and `recordedBy` are validated whenever present and fail as `invalid_filter` when blank, on the same ground as the search tool's filters — a dropped scope filter here partitions a wider scope than the caller asked about, and the buckets say nothing about which scope they cover. See decision 16.
 
 **Key inputs:**
 
 ```ts
 z.object({
-  taxonKey: z.number().optional().describe('Backbone taxon key to scope the aggregation.'),
+  taxonKey: z.number().int().nonnegative().optional().describe('Backbone taxon key to scope the aggregation.'),
   scientificName: z.string().optional().describe('Scientific name; combines with taxonKey by union (OR), not intersection.'),
   decimalLatitude: z.string().optional().describe('Latitude range in decimal degrees; intersects every supplied spatial filter.'),
   decimalLongitude: z.string().optional().describe('Longitude range in decimal degrees; intersects every supplied spatial filter.'),
-  month: z.number().min(1).max(12).optional().describe('Calendar month (1–12).'),
+  month: z.number().int().min(1).max(12).optional().describe('Calendar month (1–12).'),
   hasCoordinate: z.boolean().optional().describe('True for coordinates, false for no coordinates; omit for both.'),
   isInCluster: z.boolean().optional().describe('True for likely duplicates, false to exclude them; omit for both.'),
   coordinateUncertaintyInMeters: z.string().optional().describe('Coordinate uncertainty radius or inclusive range in meters.'),
@@ -355,8 +371,11 @@ z.object({
   datasetKey: z.string().optional().describe('Scope the aggregation to a single dataset by its GBIF dataset UUID.'),
   occurrenceStatus: z.enum(['PRESENT','ABSENT','ANY']).default('PRESENT').describe('Presence/absence scope. ANY omits the filter upstream.'),
   iucnRedListCategory: z.enum(['CR','EN','VU','NT','LC','DD','EX','EW','CD']).optional().describe('Scope to one IUCN Red List category.'),
-  facet: z.enum(['BASIS_OF_RECORD','COUNTRY','STATE_PROVINCE','YEAR','DATASET_KEY','KINGDOM_KEY','PHYLUM_KEY','CLASS_KEY','ORDER_KEY','FAMILY_KEY','GENUS_KEY','SPECIES_KEY','PUBLISHING_COUNTRY','MONTH','OCCURRENCE_STATUS','IUCN_RED_LIST_CATEGORY']).describe('Dimension to aggregate by.'),
-  facetLimit: readLimitSchema(z.number().min(1), 100).default(10).describe('Maximum number of facet values to return (default 10, max 100).'),
+  ...sharedOccurrenceFilterFields(), // gadmGid, catalogNumber, institutionCode, recordedBy, mediaType
+  facet: z.enum(['BASIS_OF_RECORD','COUNTRY','STATE_PROVINCE','YEAR','DATASET_KEY','KINGDOM_KEY','PHYLUM_KEY','CLASS_KEY','ORDER_KEY','FAMILY_KEY','GENUS_KEY','SPECIES_KEY','PUBLISHING_COUNTRY','MONTH','OCCURRENCE_STATUS','IUCN_RED_LIST_CATEGORY','GADM_LEVEL_0_GID','GADM_LEVEL_1_GID','GADM_LEVEL_2_GID','GADM_LEVEL_3_GID','INSTITUTION_CODE','MEDIA_TYPE','RECORDED_BY']).describe('Dimension to aggregate by.'),
+  facetLimit: readLimitSchema(z.number().int().min(1), 100).default(10).describe('Maximum number of facet values to return (default 10, max 100).'),
+  facetOffset: z.number().int().min(0).default(0).describe('Zero-based offset into the ranked facet values.'),
+  includeLabels: z.boolean().default(false).describe('Name the taxon or dataset behind each KINGDOM_KEY…SPECIES_KEY or DATASET_KEY bucket on the page.'),
 })
 ```
 
@@ -369,6 +388,7 @@ z.object({
   counts: z.array(z.object({
     name: z.string().describe('Facet value (e.g., country code, year, basisOfRecord). Note: the API returns this field as "name", not "value".'),
     count: z.number().describe('Occurrence count for this value.'),
+    label: z.string().optional().describe('canonicalName or dataset title; present only with includeLabels, and only when the lookup for this bucket succeeded.'),
   })).describe('Facet values ranked by count descending.'),
 })
 ```
@@ -381,9 +401,9 @@ z.object({
 
 Searches GBIF datasets. Useful for locating the specific dataset behind a set of records, or understanding what data collections are available for a country or taxonomic group.
 
-**Key inputs:** `q` (free text, rejected blank — `/dataset/search?q=` returns all 123,527 datasets and `?q=%20%20` returns none; see decision 16), `type` (OCCURRENCE | CHECKLIST | METADATA | SAMPLING_EVENT), `publishingCountry` (`^[A-Z]{2}$` — `/dataset/search` matches the verbatim stored code, so `gb` and `GBR` return zero datasets rather than an error; see decision 14), `publishingOrg` and `hostingOrg` (lowercase organization UUIDs naming two different relationships; see decision 15), `limit` (default 20), `offset`
+**Key inputs:** `q` (free text, rejected blank — `/dataset/search?q=` returns all 123,527 datasets and `?q=%20%20` returns none; see decision 16), `type` (OCCURRENCE | CHECKLIST | METADATA | SAMPLING_EVENT), `publishingCountry` (`^[A-Z]{2}$` — `/dataset/search` matches the verbatim stored code, so `gb` and `GBR` return zero datasets rather than an error; see decision 14), `publishingOrg` and `hostingOrg` (lowercase organization UUIDs naming two different relationships; see decision 15), `limit` (integer, default 20), `offset` (integer)
 
-**Output per dataset:** `key`, `title`, `type`, `recordCount`, `publishingCountry`, `license`, `doi`, brief `description`. `recordCount` is GBIF's own indexed occurrence total and spans every `occurrenceStatus` — see decision 12.
+**Output per dataset:** `key`, `title`, `type`, `recordCount`, `publishingCountry`, `license`, `doi`, brief `description`, and optional `publishingOrganizationKey` (what `publishingOrg` takes) and `publishingOrganizationTitle`. `recordCount` is GBIF's own indexed occurrence total and spans every `occurrenceStatus` — see decision 12.
 
 **Annotations:** `readOnlyHint: true`
 
@@ -391,11 +411,13 @@ Searches GBIF datasets. Useful for locating the specific dataset behind a set of
 
 ### `gbif_get_dataset`
 
-Full dataset metadata including title, description, citation text, contacts, license, DOI, `numConstituents`, and temporal coverage. Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail.
+Full dataset metadata including title, description, citation text, contacts, license, DOI, `publishingOrganizationKey`, `numConstituents`, and temporal coverage. Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail.
 
 **Input:** `datasetKey: z.string()` (the handler validates the 8-4-4-4-12 hex UUID), `contactLimit` (default 10, applied cap 100; `0` suppresses contact detail while still reporting the count)
 
 **Output:** Full dataset record. `citation.text` is the citable reference. Contacts are capped at `contactLimit`, with `contactsTotal`/`contactsReturned` reporting the full count. `recordCount` is fetched separately — the detail endpoint omits it — and spans every `occurrenceStatus`, matching `gbif_search_datasets` rather than `gbif_count_occurrences`; see decision 12.
+
+`publishingOrganizationKey` names the organization that published the dataset and chains into `gbif_search_datasets` as `publishingOrg`. `/dataset/{key}` carries no organization name, and resolving one would add a second request to a one-request call, so the name is left to `gbif_search_datasets` rows, which carry it; see decision 21.
 
 The supplementary count uses one request with a three-second deadline for every dataset type. Operational failures preserve metadata with `recordCountNotice`; cancellation and invalid input or responses propagate. Declared counts, including zero, suppress the lookup.
 
@@ -403,7 +425,7 @@ Temporal coverage preserves optional `start`/`end` bounds, single `date`, and ve
 
 Publisher HTML extraction decodes numeric and supported named character references once and preserves paragraph breaks. Structured text remains plain text; dataset and species formatters escape publisher text at the CommonMark boundary so literal references and markup retain their meaning.
 
-**Errors:** `not_found` when the UUID doesn't match any dataset.
+**Errors:** `not_found` when the UUID doesn't match any dataset; `invalid_filter` when `datasetKey` is not a UUID or GBIF rejects the request as malformed.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: true`
 
@@ -413,7 +435,7 @@ Publisher HTML extraction decodes numeric and supported named character referenc
 
 Searches organizations registered with GBIF by name fragment or country. Returns organization key, title, and country — sufficient to chain into `gbif_search_datasets` as `publishingOrg` (the datasets the organization published) or `hostingOrg` (the ones its own installation serves), or to understand who publishes data for a region. `publishingOrg` is the usual chain; see decision 15.
 
-**Key inputs:** `q` (rejected blank in either form — `/organization` drops one and answers with all 3,561 organizations), `country` (unpatterned, since the registry resolves the parsed country — but the empty string is rejected, because `/organization?country=` answers with all 3,561 too, while whitespace draws an upstream 400 naming the value; see decisions 14 and 16), `limit`, `offset`
+**Key inputs:** `q` (rejected blank in either form — `/organization` drops one and answers with all 3,561 organizations), `country` (unpatterned, since the registry resolves the parsed country — but the empty string is rejected, because `/organization?country=` answers with all 3,561 too, while whitespace draws an upstream 400 naming the value; see decisions 14 and 16), `limit` (integer), `offset` (integer)
 
 **Output:** paginated list of `{ key, title, country, city }` per organization.
 
@@ -478,7 +500,7 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 | # | Tool | Call |
 |:--|:-----|:-----|
 | 1 | `gbif_search_occurrences` | `{ geometry: "POLYGON(...)", basisOfRecord: "HUMAN_OBSERVATION", hasCoordinate: true, limit: 300 }` → records in area |
-| 2 | `gbif_occurrence_facets` | `{ geometry: "...", facet: "SPECIES_KEY", facetLimit: 100 }` → species richness summary |
+| 2 | `gbif_occurrence_facets` | `{ geometry: "...", facet: "SPECIES_KEY", facetLimit: 100, includeLabels: true }` → named species list |
 
 ---
 
@@ -504,7 +526,7 @@ What ships instead is accurate guidance: the `pagination_cap_exceeded` recovery,
 
 **6. No `gbif_get_species_synonyms` tool.** The synonyms endpoint (`/species/{key}/synonyms`) returns a paginated list of species records that are synonyms of the given accepted taxon. This is niche — most workflows need only to know whether a taxon *is* a synonym (surfaced in `gbif_get_species`), not to enumerate all synonyms of an accepted name. Deferred to a future iteration if demand warrants.
 
-**7. Two resources, not more.** Species and dataset records are the two stable, addressable, reference objects with real utility as injectable context. Occurrence records are too numerous (3.9B+) and too transient to be useful as resources. Publisher/organization records are rarely needed as injectable context. The resource surface is intentionally minimal.
+**7. Two data resources, not more (plus the published `skill://` guide).** Species and dataset records are the two stable, addressable, reference objects with real utility as injectable context. Occurrence records are too numerous (3.9B+) and too transient to be useful as resources. Publisher/organization records are rarely needed as injectable context. The resource surface is intentionally minimal.
 
 **8. Pagination cap enforced before the request.** GBIF rejects offset+limit past 100,001 with a deterministic 400, which would otherwise burn the whole retry budget. The handler checks the sum first and fails with `pagination_cap_exceeded`, naming the boundary and the partition technique from decision 3.
 
@@ -524,7 +546,7 @@ The guards differ because the failure modes do. `publishingCountry` draws on a c
 
 `publishingCountry` additionally repairs a gap decision 3 had to work around: `PUBLISHING_COUNTRY` is gap-free but was undrillable, so it could not serve as a second split axis. It can now. `stateProvince` does not gain that role — it stays lossy, so it partitions nothing.
 
-The pre-existing `country` filter has the same silent-zero behavior; decision 14 closes it.
+The pre-existing `country` filter has the same silent-zero behavior; decision 14 closes it. The `stateProvince` notice also names `gadmGid`, the normalized alternative: a GADM unit GBIF derives from each record's coordinates, so it matches a region however datasets spell it; decision 20.
 
 **14. The `^[A-Z]{2}$` country-code pattern goes on every field whose route matches the verbatim stored code — `country` on all three occurrence tools, and `publishingCountry` on `gbif_search_datasets` — and deliberately not on `gbif_search_publishers`.** Constraining an already-published parameter changes an existing tool's contract: a call that previously succeeded, returning zero, now fails validation. That is the point. Those were the last filters in this server still answering a malformed value with a confident wrong number, and the guard is the one decision 13 established rather than a second mechanism.
 
@@ -554,7 +576,7 @@ One case no guard reaches: a well-formed lowercase UUID belonging to no organiza
 
 Measured against the built server and the live API. The identifier filters: `gbif_count_occurrences` on `taxonKey=212` returns 2,351,689,943 with `datasetKey: ""` and 2,351,689,943 with the field omitted, where a real key (`4fa7b334-ce0d-4e88-aaae-2e0c138d049e`) returns 1,775,781,186; `gbif_search_occurrences` matches on that total and on the first record returned (occurrence 1291505203); `gbif_search_species` on `q=Aves` returns the same 4,972 taxa either way; `gbif_search_publishers` with `country: ""` returns all 3,561 registered organizations against 223 for `GB`. The rest, on a `taxonKey=212` + `country=GB` + `occurrenceStatus=PRESENT` scope of 60,290,950 records: `stateProvince` blank returns 60,290,950 against `England`'s 47,672,439; `year` blank returns 60,290,950 against `2020`'s 4,179,801; `geometry` blank returns 60,290,950 against a WKT box's 1,460,291; `decimalLatitude` blank returns 60,290,950 against `50,52`'s 23,162,542; `coordinateUncertaintyInMeters` blank returns 60,290,950 against `0,1000`'s 5,898,755; and `scientificName` blank returns the 255,619,737-record GB scope against `Parus major`'s 1,103,773. Whitespace alone behaves as blank in every one of those. On `/species/match`, `Parus major` with `kingdom` blank resolves to usage key 9705453 at confidence 99, the same as omitting it, where `Plantae` resolves to 9711704.
 
-The shape check itself is unchanged for `datasetKey`. `isGbifUuid` stays case-insensitive and still refuses to trim, so moving the guard to presence is enough to cover the empty string, a whitespace-only value (`/occurrence/search?datasetKey=%20%20` also answers 200 with the unfiltered total), and the malformed values GBIF answers with `400 Invalid UUID string`. Letter case is deliberately *not* tightened: `/occurrence/search`, `/occurrence/count`, `/species/search`, and `/dataset/{key}` each resolve a key in either case, so the lowercase rule decision 15 added belongs to `/dataset/search`'s two organization parameters alone. The filters with no shape to check share one helper, `firstBlankFilter`, which names the offending field; each handler throws its own `invalid_filter` so the tool's own recovery hint rides along.
+The shape check itself is unchanged for `datasetKey`. `isGbifUuid` stays case-insensitive and still refuses to trim, so moving the guard to presence is enough to cover the empty string, a whitespace-only value (`/occurrence/search?datasetKey=%20%20` also answers 200 with the unfiltered total), and the malformed values GBIF answers with `400 Invalid UUID string`. Letter case is deliberately *not* tightened: `/occurrence/search`, `/occurrence/count`, `/species/search`, and `/dataset/{key}` each resolve a key in either case, so the lowercase rule decision 15 added belongs to `/dataset/search`'s two organization parameters alone. The filters with no shape to check share one helper, `firstBlankFilter`, which names the offending field; each handler throws its own `invalid_filter` so the tool's own recovery hint rides along. The three occurrence tools share one check, `occurrenceFilterViolation`, instead of per-tool blank lists, so a filter added to the shared set is guarded on search, count, and facets at once.
 
 The rule covers a blank value even where the upstream answer is not the unfiltered scope, because the alternative is a boundary no caller can plan around. `/dataset/search?q=` returns all 123,527 indexed datasets while `?q=%20%20` returns none; `/species/search` splits the same way, 46,623,754 against 0. One space between the whole index and an empty page is not a distinction to leave running, and neither side of it is the search that was asked for. `/organization` does not split — it drops `q` in either form and answers with all 3,561 organizations against 460 for `museum`.
 
@@ -578,6 +600,18 @@ One interaction is announced rather than guarded. GBIF reads a higher-taxon key 
 
 The applied scope is reported in the enrichment on every scoped call — which field scoped, the backbone taxon its name resolved to, and that key — so a scope that resolved to something other than what the caller had in mind is visible in the response rather than inferred from the count. The taxon is named from the match's rank name rather than its `scientificName`, for the same reason the rank key is read rather than `usageKey`: on a synonym the two name different taxa, and `scientificName` is the name that matched. `Compositae` would otherwise report itself back beside key 3065, echoing the caller's input over the one resolution the field exists to surface.
 
+**18. A `HIGHERRANK` match is disclosed, never rejected, and bulk matching takes no batch-wide `kingdom`.** GBIF labels two different things `HIGHERRANK`. A misspelled or unknown species falls back to its genus or kingdom at a confidence that can top 90 (a nonsense species under *Panthera* came back as the kingdom Animalia at 92), and a bare genus name such as `Bombus` is also `HIGHERRANK`, matched at its own genus. Rejecting the label would fail the second legitimate case to catch the first. Both therefore succeed with a `notice` (`note` on a bulk row) naming the taxon and rank, stating what `taxonKey` covers — that whole taxon, or its accepted taxon when the fallback taxon is a synonym — and pointing at `strict: true`, under which GBIF matches the name itself or answers no match. A `NONE` carries GBIF's own note, and a tie ("Multiple equal matches for Oenanthe", a bird genus and a plant genus) offers `kingdom` as the retry while it is unset. A `kingdom` applied to a whole bulk batch was rejected because it re-targets every name that exists in more than one kingdom: *Parus major* under Plantae resolves to *Pyrus major*, so a batch-wide filter helps one name by silently moving another.
+
+**19. Numeric inputs are integers at the schema, and `taxonKey` is non-negative.** `taxonKey` (six tools), `occurrenceKey`, `limit` and `offset` on the five paged tools, `facetLimit`, `facetOffset`, and `month` (three tools) were `z.number()`, and GBIF answers a fraction by replacing it quietly — a default page size, a zero-match scope — which hands the caller a confident answer to a question it did not ask. They are now JSON Schema `integer`, so a fraction fails as `-32602 invalid_arguments` before any request; an over-cap integer still clamps under `GBIF_CLAMP_READ_LIMITS`, while an over-cap fraction now fails. `taxonKey` allows 0 because key 0 is the backbone kingdom *incertae sedis*, a real taxon that `gbif_get_species`, `gbif_match_species`, and `gbif://species/0` resolve; a negative key names nothing. `gbif_get_occurrence` lost its `invalid_filter` because nothing reaches it: the schema rejects a non-positive or fractional key, and every positive safe-integer key answers 200 or 404. The species tools keep `invalid_filter` for a key past GBIF's 32-bit range.
+
+**20. `gadmGid` is checked against the GID alphabet, not a grammar; there is no `GADM_GID` facet; `mediaType` is a closed enum.** GADM identifiers are irregular (`ESP.1_1`, but also `Z01`, `CHN.HKG`, `GHA7_2`), so a grammar check would reject real GIDs; the alphabet `[A-Z0-9._]` catches the forms GBIF matches against nothing (lowercase, padded, a place name) and a well-formed GID GBIF does not hold answers zero with a notice. The aggregate `GADM_GID` facet is not offered because it mixes levels, so a record counts once per level in one list; the four `GADM_LEVEL_n_GID` facets are the per-level cuts, and each bucket is a value `gadmGid` takes. `mediaType` is a four-value enum (`StillImage`, `MovingImage`, `Sound`, `InteractiveResource`) so a misspelling fails at the schema rather than answering zero. `institutionCode` matches case-insensitively and its facet buckets come back lowercased, so a bucket goes back in unchanged; `recordedBy` matches exactly and case-sensitively against each name in a record's list, so its spelling comes from a `RECORDED_BY` facet and a zero-match notice says why.
+
+**21. The publishing organization's name is left to `gbif_search_datasets` rows; `gbif_get_dataset` and the dataset resource carry the key alone.** `/dataset/{key}` returns `publishingOrganizationKey` and no organization name. Resolving the name would add a second request to a call that costs one, on every call, for a field the caller can get from a search row (`publishingOrganizationTitle`) or an organization lookup. The key is what chains: it goes into `gbif_search_datasets` as `publishingOrg`.
+
+**22. `includeLabels` on `gbif_occurrence_facets` names taxon- and dataset-key buckets: opt-in, page-only, bounded, best-effort.** A `SPECIES_KEY` or `DATASET_KEY` page is up to 100 bare keys, and naming them takes up to 100 follow-up calls. The 2026-08-06 entry declining a secondary lookup for the accepted taxon's name stands for the match tools, where a lookup would run on every call by default to name a key `gbif_get_species` already names on request. Here the caller opts in, lookups cover only the exposed page, and each is bounded: one attempt, 8 in flight server-wide, and one 10 s deadline per page (the facet request's own retries can take about 49 s of the 60 s an MCP SDK client waits). A failed or late lookup is disclosed in `notice`, not raised. The default stays one request, and a `DATASET_KEY` partition needs keys alone.
+
+**23. The published skill carries the cross-tool gates no single tool description owns; `instructions` keeps the identifier and filter contract.** Which region filter selects which records, records versus organisms, effort-driven trends, when to stop concluding a taxon is absent, and triaging a name list are judgments that span several tools, so no one description can hold them. They live in `skills/gbif-biodiversity-guide/SKILL.md`, delivered with the plugins and the `.mcpb` and served over MCP through `createApp({ skills: 'skills' })`. A client that connects directly may never load the skill, so the identifiers, filter semantics, and call order a client needs to avoid a wrong answer stay in `instructions` and the schemas.
+
 ---
 
 ## Known Limitations
@@ -585,7 +619,7 @@ The applied scope is reported in the enrichment on every scoped call — which f
 - **Pagination hard cap at offset+limit 100,001, with no complete-retrieval path here.** GBIF's search API supports no cursor or scroll, so records past that offset are unreachable through this server. Covering a larger result set means partitioning it on `datasetKey` and paging each part, which is exhaustive but data-dependent in depth; retrieving it in one piece means GBIF's account-only download API or the AWS Open Data snapshot, both outside this server. See decision 3.
 - **Occurrence search is not full-text.** The search endpoint filters on Darwin Core structured fields only. There is no free-text search across collector notes, locality descriptions, or identification remarks.
 - **Backbone vs. checklist taxon keys.** GBIF has a single backbone taxonomy (`d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`) and many secondary checklists. Occurrence search works only with backbone keys (the `nubKey`). The `gbif_match_species` tool always returns backbone keys.
-- **Name matching confidence.** Below confidence ~80, matches should be treated with caution. The `confidence` field is surfaced in the output. The `/species/match` endpoint does not return an `alternatives` array — callers with low-confidence matches should retry with broader or different input (e.g., remove `strict`, try a higher-rank name).
+- **Name matching confidence.** Below confidence ~80, matches should be treated with caution. The `confidence` field is surfaced in the output. The `/species/match` endpoint does not return an `alternatives` array — callers with low-confidence matches should retry with broader or different input (e.g., remove `strict`, try a higher-rank name). A `HIGHERRANK` match is disclosed, never rejected; see decision 18.
 - **Occurrence record sparsity.** Many fields in Darwin Core are optional. Coordinates, collector name, collection code, and locality may be absent, especially in older or museum-digitized records. Output schemas reflect this — most fields are optional.
 - **Rate limiting is load-based, not credential-tiered.** GBIF throttles search traffic according to its own server load and returns 429 when a caller exceeds it; no credential raises the ceiling. Requests carry an identifying `User-Agent` (overridable via `GBIF_USER_AGENT`) so GBIF can make contact about problem traffic.
 - **WKT geometry coordinate order.** GBIF expects `longitude latitude` order in WKT (matching GeoJSON convention, not GML). This is noted in the `geometry` parameter description.
@@ -610,23 +644,23 @@ The applied scope is reported in the enrichment on every scoped call — which f
 | Occurrence search | `GET /occurrence/search` | Darwin Core filters + facets; a filter given with no value is ignored and the response is the unfiltered scope |
 | Occurrence count | `GET /occurrence/search` at `limit=0` | full Darwin Core filter set; `/occurrence/count` is used only for the dataset record-count lookup, since its closed parameter set rejects `occurrenceStatus` and `iucnRedListCategory` |
 | Occurrence get | `GET /occurrence/{key}` | full DwC record |
-| Dataset search | `GET /dataset/search` | q, type, publishingCountry — matches the verbatim stored code, so only the uppercase alpha-2 form resolves; publishingOrg and hostingOrg are two distinct organization filters, intersected when both are sent; a blank `q` returns the whole index while a whitespace-only one returns nothing |
-| Dataset get | `GET /dataset/{uuid}` | |
+| Dataset search | `GET /dataset/search` | rows carry `publishingOrganizationKey` and `publishingOrganizationTitle`; q, type, publishingCountry — matches the verbatim stored code, so only the uppercase alpha-2 form resolves; publishingOrg and hostingOrg are two distinct organization filters, intersected when both are sent; a blank `q` returns the whole index while a whitespace-only one returns nothing |
+| Dataset get | `GET /dataset/{uuid}` | carries `publishingOrganizationKey` but no organization title |
 | Publisher search | `GET /organization` | q, country — resolves the parsed country, so alpha-2 and alpha-3 forms both match, case-insensitively; a blank country or a blank `q` in either form returns the whole registry, while a whitespace-only country draws a 400 |
 
 ### Pagination pattern
 
-All list endpoints return: `{ offset, limit, endOfRecords, count, results[] }`. Page with `offset` + `limit`. Occurrence search: capped at `offset + limit ≤ 100,001`.
+List endpoints return `{ offset, limit, endOfRecords, count, results[] }`, except `/species/{key}/children`, which carries no `count`. Page with `offset` + `limit`. Occurrence search: capped at `offset + limit ≤ 100,001`.
 
 ### Facet query pattern
 
-Add `facet=FIELD_NAME` to occurrence search, set `limit=0` to skip record fetching. The tool exposes `facetLimit=N` (default 10, max 100) and sends `N+1` upstream for exact continuation, returning at most N values. `facetOffset` advances by the exposed page size. The upstream API also accepts `facetMincount` and multiple `facet` parameters.
+Add `facet=FIELD_NAME` to occurrence search, set `limit=0` to skip record fetching. The tool exposes `facetLimit=N` (default 10, max 100) and sends `N+1` upstream for exact continuation, returning at most N values. `facetOffset` advances by the exposed page size. Buckets are bare values; naming a taxon or dataset key costs one `/species/{key}` or `/dataset/{key}` read per bucket (`includeLabels`). The upstream API also accepts `facetMincount` and multiple `facet` parameters.
 
 ### Name matching confidence
 
 | Confidence | Interpretation |
 |:-----------|:---------------|
-| 90–100 | High confidence — exact or near-exact match |
+| 90–100 | High confidence for `EXACT`/`FUZZY`; a `HIGHERRANK` fallback can also score here, so read `matchType` first |
 | 80–89 | Good match — minor differences (author, formatting) |
 | 60–79 | Fuzzy match — verify before use |
 | <60 | Low confidence — likely a different species |
@@ -662,12 +696,18 @@ None. GBIF issues no API key, and the read endpoints this server calls take no c
 | 2026-08-06 | `publishingOrg` added to `gbif_search_datasets` alongside `hostingOrg`, and every chaining surface repointed at it | `hostingOrg` matches the organization running the installation a dataset is served from, which for most organizations is somebody else's, so the documented publishers → datasets chain returned zero: of the first 25 GB organizations the registry lists, all 25 host nothing while 13 publish one or two reachable only through `publishingOrg`. Both filters stay — "what does this installation serve" is a real question, and 984 datasets answer it for the National Biodiversity Network — so the pair gets the `country` / `publishingCountry` treatment: each description names the other as the different question and carries a measured figure. GBIF intersects the two when both are sent (984 ∩ 1 = 0), which is a trap for anyone reaching for "everything about this organization," so both descriptions and the empty-result notice say so. Both are validated in the handler against the lowercase 8-4-4-4-12 form whenever present, which covers the two silent classes on top of the malformed one GBIF answers with a 400: `/dataset/search?publishingOrg=` returns all 123,527 indexed datasets, and these two parameters alone are matched case-sensitively, so an upper-cased key returns 0 (984 → 0 on `hostingOrg`) where the lowercase one matches. `datasetKey` resolves either case upstream, so the shared `isGbifUuid` check is unchanged. A handler guard over a Zod `pattern` because a schema rejection arrives as `-32602` with empty `structuredContent`, out of reach of the contract's recovery hint; the descriptions carry the lowercase form instead |
 | 2026-08-06 | Every optional filter guards on presence instead of on a non-blank value, so a blank or whitespace-only one fails as `invalid_filter` | Guard and forward both tested `?.trim()`, so a blank value cleared both and the tool answered the whole unfiltered scope while the caller believed it was scoped. On a `taxonKey=212` + `country=GB` + `occurrenceStatus=PRESENT` scope of 60,290,950 records, blank `stateProvince`, `year`, `geometry`, `decimalLatitude`, and `coordinateUncertaintyInMeters` each return all 60,290,950 against 47,672,439 for `England`, 4,179,801 for `2020`, 1,460,291 for a WKT box, 23,162,542 for `50,52`, and 5,898,755 for `0,1000`; `gbif_count_occurrences` on `taxonKey=212` returns the same 2,351,689,943 with `datasetKey: ""` as without it (a real key returns 1,775,781,186); `gbif_search_publishers` with `country: ""` returns all 3,561 organizations against 223 for `GB`; and `/species/match` drops a blank `kingdom`, resolving `Parus major` to 9705453 where `Plantae` resolves to 9711704. Whitespace behaves as blank throughout. The rule holds where the upstream answer is not the unfiltered scope either — `/dataset/search?q=` returns all 123,527 datasets while `?q=%20%20` returns none, and one space between the whole index and an empty page is not a boundary a caller can plan around. Each guard names the offending field via a shared `firstBlankFilter` helper and each handler throws its own `invalid_filter` so the tool's recovery hint rides along; `isGbifUuid` is unchanged and still untrimmed, so it covers blank, whitespace-only, and malformed keys at once, and letter case stays unchecked because those routes resolve a key either way. One carve-out, upstream behavior: `country` on `gbif_search_publishers` guards the empty string alone, since whitespace already draws a 400 naming the value. `kingdom`, `family`, and `genus` on `gbif_search_species` were a second one while they were inert, and joined the rule when decision 17 made them scope |
 | 2026-08-06 | `kingdom`, `family`, and `genus` on `gbif_search_species` resolved to a backbone key and forwarded as `higherTaxonKey`, rather than removed | `/species/search` implements none of the three, and ignores an unrecognized name instead of rejecting it: `family=Paridae`, `genus=Quercus`, `kingdom=Plantae`, no parameters at all, and an invented `bogusParam=zzz` each return the same 46,623,754 names, against 558,589 for the implemented `rank=FAMILY`; on a `q=Aves` base all three leave 4,972 unchanged. GBIF's OpenAPI description of the operation omits them and lists `higherTaxonKey`, which does scope — `higherTaxonKey=9327` returns 641. Removing the three would turn the call that was already getting a wrong answer into a `-32602` schema rejection with empty `structuredContent`, out of reach of any recovery hint; resolving them answers it, reusing the `matchSpecies` call `gbif_match_species` already makes. Only the narrowest is sent, because repeated `higherTaxonKey` values are OR-ed (keys 1 and 6 together return 6,534,100, their exact sum) so a broader one beside a narrower would widen the search. The kingdom rides along as GBIF's own disambiguator instead ("Prunella" resolves to nothing alone, 2495070 under Animalia, 2926553 under Plantae) and rejects a contradiction upstream; the family/genus pair is checked locally against the genus match's `familyKey`, since `/species/match` ignores a `family` hint. The rank key is forwarded rather than `usageKey` — that is what resolves a synonym, `Compositae` carrying `familyKey` 3065 where `higherTaxonKey=6070956` returns 0 and 3065 returns 201,100 — and the returned rank is verified, because `rank` is a scoring hint upstream (`Aves` asked for as a FAMILY answers as a CLASS). Matched strictly: fuzzy shifts a scope onto a taxon nobody named (`Quercus` under Animalia matches the leafhopper genus *Quernus*). `unresolved_taxon_scope` and `conflicting_taxon_scope` are declared separately from `invalid_filter` because their recoveries differ, and a backbone key paired with another checklist's `datasetKey` matches nothing by construction, which the empty-result notice states |
-| 2026-08-06 | Every partition surface states that the facet call must repeat the query's filters | `gbif_occurrence_facets` accepts fewer filters than the two tools that emit the over-cap notice, so a scope narrowed by `month` or `isGeoreferenced` faces buckets that partition a wider scope than the caller asked about. Left unsaid, "the buckets sum to this total" is wrong exactly when the caller most needs to trust the arithmetic |
+| 2026-08-06 | Every partition surface states that the facet call must repeat the query's filters | Search, count, and facets accept the same biological filters, but a facet call that drops one (`month`, say, or `hasCoordinate`, which count also takes as `isGeoreferenced`) returns buckets that partition a wider scope than the caller asked about. Left unsaid, "the buckets sum to this total" is wrong exactly when the caller most needs to trust the arithmetic |
 | 2026-05-23 | Normalized occurrence output (drop nested `classifications` object) | GBIF includes both CoL and legacy backbone entries per occurrence, creating deep nesting. Top-level Darwin Core fields cover 100% of agent use cases; full detail available via `gbif_get_occurrence` |
 | 2026-05-23 | No `gbif_get_species_synonyms` tool in v1 | Niche use case; synonym status already surfaced in `gbif_get_species` — enumerate-all-synonyms workflow can be added later if needed |
-| 2026-05-23 | Two resources only (species + dataset) | These are the only stable reference objects with real utility as injectable context; occurrence records are too numerous and publishers too rarely needed |
-| 2026-05-23 | Pagination cap surfaced in `paginationNote` field | GBIF silently returns no more data past the cap; explicit warning prevents silent truncation in agent workflows |
+| 2026-05-23 | Two data resources only (species + dataset) | These are the only stable reference objects with real utility as injectable context; occurrence records are too numerous and publishers too rarely needed |
+| 2026-05-23 | Pagination cap surfaced as an over-cap `notice` and a `pagination_cap_exceeded` error | GBIF silently returns no more data past the cap; the notice on an over-cap total and the error on an over-cap request prevent silent truncation in agent workflows |
 | 2026-05-23 | Both WKT geometry and lat/lon ranges exposed as occurrence search params | WKT supports complex polygons (watersheds, protected area boundaries); lat/lon ranges are simpler for rectangular queries — both have clear agent use cases |
 | 2026-08-06 | `gbif_match_species` / `gbif_bulk_match_species` return the **accepted** key as `taxonKey`, with the matched synonym key as `matchedTaxonKey` | The tool exists to hand the occurrence tools a key they can filter on; a synonym key returns only the records filed under that name (106 vs 18,961 for *Felis leo*) with nothing marking the gap. Surfacing the accepted key as a second field would have left the documented chain — "pass `taxonKey` to the occurrence tools" — still wrong by default |
 | 2026-08-06 | No secondary lookup to resolve the accepted taxon's *name* | `/species/match` reports the accepted taxon as a bare `acceptedUsageKey`, so a name costs one extra request per match — 50 for a full bulk batch. The key is what downstream tools need; the notice points at `gbif_get_species` for callers who want the name |
-| 2026-08-06 | `invalid_filter` declared on the taxon-key tools but **not** on the two match tools | `/species/match` answers HTTP 200 for every input those schemas can produce, so declaring the reason there would advertise a failure mode nothing can reach — the same defect as an undeclared one, inverted |
+| 2026-08-06 | `invalid_filter` on the match tools reaches only a locally rejected blank `kingdom`; `gbif_bulk_match_species` declares no `errors[]` | `/species/match` answers HTTP 200 for every schema-valid input, so no upstream 400 maps to the reason. `gbif_match_species` declares it for the one input the handler rejects itself, a blank `kingdom`. The bulk tool reports a per-name failure as an `ERROR` row and declares nothing |
+| 2026-10-31 | `HIGHERRANK` matches are disclosed in a `notice` (`note` on bulk rows), never rejected; no batch-wide `kingdom` on `gbif_bulk_match_species` | GBIF applies the label both to a misspelled species falling back to its genus or kingdom (a nonsense *Panthera* species came back as Animalia at confidence 92) and to a bare genus name matched at its own genus, so rejecting it would fail legitimate matches. The notice names the taxon and rank GBIF matched, what `taxonKey` covers (its accepted taxon when that taxon is a synonym), and the `strict: true` lever. A batch-wide `kingdom` re-targets names that exist in several kingdoms (*Parus major* under Plantae resolves to *Pyrus major*) |
+| 2026-10-31 | Numeric inputs are integers at the schema; `taxonKey` is non-negative; `gbif_get_occurrence` drops `invalid_filter` | GBIF replaces a fractional value quietly (a default page size, a zero-match scope), which answers a question the caller did not ask. A fraction now fails as `-32602 invalid_arguments`; over-cap integers still clamp. Key 0 is a real taxon (*incertae sedis*), so `taxonKey` allows it. Every positive safe-integer occurrence key answers 200 or 404, leaving `invalid_filter` unreachable there |
+| 2026-10-31 | `gadmGid` checks the GID alphabet rather than a grammar; no aggregate `GADM_GID` facet; `mediaType` is a closed four-value enum | Real GIDs are irregular (`Z01`, `CHN.HKG`, `GHA7_2`), so the check is `[A-Z0-9._]`. `GADM_GID` ranks every level in one list, so a level-0 bucket and its own level-1 buckets double-count; the four per-level facets are offered instead. An enum turns a misspelled media type into a schema error rather than a zero |
+| 2026-10-31 | The publishing organization's name stays on `gbif_search_datasets` rows; `gbif_get_dataset` and `gbif://dataset/{datasetKey}` carry the key only | `/dataset/{key}` carries no organization name, and resolving it would add a second request to a one-request call on every invocation. The key chains into `gbif_search_datasets` as `publishingOrg` |
+| 2026-10-31 | `includeLabels` on `gbif_occurrence_facets` names taxon- and dataset-key buckets: opt-in, page-only, bounded, best-effort | A `SPECIES_KEY` or `DATASET_KEY` page is up to 100 bare keys and 100 follow-up calls. The 2026-08-06 "no secondary lookup" entry stands for the match tools, where the lookup would run on every call by default; here the caller opts in, lookups cover only the exposed page, and each is bounded (one attempt, 8 in flight server-wide, one 10 s deadline per page, since the facet request's own retries can take about 49 s of a client's 60 s). A failed or late lookup is disclosed in `notice`, not raised; the default stays one request |
+| 2026-10-31 | A published skill, `gbif-biodiversity-guide`, carries the cross-tool gates; `instructions` keeps the identifier and filter contract | Region-filter populations, records versus organisms, effort-driven trends, the absence stop rule, and name-list reconciliation span several tools, so no single description can own them. A client connecting directly may never load the skill, so what it needs to avoid a wrong answer stays in `instructions` and the schemas |

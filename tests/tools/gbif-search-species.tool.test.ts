@@ -3,6 +3,7 @@
  * @module tests/tools/gbif-search-species.tool.test
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
@@ -117,6 +118,62 @@ const MATCHES = {
   },
   none: { matchType: 'NONE', confidence: 100 },
 } as const;
+
+/** The input JSON Schema `tools/list` advertises; the SDK reads it from `~standard.jsonSchema`. */
+function advertisedInput(definition: typeof gbifSearchSpecies) {
+  return definition.input['~standard'].jsonSchema.input({ target: 'draft-2020-12' }) as {
+    properties: Record<string, Record<string, unknown>>;
+  };
+}
+
+/**
+ * A `/species/search` row in the live shape, trimmed: `numOccurrences` is the 0 the
+ * endpoint sends on every row, the singular `vernacularName` is absent, and the
+ * common names sit in `vernacularNames[]` across languages, some with no `language`.
+ * The live row's first English entry is "Red Tiger".
+ */
+const PUMA_ROW = {
+  key: 2435099,
+  nubKey: 2435099,
+  datasetKey: 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c',
+  scientificName: 'Puma concolor (Linnaeus, 1771)',
+  canonicalName: 'Puma concolor',
+  rank: 'SPECIES',
+  taxonomicStatus: 'ACCEPTED',
+  numDescendants: 7,
+  numOccurrences: 0,
+  vernacularNames: [
+    { vernacularName: 'Yawapitã' },
+    { vernacularName: 'Puma, Tigre rouge', language: 'fra' },
+    { vernacularName: 'Red Tiger', language: 'eng' },
+    { vernacularName: 'Puma, Mountain Lion, Cougar', language: 'eng' },
+    { vernacularName: 'Cougar', language: 'eng' },
+  ],
+};
+
+/** English entries [Cinereous Tit, Southern Great Tit], after two entries that are not English. */
+const TIT_NAMES = [
+  { vernacularName: 'Great tit' },
+  { vernacularName: 'Mésange charbonnière', language: 'fra' },
+  { vernacularName: 'Cinereous Tit', language: 'eng' },
+  { vernacularName: 'Southern Great Tit', language: 'eng' },
+];
+
+/**
+ * `vernacularNames[]` of the live Lynx pardinus row (key 2435261), trimmed in its
+ * original order. Its first English entry is "Iberian lynx"; "Lynx pardinus
+ * pardinus" is a scientific name GBIF tags `eng`, and it is the only English entry
+ * that contains the query "Lynx pardinus".
+ */
+const LYNX_NAMES = [
+  { vernacularName: 'Iberian lynx', language: 'eng' },
+  { vernacularName: 'Lynx pardelle', language: 'fra' },
+  { vernacularName: 'Spanish lynx', language: 'eng' },
+  { vernacularName: 'Lince' },
+  { vernacularName: 'Pardel Lynx', language: 'eng' },
+  { vernacularName: 'Lynx pardinus pardinus', language: 'eng' },
+  { vernacularName: 'Iberian Lynx', language: 'eng' },
+];
 
 describe('gbifSearchSpecies', () => {
   const mockSearchSpecies = vi.fn();
@@ -783,5 +840,284 @@ describe('gbifSearchSpecies', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
 
     expect(text).toContain('Unknown');
+  });
+
+  /**
+   * #74 — `/species/search` sends `numOccurrences: 0` on every row as a placeholder
+   * (Puma concolor reads 0 against a 31,853-record count), and carries common names
+   * only in `vernacularNames[]`, leaving the singular field unset.
+   */
+  describe('row counts and common names (#74)', () => {
+    it('drops the placeholder zero count and names the row from its English entries on both surfaces', async () => {
+      mockSearchSpecies.mockResolvedValue({ ...emptyPage, count: 1, results: [PUMA_ROW] });
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        q: 'Puma concolor',
+        rank: 'SPECIES',
+        limit: 1,
+      });
+
+      expect(result.isError).not.toBe(true);
+      const taxon = gbifSearchSpecies.output.parse(result.structuredContent).taxa[0];
+      expect(taxon).not.toHaveProperty('numOccurrences');
+      // q is the row's own name, so the first English entry names the row.
+      expect(taxon.vernacularName).toBe('Red Tiger');
+      expect(taxon.numDescendants).toBe(7);
+      const text = JSON.stringify(result.content);
+      expect(text).not.toContain('Occurrences');
+      expect(text).toContain('**Common name:** Red Tiger');
+    });
+
+    it('keeps a positive count and drops zero or missing ones row by row within one page', async () => {
+      mockSearchSpecies.mockResolvedValue({
+        ...emptyPage,
+        count: 3,
+        results: [
+          { key: 1, canonicalName: 'Zero', numOccurrences: 0 },
+          { key: 2, canonicalName: 'Counted', numOccurrences: 31853 },
+          { key: 3, canonicalName: 'Missing' },
+        ],
+      });
+
+      const result = await runToolContract(gbifSearchSpecies, { q: 'a' });
+
+      expect(result.isError).not.toBe(true);
+      const { taxa } = gbifSearchSpecies.output.parse(result.structuredContent);
+      expect(taxa.map((t) => t.key)).toEqual([1, 2, 3]);
+      expect(taxa[0]).not.toHaveProperty('numOccurrences');
+      expect(taxa[1].numOccurrences).toBe(31853);
+      expect(taxa[2]).not.toHaveProperty('numOccurrences');
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('**Occurrences:** 31853');
+      expect(text.match(/Occurrences/g)).toHaveLength(1);
+    });
+
+    it.each([
+      {
+        shape: 'q contained in the second English entry',
+        q: 'great tit',
+        row: { vernacularNames: TIT_NAMES },
+        expected: 'Southern Great Tit',
+      },
+      {
+        shape: 'no q',
+        q: undefined,
+        row: { vernacularNames: TIT_NAMES },
+        expected: 'Cinereous Tit',
+      },
+      {
+        shape: 'q in another letter case and with surrounding spaces',
+        q: '  GREAT TIT ',
+        row: {
+          vernacularNames: [
+            { vernacularName: 'Cinereous Tit', language: 'eng' },
+            { vernacularName: 'Sardinian great tit', language: 'eng' },
+          ],
+        },
+        expected: 'Sardinian great tit',
+      },
+      {
+        shape: 'q in no English entry',
+        q: 'Parus',
+        row: { vernacularNames: TIT_NAMES },
+        expected: 'Cinereous Tit',
+      },
+      {
+        shape: 'only non-English and language-less entries, one containing q',
+        q: 'great tit',
+        row: { vernacularNames: TIT_NAMES.slice(0, 2) },
+        expected: undefined,
+      },
+      {
+        shape: 'a singular name upstream beside an English entry that contains q',
+        q: 'southern',
+        row: { vernacularName: 'Great Tit', vernacularNames: TIT_NAMES },
+        expected: 'Great Tit',
+      },
+      {
+        shape: 'an empty vernacularNames array',
+        q: 'tit',
+        row: { vernacularNames: [] },
+        expected: undefined,
+      },
+      { shape: 'no vernacularNames field', q: 'tit', row: {}, expected: undefined },
+      /**
+       * A scientific-name query must not pick a scientific name GBIF tags `eng`: when q
+       * is part of the row's own name, the q-match step is skipped.
+       */
+      {
+        shape: "q equal to the row's canonical name",
+        q: 'Lynx pardinus',
+        row: {
+          canonicalName: 'Lynx pardinus',
+          scientificName: 'Lynx pardinus (Temminck, 1827)',
+          vernacularNames: LYNX_NAMES,
+        },
+        expected: 'Iberian lynx',
+      },
+      {
+        shape: "q a prefix of a subspecies row's canonical name, in another case and spacing",
+        q: ' lynx PARDINUS ',
+        row: {
+          canonicalName: 'Lynx pardinus pardinus',
+          scientificName: 'Lynx pardinus pardinus',
+          rank: 'SUBSPECIES',
+          vernacularNames: LYNX_NAMES,
+        },
+        expected: 'Iberian lynx',
+      },
+      {
+        shape: 'a genus-only q the first English entry already contains',
+        q: 'Lynx',
+        row: {
+          canonicalName: 'Lynx pardinus',
+          scientificName: 'Lynx pardinus (Temminck, 1827)',
+          vernacularNames: LYNX_NAMES,
+        },
+        expected: 'Iberian lynx',
+      },
+      {
+        shape: 'a genus-only q a later English entry contains',
+        q: 'Puma',
+        row: {
+          canonicalName: PUMA_ROW.canonicalName,
+          scientificName: PUMA_ROW.scientificName,
+          vernacularNames: PUMA_ROW.vernacularNames,
+        },
+        expected: 'Red Tiger',
+      },
+      {
+        shape: 'q in the scientificName of a row with no canonicalName',
+        q: 'great tit',
+        row: {
+          canonicalName: undefined,
+          scientificName: 'Great tit siadenovirus A',
+          vernacularNames: [
+            { vernacularName: 'Siadenovirus', language: 'eng' },
+            { vernacularName: 'Great tit siadenovirus', language: 'eng' },
+          ],
+        },
+        expected: 'Siadenovirus',
+      },
+    ])('names the row from $shape', async ({ q, row, expected }) => {
+      mockSearchSpecies.mockResolvedValue({
+        ...emptyPage,
+        count: 1,
+        results: [{ key: 9705453, canonicalName: 'Parus major', ...row }],
+      });
+
+      const result = await runToolContract(gbifSearchSpecies, q === undefined ? {} : { q });
+
+      expect(result.isError).not.toBe(true);
+      const taxon = gbifSearchSpecies.output.parse(result.structuredContent).taxa[0];
+      expect(taxon.vernacularName).toBe(expected);
+      const text = JSON.stringify(result.content);
+      if (expected === undefined) expect(text).not.toContain('Common name');
+      else expect(text).toContain(`**Common name:** ${expected}`);
+    });
+
+    it('renders a common name literally in content[] and verbatim in structuredContent', async () => {
+      mockSearchSpecies.mockResolvedValue({
+        ...emptyPage,
+        count: 1,
+        results: [{ key: 1, vernacularName: 'Great *tit* [x](y) <b>' }],
+      });
+
+      const result = await runToolContract(gbifSearchSpecies, {});
+
+      expect(result.structuredContent).toMatchObject({
+        taxa: [{ vernacularName: 'Great *tit* [x](y) <b>' }],
+      });
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('Great &#42;tit&#42; &#91;x&#93;&#40;y&#41; &#60;b&#62;');
+      expect(text).not.toContain('*tit*');
+    });
+
+    it("states the own-name skip in vernacularName's description and no measured count in q's", () => {
+      const vernacular = gbifSearchSpecies.output.shape.taxa.element.shape.vernacularName;
+      expect(vernacular.description).toMatch(/canonicalName or scientificName/);
+      expect(gbifSearchSpecies.input.shape.q.description).toContain('the whole name index');
+      expect(gbifSearchSpecies.input.shape.q.description).not.toMatch(/\d,\d{3}/);
+    });
+
+    it('keeps both keys optional in the output schema', () => {
+      const item = gbifSearchSpecies.output.shape.taxa.element;
+      expect(item.shape).toHaveProperty('numOccurrences');
+      expect(item.shape).toHaveProperty('vernacularName');
+      expect(gbifSearchSpecies.output.safeParse({ taxa: [{}] }).success).toBe(true);
+    });
+  });
+
+  /**
+   * #75 — `limit` and `offset` were `z.number()`, so a fraction reached GBIF, which
+   * replaces a fractional value with its default (20 rows from offset 0) and answers
+   * 200, so the wrong page came back as a success.
+   */
+  describe('integer paging inputs (#75)', () => {
+    it('advertises limit and offset as integers with their bounds and defaults', () => {
+      const { properties } = advertisedInput(gbifSearchSpecies);
+      expect(properties.limit).toMatchObject({
+        type: 'integer',
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 20,
+      });
+      expect(properties.offset).toMatchObject({
+        type: 'integer',
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 0,
+      });
+    });
+
+    it.each([
+      { field: 'limit', args: { limit: 2.5 } },
+      { field: 'offset', args: { offset: 1.5 } },
+      { field: 'limit', args: { limit: 1000.5 } },
+      { field: 'limit', args: { limit: 0 } },
+      { field: 'offset', args: { offset: -1 } },
+    ])('rejects $args at the schema before any request', async ({ field, args }) => {
+      const result = await runToolContract(gbifSearchSpecies, { genus: 'Quercus', ...args });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({
+        code: JsonRpcErrorCode.InvalidParams,
+        data: { reason: 'invalid_arguments' },
+      });
+      expect(JSON.stringify(result.content)).toContain(field);
+      expect(mockMatchSpecies).not.toHaveBeenCalled();
+      expect(mockSearchSpecies).not.toHaveBeenCalled();
+    });
+
+    it('sends the boundary integers unchanged', async () => {
+      mockSearchSpecies.mockResolvedValue(emptyPage);
+
+      const result = await runToolContract(gbifSearchSpecies, { limit: 1, offset: 0 });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({ limit: 1, offset: 0 });
+    });
+
+    it('holds the integer constraint with read-limit clamping off', async () => {
+      vi.stubEnv('GBIF_CLAMP_READ_LIMITS', 'false');
+      vi.resetModules();
+      try {
+        const { gbifSearchSpecies: strict } = await import(
+          '@/mcp-server/tools/definitions/gbif-search-species.tool.js'
+        );
+        expect(strict.input.safeParse({ limit: 1000 }).success).toBe(true);
+        expect(strict.input.safeParse({ limit: 1001 }).success).toBe(false);
+        expect(strict.input.safeParse({ limit: 999.5 }).success).toBe(false);
+        expect(strict.input.safeParse({ offset: 0.5 }).success).toBe(false);
+        expect(advertisedInput(strict).properties.limit).toMatchObject({
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
+    });
   });
 });

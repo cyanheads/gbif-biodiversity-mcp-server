@@ -5,9 +5,9 @@
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { createWorkerHandler } from '@cyanheads/mcp-ts-core/worker';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSpeciesResource } from '@/mcp-server/resources/definitions/gbif-species.resource.js';
+import { callWorker } from '../helpers/worker-request.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
   getGbifService: vi.fn(),
@@ -16,51 +16,17 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 /** Exercise URI matching, output parsing, JSON rendering and declared recovery on the wire. */
-async function readSpecies(segment: string) {
-  const worker = createWorkerHandler({
-    name: 'gbif-species-test',
-    resources: [gbifSpeciesResource],
-  });
+function readSpecies(segment: string) {
   const uri = `gbif://species/${segment}`;
-  const response = await worker.fetch(
-    new Request('http://localhost/mcp', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json, text/event-stream',
-        'Content-Type': 'application/json',
-        'MCP-Protocol-Version': '2026-07-28',
-        'Mcp-Method': 'resources/read',
-        'Mcp-Name': uri,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'resources/read',
-        params: {
-          uri,
-          _meta: {
-            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-            'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0.0' },
-            'io.modelcontextprotocol/clientCapabilities': {},
-          },
-        },
-      }),
-    }),
-    {} as never,
-    { waitUntil: () => {}, passThroughOnException: () => {} } as never,
-  );
-  const text = await response.text();
-  const frame = text.startsWith('{')
-    ? text
-    : text
-        .split('\n')
-        .find((line) => line.startsWith('data:'))
-        ?.slice(5);
-  if (!frame) throw new Error('Missing JSON-RPC response frame');
-  return JSON.parse(frame) as {
+  return callWorker<{
     result?: { contents: { uri: string; text: string; mimeType: string }[] };
     error?: { code: number; message: string; data: { reason: string; recovery: { hint: string } } };
-  };
+  }>(
+    { name: 'gbif-species-test', resources: [gbifSpeciesResource] },
+    'resources/read',
+    { uri },
+    uri,
+  );
 }
 
 describe('gbifSpeciesResource', () => {
@@ -213,15 +179,29 @@ describe('gbifSpeciesResource', () => {
     expect(mockGetSpecies).not.toHaveBeenCalled();
   });
 
-  it.each(['0', '+0', '-0', '000'])(
-    'preserves the existing root-record not_found behavior for %s',
-    async (segment) => {
-      mockGetSpecies.mockResolvedValue({ key: 0 });
-      const body = await readSpecies(segment);
-      expect(body.error?.data.reason).toBe('not_found');
-      expect(mockGetSpecies).toHaveBeenCalledWith(Number(segment), expect.anything());
-    },
-  );
+  /**
+   * #80 — key 0 is a real backbone taxon, the kingdom incertae sedis, and /species/0
+   * answers 200 with it. A truthiness check on `raw.key` read it as "no key".
+   */
+  it.each(['0', '+0', '-0', '000'])('returns the incertae sedis record for %s', async (segment) => {
+    mockGetSpecies.mockResolvedValue({
+      key: 0,
+      scientificName: 'incertae sedis',
+      canonicalName: 'incertae sedis',
+      rank: 'KINGDOM',
+      taxonomicStatus: 'DOUBTFUL',
+      kingdom: 'incertae sedis',
+      numDescendants: 3613,
+    });
+    const body = await readSpecies(segment);
+    expect(body.error).toBeUndefined();
+    expect(JSON.parse(body.result!.contents[0].text)).toMatchObject({
+      key: 0,
+      canonicalName: 'incertae sedis',
+      rank: 'KINGDOM',
+    });
+    expect(mockGetSpecies).toHaveBeenCalledWith(Number(segment), expect.anything());
+  });
 
   it.each(['-2147483648', '2147483647', '-1', '999999999'])(
     'preserves clean not_found and recovery for well-formed key %s',
