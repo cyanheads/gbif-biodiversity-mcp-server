@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "gbif-biodiversity-mcp-server",
+  "version": "0.7.7",
+  "description": "Search GBIF species taxonomy, occurrence records, datasets, and publishers via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/gbif-biodiversity-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/gbif-biodiversity-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "gbif",
+    "biodiversity",
+    "species",
+    "taxonomy",
+    "occurrences",
+    "darwin-core",
+    "natural-history"
+  ]
+}
