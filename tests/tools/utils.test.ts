@@ -482,7 +482,26 @@ describe('gadmGid and recordedBy no-match notices', () => {
     expect(notice).toMatch(/does not distinguish/);
     expect(notice).toContain('gbif_match_species');
     expect(notice).toContain('kingdom');
-    expect(notice).toContain('taxonKey');
+    expect(notice).toContain('returned taxonKey');
+    expect(scientificNameNoMatchNotice('Oenanthe', 0, BACKBONE_CHECKLIST_KEY)).toBe(notice);
+  });
+
+  /** taxonKey is refused beside the Catalogue of Life checklistKey, so the route cannot name it. */
+  it('scientificName routes through checklistTaxonKey under the Catalogue of Life', () => {
+    const notice = scientificNameNoMatchNotice('Oenanthe', 0, COL_XR_CHECKLIST_KEY) as string;
+    expect(notice).toContain('scientificName "Oenanthe"');
+    expect(notice).toMatch(/shared across kingdoms/);
+    expect(notice).toContain(
+      `returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}`,
+    );
+    expect(notice).not.toMatch(/\btaxonKey\b/);
+    expect(notice).not.toContain('Backbone');
+    expect(
+      occurrenceNoMatchNotices(
+        { scientificName: 'Oenanthe', checklistKey: COL_XR_CHECKLIST_KEY },
+        0,
+      )[0],
+    ).toBe(notice);
   });
 
   it('composes every applicable notice in a fixed order and none on a match', () => {

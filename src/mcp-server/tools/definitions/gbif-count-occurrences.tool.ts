@@ -148,7 +148,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when the count is zero under an exact-match stateProvince, gadmGid, or recordedBy filter, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, the count is larger than gbif_search_occurrences can page to, or a presence/absence filter narrowed it. Absent when none applies.',
+        'Guidance when the count is zero under a scientificName or an exact-match stateProvince, gadmGid, or recordedBy filter, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, the count is larger than gbif_search_occurrences can page to, or a presence/absence filter narrowed it. Absent when none applies.',
       ),
   },
 

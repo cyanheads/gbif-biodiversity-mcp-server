@@ -377,7 +377,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, paging overshot, a read limit was clamped, an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
+        'Guidance when results are empty, paging overshot, a read limit was clamped, a scientificName or an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
       ),
   },
 

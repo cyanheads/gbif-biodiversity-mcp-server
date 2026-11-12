@@ -506,13 +506,22 @@ export function recordedByNoMatchNotice(
  * and a plant genus) counts none while `taxonKey` 2492483 counts millions. That
  * zero cannot be told apart from a taxon with no records in scope, so the notice
  * names the key route, where a kingdom picks one taxon.
+ *
+ * Under the Catalogue of Life `checklistKey` the name answers the same zero, but
+ * `taxonKey` is refused beside that checklist, so the route is a `checklistTaxonKey`
+ * matched under it instead.
  */
 export function scientificNameNoMatchNotice(
   scientificName: string | undefined,
   matched: number,
+  checklistKey?: ChecklistKey,
 ): string | undefined {
   if (!scientificName?.trim() || matched > 0) return;
-  return `Nothing matched, and scientificName "${scientificName}" was applied. GBIF resolves the name against the Backbone, synonyms included, but answers a name shared across kingdoms (Oenanthe is a bird genus and a plant genus) with zero records instead of an error, so this result does not distinguish such a name from a taxon with no records in this scope. Resolve the name with gbif_match_species, setting kingdom for a shared name, and pass the returned taxonKey instead.`;
+  const col = checklistKey === COL_XR_CHECKLIST_KEY;
+  const route = col
+    ? `Resolve the name with gbif_match_species under the same checklistKey, setting kingdom for a shared name, and pass the returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}, instead.`
+    : 'Resolve the name with gbif_match_species, setting kingdom for a shared name, and pass the returned taxonKey instead.';
+  return `Nothing matched, and scientificName "${scientificName}" was applied. GBIF resolves the name${col ? '' : ' against the Backbone'}, synonyms included, but answers a name shared across kingdoms (Oenanthe is a bird genus and a plant genus) with zero records instead of an error, so this result does not distinguish such a name from a taxon with no records in this scope. ${route}`;
 }
 
 /**
@@ -521,11 +530,14 @@ export function scientificNameNoMatchNotice(
  * result identically. Entries that do not apply are `undefined`.
  */
 export function occurrenceNoMatchNotices(
-  input: Pick<OccurrenceFilters, 'scientificName' | 'stateProvince' | 'gadmGid' | 'recordedBy'>,
+  input: Pick<
+    OccurrenceFilters,
+    'scientificName' | 'checklistKey' | 'stateProvince' | 'gadmGid' | 'recordedBy'
+  >,
   matched: number,
 ): (string | undefined)[] {
   return [
-    scientificNameNoMatchNotice(input.scientificName, matched),
+    scientificNameNoMatchNotice(input.scientificName, matched, input.checklistKey),
     stateProvinceNoMatchNotice(input.stateProvince, matched),
     gadmGidNoMatchNotice(input.gadmGid, matched),
     recordedByNoMatchNotice(input.recordedBy, matched),

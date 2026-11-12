@@ -304,7 +304,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain, includeLabels left buckets without a label, an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
+        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain, includeLabels left buckets without a label, a scientificName or an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
 

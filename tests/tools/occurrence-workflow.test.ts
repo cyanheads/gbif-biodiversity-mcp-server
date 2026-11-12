@@ -1620,6 +1620,28 @@ describe('Catalogue of Life scope (#90)', () => {
       expect(described).toContain('accepted taxon');
       expect(described).toContain('Oenanthe');
       expect(tool.description).not.toContain('resolves synonyms automatically');
+      expect(tool.enrichment?.notice?.description).toContain('a scientificName or');
+    },
+  );
+
+  /**
+   * Live, PRESENT: scientificName "Oenanthe" counts 0 under the Catalogue of Life
+   * checklistKey too, and taxonKey is refused beside it, so the notice on the empty
+   * result names checklistTaxonKey as the route.
+   */
+  it.each(calls)(
+    '$name routes an empty scientificName result through checklistTaxonKey under the Catalogue of Life',
+    async ({ run }) => {
+      bodies.push({ count: 0, results: [], facets: [] });
+      const result = await run({ scientificName: 'Oenanthe', checklistKey: COL_XR_CHECKLIST_KEY });
+      expect(result.isError).not.toBe(true);
+      const notice = result.structuredContent?.notice as string;
+      expect(notice).toContain('scientificName "Oenanthe"');
+      expect(notice).toContain(
+        `returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}`,
+      );
+      expect(notice).not.toContain('returned taxonKey');
+      expect(JSON.stringify(result.content)).toContain('returned checklistTaxonKey');
     },
   );
 });
