@@ -1,11 +1,12 @@
 /**
  * @fileoverview Regression tests for the agent-doc selector that
  * scripts/clean-mcpb.ts strips from a packed `.mcpb` and scripts/lint-packaging.ts
- * check 8 reports in a built one. Agent docs (`framework-skills/`, `skills/`,
- * `.claude/`, `.agents/`, `SKILL.md`) are matched only at an installed package's
- * root, so runtime modules under a nested `skills/` directory — the MCP SDK's
- * `dist/ext/skills/`, which a cleaned bundle needs to start — ship, and so does
- * the bundle's own root `skills/` tree. Imports the real implementations.
+ * check 8 reports in a built one. Agent-doc directories (`framework-skills/`,
+ * `skills/`, `.claude/`, `.agents/`) and `AGENTS.md`/`CLAUDE.md` are matched only
+ * at an installed package's root, so runtime modules under a nested `skills/`
+ * directory — the MCP SDK's `dist/ext/skills/`, which a cleaned bundle needs to
+ * start — ship, and so does the bundle's own root `skills/` tree. A `SKILL.md`
+ * is matched anywhere under `node_modules/`. Imports the real implementations.
  * @module tests/scripts/clean-mcpb.test
  */
 
@@ -37,6 +38,16 @@ const PACKAGE_ROOT_AGENT_DOCS = [
   'node_modules/@scope/pkg/skills/pkg-guide/SKILL.md',
   'node_modules/a/node_modules/b/skills/b-guide/SKILL.md',
   'node_modules/a/node_modules/@s/b/.claude/settings.json',
+  'node_modules/@cyanheads/mcp-ts-core/CLAUDE.md',
+  'node_modules/@cyanheads/mcp-ts-core/AGENTS.md',
+  'node_modules/dotenv/AGENTS.md',
+  'node_modules/a/node_modules/@s/b/CLAUDE.md',
+];
+
+/** A `SKILL.md` below a package root — stripped wherever it sits under `node_modules/`. */
+const NESTED_SKILL_DOCS = [
+  'node_modules/some-pkg/dist/assets/SKILL.md',
+  'node_modules/@scope/pkg/lib/guide/SKILL.md',
 ];
 
 describe('clean-mcpb · agent-doc entry filter', () => {
@@ -53,8 +64,16 @@ describe('clean-mcpb · agent-doc entry filter', () => {
     expect(filterAgentDocEntries(entries)).toEqual([]);
   });
 
-  it('keeps a SKILL.md inside a package tree, below its root', () => {
-    expect(filterAgentDocEntries(['node_modules/some-pkg/dist/assets/SKILL.md'])).toEqual([]);
+  it('strips a SKILL.md below a package root', () => {
+    expect(filterAgentDocEntries(NESTED_SKILL_DOCS)).toEqual(NESTED_SKILL_DOCS);
+  });
+
+  it('keeps an AGENTS.md or CLAUDE.md below a package root', () => {
+    const entries = [
+      'node_modules/some-pkg/docs/AGENTS.md',
+      'node_modules/@scope/pkg/lib/CLAUDE.md',
+    ];
+    expect(filterAgentDocEntries(entries)).toEqual([]);
   });
 
   it("keeps the bundle's own root skills/ tree", () => {
@@ -105,12 +124,17 @@ describe('lint-packaging · check 8 agent-doc class, paired with clean-mcpb', ()
     expect(checkBundleEntries(entries, 'dist/test.mcpb')).toEqual([]);
   });
 
-  it('flags agent docs left at a package root, counting only those', () => {
-    const entries = ['dist/index.js', ...SDK_SKILLS_RUNTIME, ...PACKAGE_ROOT_AGENT_DOCS];
+  it('flags agent docs left in node_modules, counting only those, in one class', () => {
+    const entries = [
+      'dist/index.js',
+      ...SDK_SKILLS_RUNTIME,
+      ...PACKAGE_ROOT_AGENT_DOCS,
+      ...NESTED_SKILL_DOCS,
+    ];
     const errors = checkBundleEntries(entries, 'dist/test.mcpb');
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain(
-      `dist/test.mcpb contains ${PACKAGE_ROOT_AGENT_DOCS.length} node_modules agent-doc entries`,
+      `dist/test.mcpb contains ${PACKAGE_ROOT_AGENT_DOCS.length + NESTED_SKILL_DOCS.length} node_modules agent-doc entries`,
     );
     expect(errors[0]).not.toContain('@modelcontextprotocol');
   });
