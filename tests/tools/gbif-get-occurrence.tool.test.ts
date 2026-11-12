@@ -454,3 +454,218 @@ describe('gbifGetOccurrence newly surfaced record fields', () => {
     expect(text).toContain('09:15:50+02:00');
   });
 });
+
+/**
+ * #87 — reuse terms, publisher, accepted taxon, and specimen fields. Fixtures are
+ * live records: 6490801341 (a specimen filed under the synonym Quercus tristis),
+ * 1228618670 (a Field Museum Isolectotype with a credited image), 6158811543
+ * (an introduced plant with an elevation), and 6506005834 (a cod record at depth).
+ */
+describe('gbifGetOccurrence reuse, publisher, accepted taxon, and specimen fields (#87)', () => {
+  const mockGetOccurrence = vi.fn();
+  const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    (result.content ?? []).map((block) => (block.type === 'text' ? block.text : '')).join('\n');
+  /** structuredContent as the client receives it — JSON drops undefined-valued keys. */
+  const wireOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    JSON.parse(JSON.stringify(result.structuredContent)) as Record<string, unknown>;
+  const NEW_LABELS = [
+    'Accepted taxon',
+    'License',
+    'Rights holder',
+    'Publishing organization',
+    'Record number',
+    'Elevation',
+    'Depth',
+    'Type status',
+    'Establishment means',
+  ];
+  const NEW_FIELDS = [
+    'license',
+    'rightsHolder',
+    'publishingOrganizationKey',
+    'acceptedTaxonKey',
+    'acceptedScientificName',
+    'recordNumber',
+    'elevation',
+    'depth',
+    'typeStatus',
+    'establishmentMeans',
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({ getOccurrence: mockGetOccurrence } as never);
+  });
+
+  it('returns the accepted taxon of a record filed under a synonym on both surfaces', async () => {
+    mockGetOccurrence.mockResolvedValue({
+      key: 6490801341,
+      datasetKey: 'd5ba665a-c07b-4379-85ff-15d7e3a9331a',
+      taxonKey: 2879003,
+      scientificName: 'Quercus tristis Liebm.',
+      acceptedTaxonKey: 2879127,
+      acceptedScientificName: 'Quercus castanea Née',
+      taxonomicStatus: 'SYNONYM',
+      basisOfRecord: 'PRESERVED_SPECIMEN',
+      occurrenceStatus: 'DETECTED',
+      license: 'http://creativecommons.org/licenses/by-nc/4.0/legalcode',
+      publishingOrgKey: '1eb0746b-24c4-40b7-9ed7-3381428e9648',
+      recordNumber: 'JL 157',
+      recordedBy: 'J. Lupitou; JC. Montoya',
+    });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 6490801341 });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      taxonKey: 2879003,
+      acceptedTaxonKey: 2879127,
+      acceptedScientificName: 'Quercus castanea Née',
+      license: 'http://creativecommons.org/licenses/by-nc/4.0/legalcode',
+      publishingOrganizationKey: '1eb0746b-24c4-40b7-9ed7-3381428e9648',
+      recordNumber: 'JL 157',
+      occurrenceStatus: 'DETECTED',
+    });
+    expect(wireOf(result)).not.toHaveProperty('publishingOrgKey');
+    const text = textOf(result);
+    expect(text).toContain('**Taxon key:** 2879003');
+    expect(text).toContain('**Accepted taxon:** Quercus castanea Née (key: 2879127)');
+    expect(text).toContain('**License:** http://creativecommons.org/licenses/by-nc/4.0/legalcode');
+    expect(text).toContain('**Publishing organization key:** 1eb0746b-24c4-40b7-9ed7-3381428e9648');
+    expect(text).toContain('**Record number:** JL 157');
+  });
+
+  it('carries type status, rights holder, elevation, depth, and establishment means', async () => {
+    mockGetOccurrence.mockResolvedValue({
+      key: 1228618670,
+      typeStatus: 'Isolectotype',
+      rightsHolder: 'The Field Museum of Natural History',
+      establishmentMeans: 'introduced',
+      elevation: 96,
+      depth: 17.5,
+    });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 1228618670 });
+
+    expect(result.structuredContent).toMatchObject({
+      typeStatus: 'Isolectotype',
+      rightsHolder: 'The Field Museum of Natural History',
+      establishmentMeans: 'introduced',
+      elevation: 96,
+      depth: 17.5,
+    });
+    const text = textOf(result);
+    expect(text).toContain('**Type status:** Isolectotype');
+    expect(text).toContain('**Rights holder:** The Field Museum of Natural History');
+    expect(text).toContain('**Establishment means:** introduced');
+    expect(text).toContain('**Elevation:** 96 m');
+    expect(text).toContain('**Depth:** 17.5 m');
+  });
+
+  it('renders an accepted taxon key without a name, and a name without a key', async () => {
+    mockGetOccurrence.mockResolvedValue({ key: 1, acceptedTaxonKey: 2879127 });
+    const keyOnly = textOf(await runToolContract(gbifGetOccurrence, { occurrenceKey: 1 }));
+    expect(keyOnly).toContain('**Accepted taxon key:** 2879127');
+
+    mockGetOccurrence.mockResolvedValue({ key: 2, acceptedScientificName: 'Quercus castanea Née' });
+    const nameOnly = await runToolContract(gbifGetOccurrence, { occurrenceKey: 2 });
+    expect(wireOf(nameOnly)).not.toHaveProperty('acceptedTaxonKey');
+    expect(textOf(nameOnly)).toContain('**Accepted taxon:** Quercus castanea Née\n');
+  });
+
+  it('renders none of the ten fields, and no placeholder, on a record carrying none', async () => {
+    mockGetOccurrence.mockResolvedValue({ key: 304, taxonKey: 5231190 });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 304 });
+
+    expect(result.isError).not.toBe(true);
+    for (const field of NEW_FIELDS) expect(wireOf(result)).not.toHaveProperty(field);
+    const text = textOf(result);
+    for (const label of NEW_LABELS) expect(text).not.toContain(label);
+  });
+
+  it('renders free text literally in content while structuredContent keeps it as sent', async () => {
+    mockGetOccurrence.mockResolvedValue({
+      key: 5,
+      rightsHolder: 'Smith & *Jones*',
+      recordNumber: '[x](y) #1',
+      acceptedScientificName: 'Quercus_x L.',
+    });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      rightsHolder: 'Smith & *Jones*',
+      recordNumber: '[x](y) #1',
+      acceptedScientificName: 'Quercus_x L.',
+    });
+    const text = textOf(result);
+    expect(text).toContain('**Rights holder:** Smith &#38; &#42;Jones&#42;');
+    expect(text).toContain('**Record number:** &#91;x&#93;&#40;y&#41; &#35;1');
+    expect(text).toContain('**Accepted taxon:** Quercus&#95;x L.');
+  });
+
+  it('credits each media item to its rights holder on both surfaces, in source order', async () => {
+    mockGetOccurrence.mockResolvedValue({
+      key: 1228618670,
+      media: [
+        {
+          type: 'StillImage',
+          format: 'jpeg',
+          identifier: 'http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg',
+          title: 'V0060057F',
+          license: '(c) Field Museum of Natural History - CC BY-NC 4.0',
+          rightsHolder: 'Field Museum of Natural History',
+          creator: 'Field Museum',
+        },
+        { type: 'Sound', identifier: 'https://static.inaturalist.org/sounds/1785847.wav' },
+      ],
+    });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 1228618670 });
+
+    expect(result.structuredContent?.media).toEqual([
+      {
+        type: 'StillImage',
+        format: 'jpeg',
+        identifier: 'http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg',
+        title: 'V0060057F',
+        license: '(c) Field Museum of Natural History - CC BY-NC 4.0',
+        rightsHolder: 'Field Museum of Natural History',
+      },
+      { type: 'Sound', identifier: 'https://static.inaturalist.org/sounds/1785847.wav' },
+    ]);
+    const lines = textOf(result).split('\n');
+    const first = lines.findIndex((line) => line.includes('V0060057F.jpg'));
+    expect(lines[first]).toContain('(rights holder: Field Museum of Natural History)');
+    expect(lines[first + 1]).toBe('  - Sound: https://static.inaturalist.org/sounds/1785847.wav');
+  });
+
+  it('describes each field in the form it arrives and where it chains', () => {
+    const { shape } = gbifGetOccurrence.output;
+    expect(shape.license.description).toContain('URL');
+    expect(shape.license.description).toContain('CC_BY_NC_4_0');
+    expect(shape.publishingOrganizationKey.description).toContain('publishingOrg');
+    expect(shape.acceptedScientificName.description).toContain('authorship');
+    expect(shape.acceptedTaxonKey.description).toMatch(/backbone/i);
+    expect(shape.acceptedTaxonKey.description).toContain('SYNONYM');
+    expect(shape.typeStatus.description).toContain('typeStatus filter');
+    expect(shape.establishmentMeans.description).toContain('establishmentMeans filter');
+    expect(shape.elevation.description).toContain('meters');
+    expect(shape.depth.description).toContain('meters');
+  });
+});
+
+/**
+ * GBIF serves occurrenceStatus as DETECTED / NOT_DETECTED on every record (the
+ * index-wide OCCURRENCE_STATUS facet has no other bucket); PRESENT and ABSENT are
+ * the filter vocabulary's older names for the same two concepts.
+ */
+describe('gbifGetOccurrence occurrenceStatus as GBIF serves it', () => {
+  it('names the spelling records carry in the field and tool descriptions', () => {
+    const field = gbifGetOccurrence.output.shape.occurrenceStatus.description ?? '';
+    for (const text of ['DETECTED', 'NOT_DETECTED', 'PRESENT', 'ABSENT'])
+      expect(field).toContain(text);
+    expect(gbifGetOccurrence.description).toContain('NOT_DETECTED');
+  });
+});

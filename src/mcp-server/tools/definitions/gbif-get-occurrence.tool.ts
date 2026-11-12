@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawGadm, RawGadmLevel, RawOccurrenceRecord } from '@/services/gbif/types.js';
+import { escapeMarkdownText } from '../utils.js';
 
 /** Output schema for one GADM administrative level. A fresh instance per call keeps the emitted JSON Schema inline (no $ref). */
 const gadmLevel = () =>
@@ -43,11 +44,7 @@ const compactGadm = (g: RawGadm | undefined) => {
 export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   title: 'Get Occurrence Record',
   description:
-    'Fetch a single occurrence record by its GBIF occurrence key. Returns the complete Darwin Core ' +
-    'record — all coordinates, administrative geography (GADM levels 0–3), dates, collections metadata, ' +
-    'collector identifiers, conservation status, media links, and quality issue flags. Check ' +
-    'occurrenceStatus before reading the record as a sighting: ABSENT means a survey looked for the ' +
-    'taxon and did not find it. Use the occurrence key from gbif_search_occurrences results.',
+    'Fetch a single occurrence record by its GBIF occurrence key. Returns the complete Darwin Core record — all coordinates, elevation and depth, administrative geography (GADM levels 0–3), dates, collections metadata, collector identifiers and record number, type status, establishment means, the accepted taxon behind a synonym, conservation status, license, rights holder, publishing organization, media links with their rights holders, and quality issue flags. Check occurrenceStatus before reading the record as a sighting: NOT_DETECTED (ABSENT or NOT_DETECTED in the occurrenceStatus filter) means a survey looked for the taxon and did not find it. Use the occurrence key from gbif_search_occurrences results.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     occurrenceKey: z
@@ -83,6 +80,18 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .describe(
         'Status of the identification carried on this record — ACCEPTED, PROVISIONALLY_ACCEPTED, SYNONYM, DOUBTFUL, and so on. Says whether the occurrence was filed under an accepted name or a synonym. May be absent.',
       ),
+    acceptedTaxonKey: z
+      .number()
+      .optional()
+      .describe(
+        'Backbone taxon key of the accepted taxon. Equals taxonKey for a record filed under an accepted name; when taxonomicStatus is SYNONYM, taxonKey is the synonym and this is the taxon it resolves to. Passed as taxonKey to the occurrence tools, it covers the accepted taxon and every synonym. May be absent.',
+      ),
+    acceptedScientificName: z
+      .string()
+      .optional()
+      .describe(
+        'Scientific name of the accepted taxon as GBIF writes it, with authorship where GBIF has one (e.g. "Quercus castanea Née") — the accepted counterpart of scientificName. May be absent.',
+      ),
     decimalLatitude: z
       .number()
       .optional()
@@ -95,6 +104,14 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .number()
       .optional()
       .describe('Coordinate uncertainty radius in meters. May be absent.'),
+    elevation: z
+      .number()
+      .optional()
+      .describe('Elevation in meters above sea level. May be absent.'),
+    depth: z
+      .number()
+      .optional()
+      .describe('Depth in meters below the local surface, such as a water surface. May be absent.'),
     continent: z.string().optional().describe('Continent name. May be absent.'),
     country: z.string().optional().describe('Country name. May be absent.'),
     countryCode: z.string().optional().describe('ISO 3166-1 alpha-2 country code. May be absent.'),
@@ -119,6 +136,24 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .string()
       .optional()
       .describe('Country code of the publishing organization.'),
+    publishingOrganizationKey: z
+      .string()
+      .optional()
+      .describe(
+        "UUID of the organization that published the record — GBIF's publishingOrgKey. Pass it as publishingOrg to the occurrence tools or gbif_search_datasets. May be absent.",
+      ),
+    license: z
+      .string()
+      .optional()
+      .describe(
+        'License the record is published under, as the Creative Commons URL GBIF stores (e.g. http://creativecommons.org/licenses/by-nc/4.0/legalcode). The license filter on the occurrence tools takes the matching code instead — CC0_1_0, CC_BY_4_0, or CC_BY_NC_4_0 — not this URL. May be absent.',
+      ),
+    rightsHolder: z
+      .string()
+      .optional()
+      .describe(
+        'Person or organization that owns or manages rights over the record — the name to credit under a CC BY license. May be absent.',
+      ),
     eventDate: z
       .string()
       .optional()
@@ -133,11 +168,23 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     month: z.number().optional().describe('Observation month (1–12). May be absent.'),
     day: z.number().optional().describe('Observation day. May be absent.'),
     basisOfRecord: z.string().optional().describe('How the occurrence was recorded.'),
+    typeStatus: z
+      .string()
+      .optional()
+      .describe(
+        'Nomenclatural type status of the specimen (e.g. Holotype, Isolectotype), as the GBIF concept name the typeStatus filter takes unchanged. May be absent.',
+      ),
     occurrenceStatus: z
       .string()
       .optional()
       .describe(
-        'PRESENT when the record asserts the taxon was there, ABSENT when it documents a survey that looked and did not find it. An ABSENT record is not a sighting — it carries coordinates, a date, and a recorder all the same. May be absent.',
+        'Whether the record asserts presence or absence: DETECTED when the taxon was there, NOT_DETECTED when it documents a survey that looked and did not find it. GBIF serves these spellings; the occurrenceStatus filter also takes the older PRESENT and ABSENT, which select the same records. A NOT_DETECTED record is not a sighting — it carries coordinates, a date, and a recorder all the same. May be absent.',
+      ),
+    establishmentMeans: z
+      .string()
+      .optional()
+      .describe(
+        'How the organism came to be at the location (e.g. native, introduced), as the GBIF concept name the establishmentMeans filter takes unchanged. May be absent.',
       ),
     iucnRedListCategory: z
       .string()
@@ -157,6 +204,12 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .string()
       .optional()
       .describe('Catalog number within the collection. May be absent.'),
+    recordNumber: z
+      .string()
+      .optional()
+      .describe(
+        'Number the collector assigned when collecting (e.g. "JL 157") — how herbarium specimens are cited, beside recordedBy. Not the catalogNumber. May be absent.',
+      ),
     recordedBy: z.string().optional().describe('Collector name(s). May be absent.'),
     identifiedBy: z.string().optional().describe('Identifier name(s). May be absent.'),
     individualCount: z.number().optional().describe('Number of individuals. May be absent.'),
@@ -172,6 +225,10 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
             identifier: z.string().optional().describe('URL to the media file.'),
             title: z.string().optional().describe('Media title.'),
             license: z.string().optional().describe('License for the media.'),
+            rightsHolder: z
+              .string()
+              .optional()
+              .describe('Rights holder to credit for the media item. May be absent.'),
           })
           .describe('A media item (image, audio, video) associated with the occurrence.'),
       )
@@ -235,9 +292,13 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       species: raw.species,
       taxonRank: raw.taxonRank,
       taxonomicStatus: raw.taxonomicStatus,
+      acceptedTaxonKey: raw.acceptedTaxonKey,
+      acceptedScientificName: raw.acceptedScientificName,
       decimalLatitude: raw.decimalLatitude,
       decimalLongitude: raw.decimalLongitude,
       coordinateUncertaintyInMeters: raw.coordinateUncertaintyInMeters,
+      elevation: raw.elevation,
+      depth: raw.depth,
       continent: raw.continent,
       country: raw.country,
       countryCode: raw.countryCode,
@@ -245,17 +306,23 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       locality: raw.locality,
       gadm: compactGadm(raw.gadm),
       publishingCountry: raw.publishingCountry,
+      publishingOrganizationKey: raw.publishingOrgKey,
+      license: raw.license,
+      rightsHolder: raw.rightsHolder,
       eventDate: raw.eventDate,
       eventTime: raw.eventTime,
       year: raw.year,
       month: raw.month,
       day: raw.day,
       basisOfRecord: raw.basisOfRecord,
+      typeStatus: raw.typeStatus,
       occurrenceStatus: raw.occurrenceStatus,
+      establishmentMeans: raw.establishmentMeans,
       iucnRedListCategory: raw.iucnRedListCategory,
       institutionCode: raw.institutionCode,
       collectionCode: raw.collectionCode,
       catalogNumber: raw.catalogNumber,
+      recordNumber: raw.recordNumber,
       recordedBy: raw.recordedBy,
       identifiedBy: raw.identifiedBy,
       individualCount: raw.individualCount,
@@ -269,6 +336,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
             identifier: m.identifier,
             title: m.title,
             license: m.license,
+            rightsHolder: m.rightsHolder,
           }))
         : undefined,
       identifiers: raw.identifiers?.length
@@ -287,15 +355,24 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     lines.push(`## ${canonical}${sci}`);
     if (result.key != null) lines.push(`**Occurrence key:** ${result.key}`);
     if (result.taxonKey != null) lines.push(`**Taxon key:** ${result.taxonKey}`);
+    if (result.acceptedScientificName)
+      lines.push(
+        `**Accepted taxon:** ${escapeMarkdownText(result.acceptedScientificName)}${result.acceptedTaxonKey != null ? ` (key: ${result.acceptedTaxonKey})` : ''}`,
+      );
+    else if (result.acceptedTaxonKey != null)
+      lines.push(`**Accepted taxon key:** ${result.acceptedTaxonKey}`);
     if (result.taxonRank) lines.push(`**Rank:** ${result.taxonRank}`);
     if (result.taxonomicStatus) lines.push(`**Taxonomic status:** ${result.taxonomicStatus}`);
     if (result.basisOfRecord) lines.push(`**Basis of record:** ${result.basisOfRecord}`);
+    if (result.typeStatus) lines.push(`**Type status:** ${escapeMarkdownText(result.typeStatus)}`);
     /**
-     * Rendered whenever GBIF supplies it, PRESENT included. An absence record is
+     * Rendered whenever GBIF supplies it, DETECTED included. An absence record is
      * otherwise indistinguishable from a sighting for a `content[]`-only client,
      * which has no `structuredContent` to fall back on.
      */
     if (result.occurrenceStatus) lines.push(`**Occurrence status:** ${result.occurrenceStatus}`);
+    if (result.establishmentMeans)
+      lines.push(`**Establishment means:** ${escapeMarkdownText(result.establishmentMeans)}`);
     if (result.iucnRedListCategory)
       lines.push(`**IUCN Red List category:** ${result.iucnRedListCategory}`);
     // Taxonomy
@@ -331,6 +408,8 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     if (result.decimalLatitude == null && result.decimalLongitude == null) {
       lines.push('**Coordinates:** Not available');
     }
+    if (result.elevation != null) lines.push(`**Elevation:** ${result.elevation} m`);
+    if (result.depth != null) lines.push(`**Depth:** ${result.depth} m`);
     const geo: string[] = [];
     if (result.locality) geo.push(result.locality);
     if (result.stateProvince) geo.push(result.stateProvince);
@@ -365,9 +444,18 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     if (result.institutionCode) lines.push(`**Institution:** ${result.institutionCode}`);
     if (result.collectionCode) lines.push(`**Collection:** ${result.collectionCode}`);
     if (result.catalogNumber) lines.push(`**Catalog number:** ${result.catalogNumber}`);
+    if (result.recordNumber)
+      lines.push(`**Record number:** ${escapeMarkdownText(result.recordNumber)}`);
     if (result.occurrenceID) lines.push(`**Occurrence ID:** ${result.occurrenceID}`);
     if (result.datasetKey) lines.push(`**Dataset key:** ${result.datasetKey}`);
     if (result.publishingCountry) lines.push(`**Publishing country:** ${result.publishingCountry}`);
+    if (result.publishingOrganizationKey)
+      lines.push(
+        `**Publishing organization key:** ${escapeMarkdownText(result.publishingOrganizationKey)}`,
+      );
+    if (result.license) lines.push(`**License:** ${escapeMarkdownText(result.license)}`);
+    if (result.rightsHolder)
+      lines.push(`**Rights holder:** ${escapeMarkdownText(result.rightsHolder)}`);
     if (result.media?.length) {
       lines.push(`\n**Media:** ${result.media.length} item(s)`);
       for (const m of result.media) {
@@ -375,8 +463,11 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
         const mediaTitle = m.title ? ` — ${m.title}` : '';
         const mediaFmt = m.format ? ` (${m.format})` : '';
         const mediaLicense = m.license ? ` [${m.license}]` : '';
+        const mediaRights = m.rightsHolder
+          ? ` (rights holder: ${escapeMarkdownText(m.rightsHolder)})`
+          : '';
         lines.push(
-          `  - ${mediaType}${mediaTitle}${mediaFmt}${mediaLicense}${m.identifier ? `: ${m.identifier}` : ''}`,
+          `  - ${mediaType}${mediaTitle}${mediaFmt}${mediaLicense}${mediaRights}${m.identifier ? `: ${m.identifier}` : ''}`,
         );
       }
     }

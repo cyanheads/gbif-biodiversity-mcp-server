@@ -10,10 +10,12 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { gbifDatasetResource } from '@/mcp-server/resources/definitions/gbif-dataset.resource.js';
 import { gbifGetDataset } from '@/mcp-server/tools/definitions/gbif-get-dataset.tool.js';
 import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
 import { GbifService, initGbifService } from '@/services/gbif/gbif-service.js';
 import type { OccurrenceFilters } from '@/services/gbif/types.js';
+import { callWorker } from '../helpers/worker-request.js';
 
 const REPOSITORY_URL = 'https://github.com/cyanheads/gbif-biodiversity-mcp-server';
 
@@ -155,7 +157,7 @@ describe('GbifService upstream error payload', () => {
     expect(err.data).not.toHaveProperty('url');
     expect(JSON.stringify(err.data)).not.toContain('api.gbif.org');
     expect(JSON.stringify(err.data)).not.toContain('taxonKey=1');
-    // The fields withRetry and the callers classify on survive the removal.
+    // The status survives the removal, and the captured body stays readable on the server.
     expect(err.data).toMatchObject({ status: 400, body: WKT_BODY });
   });
 
@@ -274,6 +276,90 @@ describe('GbifService upstream error payload', () => {
     expect(err.message).not.toContain('<html>');
     expect(err.message).not.toContain('<!DOCTYPE');
     expect(err.data).toMatchObject({ body: page });
+  });
+
+  /**
+   * The framework keeps the body `httpErrorFromResponse` captures off every client
+   * envelope, so the message the service folds GBIF's explanation into is the one
+   * place a caller reads it — on `structuredContent` and `content[]` alike.
+   */
+  describe('on the wire', () => {
+    const MISSING_DATASET = '00000000-0000-0000-0000-000000000000';
+    const UUID_BODY = 'Invalid UUID string: not-a-uuid';
+
+    function stubUpstream(status: number, body: string, statusText: string): void {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(() => Promise.resolve(upstream(status, body, statusText))),
+      );
+      initGbifService(appConfig, storage, {
+        baseUrl: 'https://api.gbif.org/v1',
+        timeoutMs: 1_000,
+      });
+    }
+
+    async function callGetDataset() {
+      const result = await runToolContract(gbifGetDataset, { datasetKey: MISSING_DATASET });
+      expect(result.isError).toBe(true);
+      const { error } = result.structuredContent as {
+        error: { message: string; data: Record<string, unknown> };
+      };
+      const text = result.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n');
+      return { error, text };
+    }
+
+    it("states GBIF's explanation in the tool error message on both surfaces", async () => {
+      stubUpstream(400, UUID_BODY, 'Bad Request');
+
+      const { error, text } = await callGetDataset();
+
+      expect(error.message).toContain('HTTP 400');
+      expect(error.message).toContain(UUID_BODY);
+      expect(text).toContain(UUID_BODY);
+    });
+
+    it('leaves the captured body out of structuredContent.error.data', async () => {
+      stubUpstream(400, UUID_BODY, 'Bad Request');
+
+      const { error } = await callGetDataset();
+
+      expect(error.data).not.toHaveProperty('body');
+      expect(error.data).not.toHaveProperty('responseBody');
+      // The classifying fields the body sat beside still reach the caller.
+      expect(error.data).toMatchObject({ status: 400, reason: 'invalid_filter' });
+    });
+
+    it('keeps an HTML outage page off both tool surfaces', async () => {
+      stubUpstream(400, '<!DOCTYPE html><html><body>Busy</body></html>', 'Bad Request');
+
+      const { error, text } = await callGetDataset();
+
+      expect(JSON.stringify(error)).not.toContain('<!DOCTYPE');
+      expect(text).not.toContain('<!DOCTYPE');
+      expect(error.message).toContain('HTTP 400');
+    });
+
+    it("leaves the captured body out of a resource read's JSON-RPC error data", async () => {
+      stubUpstream(400, UUID_BODY, 'Bad Request');
+      const uri = `gbif://dataset/${MISSING_DATASET}`;
+
+      const response = await callWorker<{
+        error: { code: number; message: string; data: Record<string, unknown> };
+      }>(
+        { name: 'gbif-service-wire-test', resources: [gbifDatasetResource] },
+        'resources/read',
+        { uri },
+        uri,
+      );
+
+      expect(response.error.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(response.error.message).toContain(UUID_BODY);
+      expect(response.error.data).not.toHaveProperty('body');
+      expect(response.error.data).not.toHaveProperty('responseBody');
+      expect(response.error.data).toMatchObject({ reason: 'invalid_filter' });
+    });
   });
 });
 
@@ -444,6 +530,115 @@ describe('GbifService request deadline', () => {
     ).rejects.toBe(reason);
     expect(aborted).toBe(true);
   });
+});
+
+/**
+ * #89 — `/v2/species/match` is the only route that matches against the Catalogue of
+ * Life, and it renames two v1 parameters: a v2 `name` answers NONE "No name given" and
+ * a v2 `rank` is ignored. Its root is derived from the configured v1 root.
+ */
+describe('GbifService.matchChecklistSpecies', () => {
+  const COL_XR = '7ddf754f-d193-4cc9-b351-99906754a03b';
+  const TREX = {
+    usage: { key: 'TPJ7G', canonicalName: 'Tyrannosaurus mcraeensis', status: 'ACCEPTED' },
+    diagnostics: { matchType: 'EXACT', confidence: 97 },
+  };
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(new Response(JSON.stringify(TREX))));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function service(baseUrl: string): GbifService {
+    return new GbifService(appConfig, storage, { baseUrl, timeoutMs: 1_000 });
+  }
+
+  /** URL of the single fetch the service issued. */
+  function sentUrl(): URL {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    return new URL(fetchMock.mock.calls[0]?.[0] as string);
+  }
+
+  it('sends scientificName and taxonRank on the v2 route, never name or rank', async () => {
+    const body = await service('https://api.gbif.org/v1').matchChecklistSpecies(
+      {
+        name: 'Oenanthe oenanthe',
+        checklistKey: COL_XR,
+        strict: false,
+        kingdom: 'Animalia',
+        rank: 'SPECIES',
+      },
+      createMockContext(),
+    );
+
+    const url = sentUrl();
+    expect(`${url.origin}${url.pathname}`).toBe('https://api.gbif.org/v2/species/match');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      checklistKey: COL_XR,
+      scientificName: 'Oenanthe oenanthe',
+      strict: 'false',
+      kingdom: 'Animalia',
+      taxonRank: 'SPECIES',
+    });
+    expect(body).toEqual(TREX);
+  });
+
+  it('omits the optional parameters it was not given', async () => {
+    await service('https://api.gbif.org/v1').matchChecklistSpecies(
+      { name: 'Tyrannosaurus mcraeensis', checklistKey: COL_XR },
+      createMockContext(),
+    );
+
+    expect(Object.fromEntries(sentUrl().searchParams)).toEqual({
+      checklistKey: COL_XR,
+      scientificName: 'Tyrannosaurus mcraeensis',
+    });
+  });
+
+  it.each([
+    ['https://api.gbif.org/v1/', 'https://api.gbif.org/v2/species/match'],
+    ['https://gbif.example.org/proxy/v1', 'https://gbif.example.org/proxy/v2/species/match'],
+  ])('derives the v2 route from base URL %s', async (baseUrl, expected) => {
+    await service(baseUrl).matchChecklistSpecies(
+      { name: 'Lynx pardinus', checklistKey: COL_XR },
+      createMockContext(),
+    );
+
+    const url = sentUrl();
+    expect(`${url.origin}${url.pathname}`).toBe(expected);
+  });
+
+  /**
+   * A root that does not end in `/v1` names no v2 root by any rule, so the v2 call fails
+   * before a request while the v1 routes keep working from the same root.
+   */
+  it.each(['https://gbif.example.org/proxy', 'https://gbif.example.org/v1beta'])(
+    'fails as a configuration error under base URL %s and still serves v1',
+    async (baseUrl) => {
+      const gbif = service(baseUrl);
+      const err = await gbif
+        .matchChecklistSpecies({ name: 'Lynx pardinus', checklistKey: COL_XR }, createMockContext())
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(McpError);
+      expect((err as McpError).code).toBe(JsonRpcErrorCode.ConfigurationError);
+      expect((err as McpError).message).toContain('GBIF_BASE_URL');
+      expect((err as McpError).message).toContain('Omit checklistKey');
+      expect((err as McpError).message).not.toContain(baseUrl);
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await gbif.matchSpecies({ name: 'Lynx pardinus' }, createMockContext());
+      const url = sentUrl();
+      expect(`${url.origin}${url.pathname}`).toBe(`${baseUrl}/species/match`);
+    },
+  );
 });
 
 /**
@@ -878,6 +1073,51 @@ describe('GbifService.getFacetLabels (#76)', () => {
     expect(sent.every((url) => url.search === '')).toBe(true);
   });
 
+  /** #86 — live: Kew answers its record, an unknown UUID HTTP 404 text/plain. */
+  it("reads an organization UUID's title from /organization/{key}, leaving a 404 unlabeled", async () => {
+    const KEW = '061b4f20-f241-11da-a328-b8a03c50a862';
+    const UNKNOWN = '00000000-0000-0000-0000-000000000000';
+    const fetch = routed(
+      new Map([
+        [`/v1/organization/${KEW}`, () => json({ key: KEW, title: 'Royal Botanic Gardens, Kew' })],
+        [
+          `/v1/organization/${UNKNOWN}`,
+          () => new Response(`Entity not found for uri: /organization/${UNKNOWN}`, { status: 404 }),
+        ],
+      ]),
+    );
+    vi.stubGlobal('fetch', fetch);
+
+    const labels = await labelService().getFacetLabels(
+      { kind: 'organization', keys: [KEW, UNKNOWN], deadlineMs: DEADLINE_MS },
+      createMockContext(),
+    );
+
+    expect(labels).toEqual(new Map([[KEW, 'Royal Botanic Gardens, Kew']]));
+    const sent = fetch.mock.calls.map(([address]) => new URL(address));
+    expect(sent.map((url) => url.pathname)).toEqual([
+      `/v1/organization/${KEW}`,
+      `/v1/organization/${UNKNOWN}`,
+    ]);
+    expect(sent.every((url) => url.search === '')).toBe(true);
+  });
+
+  /** These kinds never answer a held key with an empty 200, so one is a defect, not a missing name. */
+  it.each([
+    { kind: 'taxon', key: '2495455', path: '/v1/species/2495455' },
+    { kind: 'dataset', key: DATASET, path: `/v1/dataset/${DATASET}` },
+    { kind: 'organization', key: DATASET, path: `/v1/organization/${DATASET}` },
+  ] as const)('fails the call on an empty $kind body', async ({ kind, key, path }) => {
+    vi.stubGlobal('fetch', routed(new Map([[path, () => new Response('')]])));
+
+    await expect(
+      labelService().getFacetLabels(
+        { kind, keys: [key], deadlineMs: DEADLINE_MS },
+        createMockContext(),
+      ),
+    ).rejects.toBeInstanceOf(SyntaxError);
+  });
+
   it.each([
     { outcome: 'HTTP 404', respond: () => new Response('Entity not found', { status: 404 }) },
     { outcome: 'HTTP 500', respond: () => new Response('Server error', { status: 500 }) },
@@ -1113,5 +1353,237 @@ describe('GbifService.getFacetLabels (#76)', () => {
         createMockContext({ signal: controller.signal }),
       ),
     ).rejects.toBe(reason);
+  });
+});
+
+/**
+ * #88, #90 — the two label kinds whose upstream answers a key it does not hold with
+ * HTTP 200: `/geocode/gadm/{gid}` with an empty body, and `/v2/species/match` with a
+ * NONE that carries no `usage`. Bodies are live answers.
+ */
+describe('GbifService.getFacetLabels GADM and Catalogue of Life kinds (#88, #90)', () => {
+  const COL_XR = '7ddf754f-d193-4cc9-b351-99906754a03b';
+  const DEADLINE_MS = 10_000;
+  const json = (body: unknown) => new Response(JSON.stringify(body));
+  const ANDALUCIA = {
+    id: 'ESP.1_1',
+    name: 'Andalucía',
+    gadmLevel: 1,
+    englishType: ['Autonomous Community'],
+    higherRegions: [{ id: 'ESP', name: 'Spain' }],
+  };
+  const TRINGA = {
+    usage: {
+      key: '8288',
+      name: 'Tringa Linnaeus, 1758',
+      canonicalName: 'Tringa',
+      rank: 'GENUS',
+      status: 'ACCEPTED',
+    },
+    diagnostics: {
+      matchType: 'EXACT',
+      confidence: 100,
+      note: 'All provided names were ignored since the usageKey was provided',
+    },
+    synonym: false,
+  };
+  const NONE = {
+    diagnostics: {
+      matchType: 'NONE',
+      note: 'All provided names were ignored since the usageKey was provided',
+    },
+    synonym: false,
+  };
+  let sent: URL[];
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Answers by `respond(url)`; a URL it returns nothing for draws a 400. */
+  function stub(respond: (url: URL) => Response | undefined) {
+    sent = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((address: string) => {
+        const url = new URL(address);
+        sent.push(url);
+        return Promise.resolve(respond(url) ?? new Response('Unexpected request', { status: 400 }));
+      }),
+    );
+  }
+
+  function labels(kind: string, keys: string[], baseUrl = 'https://api.gbif.org/v1') {
+    return new GbifService(appConfig, storage, { baseUrl, timeoutMs: 60_000 }).getFacetLabels(
+      { kind: kind as never, keys, deadlineMs: DEADLINE_MS },
+      createMockContext(),
+    );
+  }
+
+  it('names a GID from /geocode/gadm/{gid}, leaving the empty 200 an unknown GID gets unlabeled', async () => {
+    stub((url) =>
+      url.pathname === '/v1/geocode/gadm/ESP.1_1'
+        ? json(ANDALUCIA)
+        : url.pathname === '/v1/geocode/gadm/ESP.99_1'
+          ? new Response('')
+          : url.pathname === '/v1/geocode/gadm/ESP'
+            ? json({ id: 'ESP', name: 'Spain', gadmLevel: 0 })
+            : undefined,
+    );
+
+    const result = await labels('gadm', ['ESP.1_1', 'ESP.99_1', 'ESP']);
+
+    expect(result).toEqual(
+      new Map([
+        ['ESP.1_1', 'Andalucía'],
+        ['ESP', 'Spain'],
+      ]),
+    );
+    expect(sent.map((url) => url.pathname)).toEqual([
+      '/v1/geocode/gadm/ESP.1_1',
+      '/v1/geocode/gadm/ESP.99_1',
+      '/v1/geocode/gadm/ESP',
+    ]);
+    expect(sent.every((url) => url.search === '')).toBe(true);
+  });
+
+  it.each([
+    { outcome: 'a record without the name', body: '{"id":"ESP.1_1"}' },
+    { outcome: 'an empty name', body: '{"id":"ESP.1_1","name":""}' },
+    { outcome: 'a null body', body: 'null' },
+  ])('leaves a GID unlabeled on $outcome', async ({ body }) => {
+    stub(() => new Response(body));
+    expect(await labels('gadm', ['ESP.1_1'])).toEqual(new Map());
+  });
+
+  /** Only the empty body is GADM's not-found answer; anything else unparseable is a defect. */
+  it.each(['not JSON', '{"name":'])(
+    'fails the call on the non-empty GADM body %j',
+    async (body) => {
+      stub(() => new Response(body));
+      await expect(labels('gadm', ['ESP.1_1'])).rejects.toBeInstanceOf(SyntaxError);
+    },
+  );
+
+  it('names a Catalogue of Life key from usage.canonicalName on the v2 match route', async () => {
+    stub((url) =>
+      `${url.origin}${url.pathname}` === 'https://api.gbif.org/v2/species/match' &&
+      url.searchParams.get('checklistKey') === COL_XR
+        ? url.searchParams.get('usageKey') === '8288'
+          ? json(TRINGA)
+          : json(NONE)
+        : undefined,
+    );
+
+    const result = await labels('colTaxon', ['8288', 'ZZZQQ9']);
+
+    expect(result).toEqual(new Map([['8288', 'Tringa']]));
+    expect(sent.map((url) => Object.fromEntries(url.searchParams))).toEqual([
+      { checklistKey: COL_XR, usageKey: '8288' },
+      { checklistKey: COL_XR, usageKey: 'ZZZQQ9' },
+    ]);
+    // Never the Backbone route, where 8288 names an unrelated family.
+    expect(sent.some((url) => url.pathname.startsWith('/v1/species'))).toBe(false);
+  });
+
+  it.each(['not JSON', ''])('fails the call on the Catalogue of Life body %j', async (body) => {
+    stub(() => new Response(body));
+    await expect(labels('colTaxon', ['8288'])).rejects.toBeInstanceOf(SyntaxError);
+  });
+
+  it('leaves a Catalogue of Life key unlabeled on a 404 or 503, without retrying it', async () => {
+    stub((url) =>
+      url.searchParams.get('usageKey') === '8288'
+        ? new Response('Unavailable', { status: 503 })
+        : new Response('Not found', { status: 404 }),
+    );
+    expect(await labels('colTaxon', ['8288', 'N'])).toEqual(new Map());
+    expect(sent).toHaveLength(2);
+  });
+
+  it('derives the v2 route from the configured root, as the match route does', async () => {
+    stub(() => json(TRINGA));
+    await labels('colTaxon', ['8288'], 'https://gbif.example.org/proxy/v1/');
+    expect(`${sent[0]!.origin}${sent[0]!.pathname}`).toBe(
+      'https://gbif.example.org/proxy/v2/species/match',
+    );
+  });
+
+  /** No rule recovers a v2 root from a root without `/v1`, so the labels fail before a request. */
+  it('fails as a configuration error under a root that names no v2 route', async () => {
+    stub(() => json(TRINGA));
+    const err = await labels('colTaxon', ['8288'], 'https://gbif.example.org/proxy').catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(McpError);
+    expect((err as McpError).code).toBe(JsonRpcErrorCode.ConfigurationError);
+    expect((err as McpError).message).toContain('GBIF_BASE_URL');
+    expect((err as McpError).message).toContain('includeLabels');
+    expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * #90 — a Catalogue of Life key goes upstream as `taxonKey`, beside `checklistKey`.
+ * GBIF ignores an unknown parameter, so `checklistTaxonKey` under its own name would
+ * scope nothing and answer the whole index.
+ */
+describe('GbifService checklist taxon key (#90)', () => {
+  const COL_XR = '7ddf754f-d193-4cc9-b351-99906754a03b';
+  let requests: URL[];
+
+  beforeEach(() => {
+    requests = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (address: string) => {
+        requests.push(new URL(address));
+        return new Response(JSON.stringify({ count: 2268, results: [], facets: [] }));
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const service = () =>
+    new GbifService(appConfig, storage, { baseUrl: 'https://api.gbif.org/v1', timeoutMs: 1_000 });
+  const filters = {
+    checklistTaxonKey: '3WSJV',
+    checklistKey: COL_XR,
+    occurrenceStatus: 'PRESENT',
+  } as const satisfies OccurrenceFilters;
+
+  it.each([
+    {
+      name: 'searchOccurrences',
+      run: (gbif: GbifService) =>
+        gbif.searchOccurrences({ ...filters, limit: 1 }, createMockContext()),
+    },
+    {
+      name: 'countOccurrences',
+      run: (gbif: GbifService) => gbif.countOccurrences(filters, createMockContext()),
+    },
+    {
+      name: 'getOccurrenceFacets',
+      run: (gbif: GbifService) =>
+        gbif.getOccurrenceFacets({ ...filters, facet: 'COUNTRY' }, createMockContext()),
+    },
+  ])('$name sends checklistTaxonKey as taxonKey and checklistKey as itself', async ({ run }) => {
+    await run(service());
+
+    expect(requests).toHaveLength(1);
+    const params = requests[0]!.searchParams;
+    expect(params.getAll('taxonKey')).toEqual(['3WSJV']);
+    expect(params.get('checklistKey')).toBe(COL_XR);
+    expect(params.has('checklistTaxonKey')).toBe(false);
+    expect(requests[0]!.search).toContain(`taxonKey=3WSJV&checklistKey=${COL_XR}`);
+  });
+
+  it('sends a Backbone taxonKey alone exactly as before', async () => {
+    await service().countOccurrences({ taxonKey: 2435261 }, createMockContext());
+    expect(requests[0]!.search).toBe('?taxonKey=2435261&limit=0');
   });
 });

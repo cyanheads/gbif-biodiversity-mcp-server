@@ -302,7 +302,7 @@ describe('gbifSearchOccurrences', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
           },
         },
       },
@@ -751,7 +751,7 @@ describe('gbifSearchOccurrences occurrenceStatus (#36)', () => {
   });
 
   /**
-   * GBIF's OccurrenceStatus vocabulary is exactly PRESENT and ABSENT — sending
+   * GBIF's OccurrenceStatus vocabulary has no term meaning "either" — sending
    * "ANY" draws HTTP 400 `Cannot parse ANY into a known OccurrenceStatus`, so the
    * sentinel has to resolve to an omitted parameter.
    */
@@ -805,7 +805,7 @@ describe('gbifSearchOccurrences occurrenceStatus (#36)', () => {
     expect(gbifSearchOccurrences.input.parse({}).occurrenceStatus).toBe('PRESENT');
   });
 
-  it('rejects an occurrenceStatus outside the accepted three', () => {
+  it('rejects an occurrenceStatus outside the accepted values', () => {
     expect(() => gbifSearchOccurrences.input.parse({ occurrenceStatus: 'BOGUS' })).toThrow();
   });
 
@@ -1061,5 +1061,418 @@ describe('gbifSearchOccurrences specimen identity on rows (#78)', () => {
     const text = JSON.stringify(result.content);
     expect(text).toContain('**Institution:** MCZ&#95;&#42;');
     expect(text).toContain('**Catalog number:** &#91;x&#93;&#40;y&#41; &#35;1');
+  });
+});
+
+/**
+ * #87 — reuse terms, publisher, accepted taxon, and specimen fields on every row,
+ * plus opt-in media. Fixture rows are live: 6490801341 (filed under the synonym
+ * Quercus tristis), 1228618670 (a Field Museum Isolectotype), 6158811543 (an
+ * introduced plant), 6506005834 (cod at depth), and 6130709488 (a Swedish
+ * woodpecker that a mediaType Sound search returns with two photos and a recording).
+ */
+describe('gbifSearchOccurrences reuse, publisher, accepted taxon, and specimen fields (#87)', () => {
+  const mockSearchOccurrences = vi.fn();
+  const page = (...results: Record<string, unknown>[]) => ({
+    results,
+    count: results.length,
+    offset: 0,
+    limit: 20,
+    endOfRecords: true,
+  });
+  const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    (result.content ?? []).map((block) => (block.type === 'text' ? block.text : '')).join('\n');
+  /** structuredContent as the client receives it — JSON drops undefined-valued keys. */
+  const rowsOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    (JSON.parse(JSON.stringify(result.structuredContent)) as { occurrences: object[] })
+      .occurrences as Record<string, unknown>[];
+  const NEW_FIELDS = [
+    'license',
+    'rightsHolder',
+    'publishingOrganizationKey',
+    'acceptedTaxonKey',
+    'acceptedScientificName',
+    'recordNumber',
+    'elevation',
+    'depth',
+    'typeStatus',
+    'establishmentMeans',
+  ];
+  const NEW_LABELS = [
+    'Accepted taxon',
+    'License',
+    'Rights holder',
+    'Publishing organization',
+    'Record number',
+    'Elevation',
+    'Depth',
+    'Type status',
+    'Establishment means',
+  ];
+  const synonymRow = {
+    key: 6490801341,
+    taxonKey: 2879003,
+    scientificName: 'Quercus tristis Liebm.',
+    taxonomicStatus: 'SYNONYM',
+    acceptedTaxonKey: 2879127,
+    acceptedScientificName: 'Quercus castanea Née',
+    occurrenceStatus: 'DETECTED',
+    license: 'http://creativecommons.org/licenses/by-nc/4.0/legalcode',
+    publishingOrgKey: '1eb0746b-24c4-40b7-9ed7-3381428e9648',
+    recordNumber: 'JL 157',
+  };
+  const woodpecker = {
+    key: 6130709488,
+    scientificName: 'Dryocopus martius (Linnaeus, 1758)',
+    license: 'http://creativecommons.org/licenses/by-nc/4.0/legalcode',
+    rightsHolder: 'Luca Berardi',
+    media: [
+      {
+        type: 'StillImage',
+        format: 'image/jpeg',
+        identifier: 'https://inaturalist-open-data.s3.amazonaws.com/photos/606398138/original.jpg',
+        license: 'http://creativecommons.org/licenses/by-nc/4.0/',
+        rightsHolder: 'Luca Berardi',
+        creator: 'Luca Berardi',
+        publisher: 'iNaturalist',
+      },
+      {
+        type: 'StillImage',
+        format: 'image/jpeg',
+        identifier: 'https://inaturalist-open-data.s3.amazonaws.com/photos/606398140/original.jpg',
+        license: 'http://creativecommons.org/licenses/by-nc/4.0/',
+        rightsHolder: 'Luca Berardi',
+      },
+      {
+        type: 'Sound',
+        format: 'audio/x-wav',
+        identifier: 'https://static.inaturalist.org/sounds/1785847.wav?1772303488',
+        license: 'http://creativecommons.org/licenses/by-nc/4.0/',
+        rightsHolder: 'Luca Berardi',
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+  });
+
+  it('carries the ten fields on both surfaces, each on its own row', async () => {
+    mockSearchOccurrences.mockResolvedValue(
+      page(synonymRow, {
+        key: 1228618670,
+        typeStatus: 'Isolectotype',
+        rightsHolder: 'The Field Museum of Natural History',
+        establishmentMeans: 'introduced',
+        elevation: 96,
+        depth: 17.5,
+      }),
+    );
+
+    const result = await runToolContract(gbifSearchOccurrences, {});
+
+    expect(result.isError).not.toBe(true);
+    const [first, second] = rowsOf(result);
+    expect(first).toMatchObject({
+      taxonKey: 2879003,
+      acceptedTaxonKey: 2879127,
+      acceptedScientificName: 'Quercus castanea Née',
+      license: 'http://creativecommons.org/licenses/by-nc/4.0/legalcode',
+      publishingOrganizationKey: '1eb0746b-24c4-40b7-9ed7-3381428e9648',
+      recordNumber: 'JL 157',
+    });
+    expect(first).not.toHaveProperty('publishingOrgKey');
+    expect(first).not.toHaveProperty('typeStatus');
+    expect(second).toEqual({
+      key: 1228618670,
+      typeStatus: 'Isolectotype',
+      rightsHolder: 'The Field Museum of Natural History',
+      establishmentMeans: 'introduced',
+      elevation: 96,
+      depth: 17.5,
+    });
+
+    const [firstText, secondText] = textOf(result).split('\n## ').slice(1);
+    expect(firstText).toContain('**Accepted taxon:** Quercus castanea Née (key: 2879127)');
+    expect(firstText).toContain(
+      '**License:** http://creativecommons.org/licenses/by-nc/4.0/legalcode',
+    );
+    expect(firstText).toContain(
+      '**Publishing organization key:** 1eb0746b-24c4-40b7-9ed7-3381428e9648',
+    );
+    expect(firstText).toContain('**Record number:** JL 157');
+    expect(firstText).not.toContain('Type status');
+    expect(secondText).toContain('**Type status:** Isolectotype');
+    expect(secondText).toContain('**Rights holder:** The Field Museum of Natural History');
+    expect(secondText).toContain('**Establishment means:** introduced');
+    expect(secondText).toContain('**Elevation:** 96 m');
+    expect(secondText).toContain('**Depth:** 17.5 m');
+    expect(secondText).not.toContain('Accepted taxon');
+  });
+
+  it('renders none of the ten fields, and no placeholder, on a row carrying none', async () => {
+    mockSearchOccurrences.mockResolvedValue(page(makeOccurrence()));
+
+    const result = await runToolContract(gbifSearchOccurrences, {});
+
+    for (const field of NEW_FIELDS) expect(rowsOf(result)[0]).not.toHaveProperty(field);
+    const text = textOf(result);
+    for (const label of NEW_LABELS) expect(text).not.toContain(label);
+  });
+
+  it('renders free text literally in content while structuredContent keeps it as sent', async () => {
+    mockSearchOccurrences.mockResolvedValue(
+      page({
+        key: 5,
+        rightsHolder: 'Smith & *Jones*',
+        recordNumber: '[x](y) #1',
+        acceptedScientificName: 'Quercus_x L.',
+      }),
+    );
+
+    const result = await runToolContract(gbifSearchOccurrences, {});
+
+    expect(rowsOf(result)[0]).toMatchObject({
+      rightsHolder: 'Smith & *Jones*',
+      recordNumber: '[x](y) #1',
+      acceptedScientificName: 'Quercus_x L.',
+    });
+    const text = textOf(result);
+    expect(text).toContain('**Rights holder:** Smith &#38; &#42;Jones&#42;');
+    expect(text).toContain('**Record number:** &#91;x&#93;&#40;y&#41; &#35;1');
+    expect(text).toContain('**Accepted taxon:** Quercus&#95;x L.');
+  });
+
+  it('leaves media off every row by default, and sends the same request either way', async () => {
+    mockSearchOccurrences.mockResolvedValue(page(woodpecker));
+
+    const result = await runToolContract(gbifSearchOccurrences, { mediaType: 'Sound' });
+
+    expect(result.isError).not.toBe(true);
+    expect(rowsOf(result)[0]).not.toHaveProperty('media');
+    expect(textOf(result)).not.toContain('Media');
+    expect(result.structuredContent?.scope).toEqual({
+      mediaType: 'Sound',
+      occurrenceStatus: 'PRESENT',
+    });
+
+    await runToolContract(gbifSearchOccurrences, { mediaType: 'Sound', includeMedia: true });
+    const [[withoutMedia], [withMedia]] = mockSearchOccurrences.mock.calls;
+    expect(withMedia).toEqual(withoutMedia);
+    expect(withMedia).not.toHaveProperty('includeMedia');
+  });
+
+  it('adds every media item of each row, whatever mediaType selected, in source order', async () => {
+    mockSearchOccurrences.mockResolvedValue(
+      page(
+        woodpecker,
+        { key: 2, media: [] },
+        { key: 3 },
+        {
+          key: 4,
+          media: [{ type: 'StillImage', identifier: 'https://example.org/4.jpg' }],
+        },
+      ),
+    );
+
+    const result = await runToolContract(gbifSearchOccurrences, {
+      mediaType: 'Sound',
+      includeMedia: true,
+    });
+
+    expect(result.isError).not.toBe(true);
+    const rows = rowsOf(result);
+    expect(rows[0]!.media).toEqual([
+      {
+        type: 'StillImage',
+        identifier: 'https://inaturalist-open-data.s3.amazonaws.com/photos/606398138/original.jpg',
+        license: 'http://creativecommons.org/licenses/by-nc/4.0/',
+        rightsHolder: 'Luca Berardi',
+      },
+      {
+        type: 'StillImage',
+        identifier: 'https://inaturalist-open-data.s3.amazonaws.com/photos/606398140/original.jpg',
+        license: 'http://creativecommons.org/licenses/by-nc/4.0/',
+        rightsHolder: 'Luca Berardi',
+      },
+      {
+        type: 'Sound',
+        identifier: 'https://static.inaturalist.org/sounds/1785847.wav?1772303488',
+        license: 'http://creativecommons.org/licenses/by-nc/4.0/',
+        rightsHolder: 'Luca Berardi',
+      },
+    ]);
+    expect(rows[1]).not.toHaveProperty('media');
+    expect(rows[2]).not.toHaveProperty('media');
+    expect(rows[3]!.media).toEqual([
+      { type: 'StillImage', identifier: 'https://example.org/4.jpg' },
+    ]);
+    expect(result.structuredContent?.scope).toEqual({
+      mediaType: 'Sound',
+      occurrenceStatus: 'PRESENT',
+    });
+
+    const sections = textOf(result).split('\n## ').slice(1);
+    const items = (section: string) =>
+      section.split('\n').filter((line) => line.startsWith('  - '));
+    expect(sections[0]).toContain('**Media:** 3 item(s)');
+    expect(items(sections[0]!)).toEqual([
+      '  - StillImage [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): https://inaturalist-open-data.s3.amazonaws.com/photos/606398138/original.jpg',
+      '  - StillImage [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): https://inaturalist-open-data.s3.amazonaws.com/photos/606398140/original.jpg',
+      '  - Sound [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): https://static.inaturalist.org/sounds/1785847.wav?1772303488',
+    ]);
+    expect(sections[1]).not.toContain('Media');
+    expect(sections[2]).not.toContain('Media');
+    expect(sections[3]).toContain('**Media:** 1 item(s)');
+    expect(items(sections[3]!)).toEqual(['  - StillImage: https://example.org/4.jpg']);
+  });
+
+  /** 25 items is the most seen on one row of a 300-row material-citation page. */
+  it('caps no row: a 25-item row carries all 25 on both surfaces', async () => {
+    const items = Array.from({ length: 25 }, (_, i) => ({
+      type: 'StillImage',
+      identifier: `https://example.org/plate-${i + 1}.jpg`,
+    }));
+    mockSearchOccurrences.mockResolvedValue(page({ key: 7, media: items }));
+
+    const result = await runToolContract(gbifSearchOccurrences, { includeMedia: true });
+
+    expect(rowsOf(result)[0]!.media).toEqual(items);
+    const text = textOf(result);
+    expect(text).toContain('**Media:** 25 item(s)');
+    expect(text.split('\n').filter((line) => line.startsWith('  - StillImage: '))).toEqual(
+      items.map((item) => `  - StillImage: ${item.identifier}`),
+    );
+  });
+
+  it('renders media free text literally in content while structuredContent keeps it as sent', async () => {
+    mockSearchOccurrences.mockResolvedValue(
+      page({
+        key: 1228618670,
+        media: [
+          {
+            type: 'StillImage',
+            identifier: 'http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg',
+            license: '(c) Field Museum of Natural History - CC BY-NC 4.0',
+            rightsHolder: 'Field Museum *of* Natural History',
+          },
+        ],
+      }),
+    );
+
+    const result = await runToolContract(gbifSearchOccurrences, { includeMedia: true });
+
+    expect(rowsOf(result)[0]!.media).toEqual([
+      {
+        type: 'StillImage',
+        identifier: 'http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg',
+        license: '(c) Field Museum of Natural History - CC BY-NC 4.0',
+        rightsHolder: 'Field Museum *of* Natural History',
+      },
+    ]);
+    expect(textOf(result)).toContain(
+      '  - StillImage [&#40;c&#41; Field Museum of Natural History - CC BY-NC 4.0] (rights holder: Field Museum &#42;of&#42; Natural History): http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg',
+    );
+  });
+
+  it('keeps the empty-result guidance when includeMedia is set and nothing matched', async () => {
+    mockSearchOccurrences.mockResolvedValue(page());
+
+    const result = await runToolContract(gbifSearchOccurrences, { includeMedia: true });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.occurrences).toEqual([]);
+    expect(result.structuredContent?.notice).toContain('No occurrences matched');
+  });
+
+  /** The framework repairs only the exact strings "true" and "false" into booleans. */
+  it('rejects a non-boolean includeMedia at the schema, before any request', async () => {
+    for (const includeMedia of ['yes', 1, 'on']) {
+      const result = await runToolContract(gbifSearchOccurrences, { includeMedia });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({
+        data: { reason: 'invalid_arguments' },
+      });
+      expect(JSON.stringify(result.content)).toContain('includeMedia');
+    }
+    expect(mockSearchOccurrences).not.toHaveBeenCalled();
+  });
+
+  it('defaults includeMedia to false and names what it adds', () => {
+    expect(gbifSearchOccurrences.input.parse({}).includeMedia).toBe(false);
+    const described = gbifSearchOccurrences.input.shape.includeMedia.description ?? '';
+    for (const text of ['mediaType', 'rightsHolder', 'license', 'gbif_get_occurrence'])
+      expect(described).toContain(text);
+    expect(gbifSearchOccurrences.description).toContain('includeMedia');
+  });
+
+  it('describes each row field in the form it arrives and where it chains', () => {
+    const row = gbifSearchOccurrences.output.shape.occurrences.element.shape;
+    expect(row.license.description).toContain('URL');
+    expect(row.license.description).toContain('CC_BY_NC_4_0');
+    expect(row.publishingOrganizationKey.description).toContain('publishingOrg');
+    expect(row.acceptedScientificName.description).toContain('authorship');
+    expect(row.acceptedTaxonKey.description).toMatch(/backbone/i);
+    expect(row.acceptedTaxonKey.description).toContain('SYNONYM');
+    expect(row.typeStatus.description).toContain('typeStatus filter');
+    expect(row.establishmentMeans.description).toContain('establishmentMeans filter');
+    expect(row.elevation.description).toContain('meters');
+    expect(row.depth.description).toContain('meters');
+    expect(row.media.description).toContain('includeMedia');
+  });
+});
+
+/**
+ * GBIF serves occurrenceStatus as DETECTED / NOT_DETECTED on rows and facet
+ * buckets, and its filter takes those beside PRESENT / ABSENT, selecting the same
+ * records (live: identical counts and keys under each pair).
+ */
+describe('gbifSearchOccurrences occurrenceStatus as GBIF serves it', () => {
+  const mockSearchOccurrences = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+  });
+
+  it.each([
+    ['DETECTED', 'Absence records'],
+    ['NOT_DETECTED', 'Only absence records'],
+  ])('forwards %s as sent and echoes it', async (occurrenceStatus, notice) => {
+    const result = await runToolContract(gbifSearchOccurrences, { occurrenceStatus });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ occurrenceStatus }),
+      expect.anything(),
+    );
+    expect(result.structuredContent).toMatchObject({
+      occurrenceStatus,
+      scope: { occurrenceStatus },
+    });
+    expect(result.structuredContent?.notice).toContain(notice);
+  });
+
+  it('names both spellings on the input, the echo, and the row', () => {
+    const descriptions = [
+      gbifSearchOccurrences.input.shape.occurrenceStatus.description,
+      gbifSearchOccurrences.output.shape.occurrences.element.shape.occurrenceStatus.description,
+      gbifSearchOccurrences.enrichment?.occurrenceStatus.description,
+    ];
+    for (const description of descriptions)
+      for (const text of ['DETECTED', 'NOT_DETECTED', 'PRESENT', 'ABSENT'])
+        expect(description).toContain(text);
   });
 });

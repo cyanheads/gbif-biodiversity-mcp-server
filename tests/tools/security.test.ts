@@ -143,6 +143,23 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
       field: 'datasetKey',
       extra: { facet: 'COUNTRY' },
     },
+    // #86: the occurrence tools' organization filter, checked like datasetKey.
+    {
+      name: 'gbif_search_occurrences.publishingOrg',
+      def: gbifSearchOccurrences,
+      field: 'publishingOrg',
+    },
+    {
+      name: 'gbif_count_occurrences.publishingOrg',
+      def: gbifCountOccurrences,
+      field: 'publishingOrg',
+    },
+    {
+      name: 'gbif_occurrence_facets.publishingOrg',
+      def: gbifOccurrenceFacets,
+      field: 'publishingOrg',
+      extra: { facet: 'COUNTRY' },
+    },
   ] as const;
 
   for (const { name, def, field, extra } of uuidInputs.map((u) => ({
@@ -248,6 +265,9 @@ describe('Blank filters reject before reaching GBIF', () => {
         catalogNumber: 'L.1592880',
         institutionCode: 'K',
         recordedBy: 'Charles Darwin',
+        typeStatus: 'Holotype',
+        establishmentMeans: 'native',
+        checklistTaxonKey: '3WSJV',
       },
     },
     {
@@ -266,6 +286,9 @@ describe('Blank filters reject before reaching GBIF', () => {
         catalogNumber: 'L.1592880',
         institutionCode: 'K',
         recordedBy: 'Charles Darwin',
+        typeStatus: 'Holotype',
+        establishmentMeans: 'native',
+        checklistTaxonKey: '3WSJV',
       },
     },
     {
@@ -284,6 +307,9 @@ describe('Blank filters reject before reaching GBIF', () => {
         catalogNumber: 'L.1592880',
         institutionCode: 'K',
         recordedBy: 'Charles Darwin',
+        typeStatus: 'Holotype',
+        establishmentMeans: 'native',
+        checklistTaxonKey: '3WSJV',
       },
     },
     {

@@ -623,4 +623,154 @@ describe('gbifSearchDatasets', () => {
     expect(fullText).toContain('Short&#46;');
     expect(fullText).not.toContain('description truncated');
   });
+
+  /**
+   * #84 — `/dataset/search` serves `offset + limit` up to 125,000 under any filter
+   * and answers HTTP 500 past it at any offset, which the service retried before
+   * failing. The sum is checked before the request now, and a match larger than the
+   * ceiling — the unfiltered index among them — says so on every page.
+   */
+  describe('offset ceiling (#84)', () => {
+    const declaredRecovery = () =>
+      gbifSearchDatasets.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.recovery;
+
+    /** One `/dataset/search` page in the live shape of the unfiltered index. */
+    const page = (overrides: Record<string, unknown> = {}) => ({
+      results: [makeDataset({ numRecords: undefined })],
+      count: 125458,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+      ...overrides,
+    });
+
+    it.each([
+      [124_980, 20],
+      [124_999, 1],
+    ])('sends offset %i + limit %i, a sum at the ceiling', async (offset, limit) => {
+      mockSearchDatasets.mockResolvedValue(page({ offset, limit }));
+
+      const result = await runToolContract(gbifSearchDatasets, { offset, limit });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockSearchDatasets).toHaveBeenCalledTimes(1);
+      expect(mockSearchDatasets.mock.calls[0][0]).toMatchObject({ offset, limit });
+    });
+
+    it.each([
+      { offset: 124_981, limit: 20, filters: {} },
+      { offset: 124_999, limit: 2, filters: { type: 'CHECKLIST' } },
+      { offset: 125_000, limit: 1, filters: { q: 'bird', publishingCountry: 'GB' } },
+      { offset: 125_000, limit: 20, filters: {} },
+    ])(
+      'refuses offset $offset + limit $limit with filters $filters before the request',
+      async ({ offset, limit, filters }) => {
+        mockSearchDatasets.mockResolvedValue(page({ offset, limit }));
+
+        const result = await runToolContract(gbifSearchDatasets, { ...filters, offset, limit });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent?.error).toMatchObject({
+          code: JsonRpcErrorCode.ValidationError,
+          data: { reason: 'pagination_cap_exceeded', recovery: { hint: declaredRecovery() } },
+        });
+        const text = JSON.stringify(result.content);
+        expect(text).toContain(`offset + limit (${offset + limit}) exceeds 125,000`);
+        expect(text).toContain('exactly one of the four');
+        expect(mockSearchDatasets).not.toHaveBeenCalled();
+      },
+    );
+
+    it('declares a recovery that names the ceiling and only filters this tool takes', () => {
+      const recovery = declaredRecovery() ?? '';
+      expect(recovery).toContain('125,000');
+      expect(recovery).toMatch(/exactly one of the four/);
+      const inputs = Object.keys(gbifSearchDatasets.input.shape);
+      for (const field of ['type', 'q', 'publishingCountry', 'publishingOrg', 'hostingOrg']) {
+        expect(recovery).toContain(field);
+        expect(inputs).toContain(field);
+      }
+      expect(
+        gbifSearchDatasets.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.code,
+      ).toBe(JsonRpcErrorCode.ValidationError);
+    });
+
+    it('states the ceiling in the offset and notice descriptions', () => {
+      expect(gbifSearchDatasets.input.shape.offset.description).toContain('125,000');
+      expect(gbifSearchDatasets.enrichment?.notice?.description).toContain('125,000');
+    });
+
+    /** Step 4 of #84, one page short of the ceiling: the unfiltered index is deeper than it. */
+    it('names the ceiling and the type split on a match deeper than it, on both surfaces', async () => {
+      mockSearchDatasets.mockResolvedValue(page({ offset: 124_980 }));
+
+      const result = await runToolContract(gbifSearchDatasets, { offset: 124_980, limit: 20 });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        totalCount: 125458,
+        offset: 124_980,
+        endOfRecords: false,
+      });
+      const notice = result.structuredContent?.notice as string;
+      for (const text of ['125,458 datasets match', '125,000', 'type', 'publishingOrg'])
+        expect(notice).toContain(text);
+      const content = JSON.stringify(result.content);
+      expect(content).toContain('125,458 datasets match');
+      expect(content).toContain('125,000');
+    });
+
+    it.each([
+      [125_000, false],
+      [125_001, true],
+    ])('carries the ceiling notice at totalCount %i: %s', async (count, expected) => {
+      mockSearchDatasets.mockResolvedValue(page({ count }));
+
+      const result = await runToolContract(gbifSearchDatasets, {});
+
+      expect(result.isError).not.toBe(true);
+      const notice = result.structuredContent?.notice as string | undefined;
+      if (expected) {
+        expect(notice).toContain(`${count.toLocaleString('en-US')} datasets match`);
+        expect(JSON.stringify(result.content)).toContain('125,000');
+      } else {
+        expect(notice).toBeUndefined();
+        expect(JSON.stringify(result.content)).not.toContain('125,000');
+      }
+    });
+
+    it('joins the ceiling notice with the clamp notice in one notice', async () => {
+      mockSearchDatasets.mockResolvedValue(page({ limit: 1000 }));
+
+      const result = await runToolContract(gbifSearchDatasets, { limit: 1001 });
+
+      expect(result.isError).not.toBe(true);
+      const notice = result.structuredContent?.notice as string;
+      expect(notice).toContain('limit requested 1001; applied 1000.');
+      expect(notice).toContain('125,458 datasets match');
+      const content = JSON.stringify(result.content);
+      expect(content).toContain('limit requested 1001; applied 1000.');
+      expect(content).toContain('125,458 datasets match');
+      expect(mockSearchDatasets.mock.calls[0][0]).toMatchObject({ limit: 1000 });
+    });
+
+    /** A past-end page under the ceiling is still served, with the existing past-end notice. */
+    it('serves a past-end page under the ceiling with the past-end notice only', async () => {
+      mockSearchDatasets.mockResolvedValue(
+        page({ results: [], count: 65347, offset: 124_980, endOfRecords: true }),
+      );
+
+      const result = await runToolContract(gbifSearchDatasets, {
+        type: 'CHECKLIST',
+        offset: 124_980,
+        limit: 20,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent?.notice).toBe(
+        'Offset 124980 exceeds totalCount (65347). Reset offset to 0 or reduce it below 65347 to page through results.',
+      );
+      expect(mockSearchDatasets.mock.calls[0][0]).toMatchObject({ offset: 124_980, limit: 20 });
+    });
+  });
 });

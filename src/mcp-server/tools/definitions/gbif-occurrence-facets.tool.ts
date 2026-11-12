@@ -8,6 +8,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import {
   BASIS_OF_RECORD_VALUES,
+  COL_XR_CHECKLIST_KEY,
   type FacetLabelKind,
   IUCN_RED_LIST_CATEGORY_VALUES,
   OCCURRENCE_STATUS_VALUES,
@@ -15,6 +16,8 @@ import {
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
   escapeMarkdownText,
+  exactCoordinateMatchNotice,
+  isColTaxonKey,
   isGbifUuid,
   occurrenceFilters,
   occurrenceFilterViolation,
@@ -49,12 +52,17 @@ const FACET_VALUES = [
   'INSTITUTION_CODE',
   'MEDIA_TYPE',
   'RECORDED_BY',
+  'PUBLISHING_ORG',
+  'TYPE_STATUS',
+  'ESTABLISHMENT_MEANS',
+  'LICENSE',
 ] as const;
 
 /**
- * Dimensions whose buckets are registry keys `includeLabels` can name. The rest are
- * codes or verbatim values that read as they are — country codes, years, GADM GIDs —
- * and are never looked up.
+ * Dimensions whose buckets are keys `includeLabels` can name: registry keys, and the
+ * GADM GIDs, which name nothing a caller can read (`ESP.11_1`). The rest are codes or
+ * verbatim values that read as they are — country codes, years — and are never looked
+ * up. A `taxon` dimension's kind turns `colTaxon` under the Catalogue of Life.
  */
 const LABELED_FACETS: Partial<Record<(typeof FACET_VALUES)[number], FacetLabelKind>> = {
   KINGDOM_KEY: 'taxon',
@@ -65,10 +73,51 @@ const LABELED_FACETS: Partial<Record<(typeof FACET_VALUES)[number], FacetLabelKi
   GENUS_KEY: 'taxon',
   SPECIES_KEY: 'taxon',
   DATASET_KEY: 'dataset',
+  PUBLISHING_ORG: 'organization',
+  GADM_LEVEL_0_GID: 'gadm',
+  GADM_LEVEL_1_GID: 'gadm',
+  GADM_LEVEL_2_GID: 'gadm',
+  GADM_LEVEL_3_GID: 'gadm',
 };
 
 /** A backbone taxon key as a facet bucket names it; anything else is not a `/species/{key}` segment. */
 const TAXON_KEY = /^\d+$/;
+
+/**
+ * A GID as a facet bucket names it: the `gadmGid` alphabet, starting with a letter as
+ * every GID does, so no segment is `.` or `..`, which the URL would resolve away.
+ */
+const GADM_KEY = /^[A-Z][A-Z0-9._]*$/;
+
+/**
+ * The tool's half of each label kind; the service's `FACET_LABEL_LOOKUPS` holds the
+ * request and the parse. `isKey` admits only bucket names shaped like the kind's
+ * keys, because a name becomes a request path segment or parameter and bucket names
+ * are upstream text; a name it refuses is never looked up and counts as unlabeled.
+ * `lookup` says where an unlabeled bucket's name can be read instead.
+ */
+const LABEL_KINDS = {
+  taxon: {
+    isKey: (name) => TAXON_KEY.test(name),
+    lookup: 'pass one as taxonKey to gbif_get_species for its name',
+  },
+  colTaxon: {
+    isKey: isColTaxonKey,
+    lookup:
+      "pass one as checklistTaxonKey, with the same checklistKey, to gbif_search_occurrences, whose rows name each record's taxon",
+  },
+  dataset: { isKey: isGbifUuid, lookup: 'pass one as datasetKey to gbif_get_dataset for its name' },
+  organization: {
+    isKey: isGbifUuid,
+    lookup:
+      'pass one as publishingOrg to gbif_search_datasets, whose rows name it as publishingOrganizationTitle',
+  },
+  gadm: {
+    isKey: (name) => GADM_KEY.test(name),
+    lookup:
+      'pass one as gadmGid to gbif_search_occurrences and read the gadm field of gbif_get_occurrence on a returned record for its name',
+  },
+} satisfies Record<FacetLabelKind, { isKey: (name: string) => boolean; lookup: string }>;
 
 /**
  * Total budget for one call's label lookups, queue time included. The facet request
@@ -82,38 +131,14 @@ const LABEL_DEADLINE_SECONDS = LABEL_DEADLINE_MS / 1000;
 export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   title: 'Occurrence Facet Aggregation',
   description:
-    'Aggregate occurrence counts across a dimension (COUNTRY, STATE_PROVINCE, YEAR, BASIS_OF_RECORD, DATASET_KEY, ' +
-    'KINGDOM_KEY, etc.). Returns one page of facet values ranked by count descending — the top ' +
-    'facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. ' +
-    'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
-    'for this species?", "how has observation volume changed since 2010?". ' +
-    'Key dimensions (KINGDOM_KEY through SPECIES_KEY, DATASET_KEY) return bare keys; includeLabels names the taxon or dataset behind each one on the page. ' +
-    'Scope the aggregation with taxonKey, country (uppercase ISO 3166-1 alpha-2), ' +
-    'publishingCountry, stateProvince, gadmGid, year, scientificName, latitude/longitude ranges, month, hasCoordinate, isInCluster, coordinateUncertaintyInMeters, geometry (all spatial filters intersect), basisOfRecord, datasetKey, catalogNumber, institutionCode, recordedBy, mediaType, ' +
-    'occurrenceStatus, or iucnRedListCategory filters. Also the way to split a result set too ' +
-    'large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by ' +
-    'DATASET_KEY, then search each datasetKey on its own. Aggregates sightings only by default, ' +
-    'matching gbif_search_occurrences and gbif_count_occurrences; to measure the presence/absence ' +
-    'split itself, pass facet OCCURRENCE_STATUS with occurrenceStatus ANY.',
+    'Aggregate occurrence counts across a dimension (COUNTRY, STATE_PROVINCE, YEAR, BASIS_OF_RECORD, DATASET_KEY, KINGDOM_KEY, etc.). Returns one page of facet values ranked by count descending — the top facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. Core tool for distribution analysis and trend queries: "which countries have the most records for this species?", "how has observation volume changed since 2010?". Key and GADM dimensions (KINGDOM_KEY through SPECIES_KEY, DATASET_KEY, PUBLISHING_ORG, GADM_LEVEL_0_GID through GADM_LEVEL_3_GID) return bare keys; includeLabels names the taxon, dataset, publishing organization, or administrative area behind each one on the page. Scope the aggregation with taxonKey (or checklistTaxonKey with checklistKey, for a Catalogue of Life key), country (uppercase ISO 3166-1 alpha-2), publishingCountry, stateProvince, gadmGid, year, scientificName, latitude/longitude ranges, month, hasCoordinate, hasGeospatialIssue, isInCluster, coordinateUncertaintyInMeters, geometry (all spatial filters intersect), basisOfRecord, datasetKey, publishingOrg, catalogNumber, institutionCode, recordedBy, mediaType, typeStatus, establishmentMeans, license, occurrenceStatus, or iucnRedListCategory filters. Also the way to split a result set too large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by DATASET_KEY, then search each datasetKey on its own. Aggregates sightings only by default, matching gbif_search_occurrences and gbif_count_occurrences; to measure the presence/absence split itself, pass facet OCCURRENCE_STATUS with occurrenceStatus ANY.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     scientificName: z
       .string()
       .optional()
       .describe(
-        'Scientific name; does not match synonyms. With taxonKey GBIF takes their union (OR), not their intersection. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
-      ),
-    decimalLatitude: z
-      .string()
-      .optional()
-      .describe(
-        'Latitude or latitude range "min,max" in decimal degrees (WGS84). All supplied spatial filters intersect, including geometry. Omit to leave latitude unbounded; blank or whitespace-only is rejected.',
-      ),
-    decimalLongitude: z
-      .string()
-      .optional()
-      .describe(
-        'Longitude or longitude range "min,max" in decimal degrees (WGS84). All supplied spatial filters intersect, including geometry. Omit to leave longitude unbounded; blank or whitespace-only is rejected.',
+        'Scientific name, which GBIF resolves to its accepted taxon, so a synonym scopes the records of that taxon; a name shared across kingdoms, such as Oenanthe (a bird genus and a plant genus), matches nothing — use taxonKey from gbif_match_species with kingdom set for one. With taxonKey GBIF takes their union (OR), not their intersection. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
       ),
     month: z
       .number()
@@ -134,16 +159,10 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .describe(
         'True includes likely duplicates; false excludes them. Omit to include all records. GBIF exposes membership only, with no cluster identifier.',
       ),
-    coordinateUncertaintyInMeters: z
-      .string()
-      .optional()
-      .describe(
-        'Coordinate uncertainty radius in meters, e.g. "0,1000"; range endpoints inclusive. Omit for any uncertainty; blank or whitespace-only is rejected.',
-      ),
     facet: z
       .enum(FACET_VALUES)
       .describe(
-        'Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY). DATASET_KEY is the first cut when a result set is too large to page: every occurrence carries exactly one datasetKey, so its buckets cover totalOccurrences with no gap or overlap. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still too large; both have a matching filter on the occurrence tools. A dimension a record can lack drops that record from every bucket: YEAR loses undated records; MONTH, STATE_PROVINCE, SPECIES_KEY, INSTITUTION_CODE, MEDIA_TYPE, and RECORDED_BY lose records lacking that dimension; GADM_LEVEL_0_GID, GADM_LEVEL_1_GID, GADM_LEVEL_2_GID, and GADM_LEVEL_3_GID lose records without coordinates or outside every GADM unit at that level — each even where the occurrence tools can filter on it. MEDIA_TYPE and RECORDED_BY buckets also overlap: a record with two media types or two collectors counts in each, so their sums can exceed totalOccurrences. GADM buckets are GIDs to pass back as gadmGid; INSTITUTION_CODE buckets come back lowercased and institutionCode takes them unchanged; RECORDED_BY buckets are the exact spellings recordedBy matches. Sums are comparable only across the same occurrenceStatus scope.',
+        'Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY). DATASET_KEY is the first cut when a result set is too large to page: every occurrence carries exactly one datasetKey, so its buckets cover totalOccurrences with no gap or overlap. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still too large; both have a matching filter on the occurrence tools. A dimension a record can lack drops that record from every bucket: YEAR loses undated records; MONTH, STATE_PROVINCE, SPECIES_KEY, INSTITUTION_CODE, MEDIA_TYPE, RECORDED_BY, TYPE_STATUS, and ESTABLISHMENT_MEANS lose records lacking that dimension; GADM_LEVEL_0_GID, GADM_LEVEL_1_GID, GADM_LEVEL_2_GID, and GADM_LEVEL_3_GID lose records without coordinates or outside every GADM unit at that level — each even where the occurrence tools can filter on it. MEDIA_TYPE and RECORDED_BY buckets also overlap: a record with two media types or two collectors counts in each, so their sums can exceed totalOccurrences. TYPE_STATUS and ESTABLISHMENT_MEANS buckets overlap the same way: a record counts under its concept and every broader one (an Isolectotype also under Lectotype and Type, a nativeReintroduced record also under native). GADM buckets are GIDs to pass back as gadmGid; INSTITUTION_CODE buckets come back lowercased and institutionCode takes them unchanged; RECORDED_BY buckets are the exact spellings recordedBy matches; PUBLISHING_ORG, TYPE_STATUS, ESTABLISHMENT_MEANS, and LICENSE buckets pass back unchanged as publishingOrg, typeStatus, establishmentMeans, and license. OCCURRENCE_STATUS buckets read DETECTED and NOT_DETECTED, the current GBIF names for PRESENT and ABSENT, and pass back unchanged as occurrenceStatus. KINGDOM_KEY through SPECIES_KEY buckets are Backbone keys to pass back as taxonKey. Under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b they are Catalogue of Life keys to pass back as checklistTaxonKey, some all digits (8288, the genus Tringa) yet never Backbone keys. Sums are comparable only across the same occurrenceStatus scope.',
       ),
     taxonKey: z
       .number()
@@ -151,7 +170,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .nonnegative()
       .optional()
       .describe(
-        'Backbone taxon key to scope the aggregation. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
+        'Backbone taxon key to scope the aggregation. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.). Rejected under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b — scope by a Catalogue of Life key with checklistTaxonKey there.',
       ),
     country: z
       .string()
@@ -205,7 +224,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .enum(OCCURRENCE_STATUS_VALUES)
       .default('PRESENT')
       .describe(
-        'Presence/absence scope. Defaults to PRESENT so the aggregation counts sightings, not the surveys that looked and found nothing, and agrees with gbif_count_occurrences on the same filters. Use ANY for both — required to see both buckets when facet is OCCURRENCE_STATUS — or ABSENT for non-observations alone.',
+        'Presence/absence scope. Defaults to PRESENT so the aggregation counts sightings, not the surveys that looked and found nothing, and agrees with gbif_count_occurrences on the same filters. Use ANY for both — required to see both buckets when facet is OCCURRENCE_STATUS — or ABSENT for non-observations alone. DETECTED and NOT_DETECTED, the spelling records and OCCURRENCE_STATUS buckets carry, select the same records as PRESENT and ABSENT and are sent as given.',
       ),
     iucnRedListCategory: z
       .enum(IUCN_RED_LIST_CATEGORY_VALUES)
@@ -229,7 +248,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .boolean()
       .default(false)
       .describe(
-        `True names the taxon or dataset behind each bucket on the returned page with a label: the canonicalName for a KINGDOM_KEY, PHYLUM_KEY, CLASS_KEY, ORDER_KEY, FAMILY_KEY, GENUS_KEY, or SPECIES_KEY bucket, the dataset title for a DATASET_KEY bucket. Costs one extra GBIF request per bucket, up to facetLimit, all bounded by one ${LABEL_DEADLINE_SECONDS} s deadline; a bucket whose lookup fails or misses it comes back without a label and is counted in notice. Every other dimension ignores it. Leave it false when keys are enough, as when partitioning by DATASET_KEY.`,
+        `True names what each bucket on the returned page identifies with a label: the canonicalName for a KINGDOM_KEY, PHYLUM_KEY, CLASS_KEY, ORDER_KEY, FAMILY_KEY, GENUS_KEY, or SPECIES_KEY bucket, read from the Catalogue of Life when checklistKey selects it and from the Backbone otherwise; the dataset title for a DATASET_KEY bucket; the organization title for a PUBLISHING_ORG bucket; the administrative area's name for a GADM_LEVEL_0_GID, GADM_LEVEL_1_GID, GADM_LEVEL_2_GID, or GADM_LEVEL_3_GID bucket. Costs one extra GBIF request per bucket, up to facetLimit, all bounded by one ${LABEL_DEADLINE_SECONDS} s deadline; a bucket whose lookup fails, finds no name, or misses the deadline comes back without a label and is counted in notice. The other dimensions are codes or values that read as they are, and it looks nothing up for them. Leave it false when keys are enough, as when partitioning by DATASET_KEY.`,
       ),
   }),
   output: z.object({
@@ -245,7 +264,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
               .string()
               .optional()
               .describe(
-                'Name of the taxon (its canonicalName) or dataset (its title) the key identifies. Present only with includeLabels on a KINGDOM_KEY through SPECIES_KEY or DATASET_KEY facet, and only when the lookup for this bucket succeeded.',
+                'Name of the taxon (its canonicalName), dataset (its title), publishing organization (its title), or GADM administrative area (its name) the key identifies. Present only with includeLabels on a KINGDOM_KEY through SPECIES_KEY, DATASET_KEY, PUBLISHING_ORG, or GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet, and only when the lookup for this bucket found a name.',
               ),
           })
           .describe('A facet value with its occurrence count.'),
@@ -279,13 +298,13 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     occurrenceStatus: z
       .string()
       .describe(
-        'The presence/absence filter applied upstream — PRESENT, ABSENT, or ANY when no filter was sent. Says what totalOccurrences and every bucket cover.',
+        'The presence/absence filter applied upstream, as sent — PRESENT or DETECTED for sightings, ABSENT or NOT_DETECTED for absences, or ANY when no filter was sent. Says what totalOccurrences and every bucket cover.',
       ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain, includeLabels left buckets without a label, an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
+        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain, includeLabels left buckets without a label, an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
 
@@ -295,9 +314,9 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A string scope filter other than country and publishingCountry was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), datasetKey is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter as malformed.',
+      when: 'A string scope filter other than country and publishingCountry was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters is a bare "*", datasetKey or publishingOrg is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, checklistTaxonKey holds a character other than an uppercase letter or digit, taxonKey was supplied under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b or checklistTaxonKey without it, typeStatus or establishmentMeans names no concept in its GBIF vocabulary, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter as malformed.',
       recovery:
-        'The message names the rejected value. A blank scope filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
+        'The message names the rejected value. A blank scope filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", the coordinate ranges are "min,max" (a value without a comma matches only that exact value), datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists or a TYPE_STATUS or ESTABLISHMENT_MEANS bucket, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
     },
   ],
 
@@ -316,6 +335,12 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
 
     const { facet, facetLimit, facetOffset, includeLabels, ...filters } = input;
     const service = getGbifService();
+    const facetKind = includeLabels ? LABELED_FACETS[facet] : undefined;
+    // The checklist says whose key a taxon bucket is, never its shape: 8288 is a COL genus and a Backbone family.
+    const labelKind =
+      facetKind === 'taxon' && input.checklistKey === COL_XR_CHECKLIST_KEY ? 'colTaxon' : facetKind;
+    // An unreachable label route is refused before the aggregation request is spent.
+    if (labelKind) service.facetLabelRoot(labelKind);
     const raw = await service.getOccurrenceFacets(
       { ...occurrenceFilters(filters), facet, facetLimit: facetLimit + 1, facetOffset },
       ctx,
@@ -329,15 +354,12 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     }));
 
     // Labels cover the exposed page only — never the lookahead bucket.
-    const labelKind = includeLabels ? LABELED_FACETS[facet] : undefined;
     const labels =
       labelKind &&
       (await service.getFacetLabels(
         {
           kind: labelKind,
-          keys: page
-            .map((c) => c.name)
-            .filter((name) => (labelKind === 'taxon' ? TAXON_KEY.test(name) : isGbifUuid(name))),
+          keys: page.map((c) => c.name).filter(LABEL_KINDS[labelKind].isKey),
           deadlineMs: LABEL_DEADLINE_MS,
         },
         ctx,
@@ -370,10 +392,11 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       hasMore
         ? `Showing ${counts.length} facet values; more remain. Re-call with facetOffset ${input.facetOffset + counts.length} for the next page.`
         : undefined,
-      unlabeled > 0
-        ? `${unlabeled} of ${counts.length} buckets carry no label: the name lookup for each failed, found no name, or did not finish within the ${LABEL_DEADLINE_SECONDS} s label deadline. The keys are exact; pass one as ${labelKind === 'taxon' ? 'taxonKey to gbif_get_species' : 'datasetKey to gbif_get_dataset'} for its name.`
+      labelKind && unlabeled > 0
+        ? `${unlabeled} of ${counts.length} buckets carry no label: the name lookup for each failed, found no name, or did not finish within the ${LABEL_DEADLINE_SECONDS} s label deadline. The keys are exact; ${LABEL_KINDS[labelKind].lookup}.`
         : undefined,
       ...occurrenceNoMatchNotices(input, raw.count ?? 0),
+      exactCoordinateMatchNotice(input),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
       .filter(Boolean)

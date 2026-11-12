@@ -102,7 +102,7 @@ describe('gbifCountOccurrences', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
+            hint: 'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
           },
         },
       },
@@ -444,9 +444,19 @@ describe('gbifCountOccurrences', () => {
     expect(() => gbifCountOccurrences.input.parse({ iucnRedListCategory: 'VU' })).not.toThrow();
   });
 
-  it('rejects an occurrenceStatus outside the accepted three', () => {
+  it('rejects an occurrenceStatus outside the accepted values', () => {
     expect(() => gbifCountOccurrences.input.parse({ occurrenceStatus: 'BOGUS' })).toThrow();
     expect(() => gbifCountOccurrences.input.parse({ occurrenceStatus: 'present' })).toThrow();
+  });
+
+  it('names both occurrenceStatus spellings on the input and the echo', () => {
+    const descriptions = [
+      gbifCountOccurrences.input.shape.occurrenceStatus.description,
+      gbifCountOccurrences.enrichment?.occurrenceStatus.description,
+    ];
+    for (const description of descriptions)
+      for (const text of ['DETECTED', 'NOT_DETECTED', 'PRESENT', 'ABSENT'])
+        expect(description).toContain(text);
   });
 
   /**

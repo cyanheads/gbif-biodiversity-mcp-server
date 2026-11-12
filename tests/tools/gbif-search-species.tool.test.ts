@@ -88,6 +88,16 @@ const MATCHES = {
     kingdom: 'Animalia',
     kingdomKey: 1,
   },
+  Plantae: {
+    usageKey: 6,
+    scientificName: 'Plantae',
+    canonicalName: 'Plantae',
+    rank: 'KINGDOM',
+    status: 'ACCEPTED',
+    matchType: 'EXACT',
+    kingdom: 'Plantae',
+    kingdomKey: 6,
+  },
   /** `rank` is a scoring hint upstream, so "Aves" asked for as a family answers as a CLASS. */
   AvesAsClass: {
     usageKey: 212,
@@ -1118,6 +1128,171 @@ describe('gbifSearchSpecies', () => {
         vi.unstubAllEnvs();
         vi.resetModules();
       }
+    });
+  });
+
+  /**
+   * #84 — `/species/search` serves `offset + limit` up to 100,000 under any query,
+   * scope, or checklist. A larger sum answers HTTP 500, which the service retried
+   * before failing, and an offset of 100,000 or more answers 400, which surfaced as
+   * invalid_filter with the blank-filter hint. The sum is checked before any request
+   * now, the kingdom/family/genus lookups included, and a match larger than the
+   * ceiling says so on every page.
+   */
+  describe('offset ceiling (#84)', () => {
+    const declaredRecovery = () =>
+      gbifSearchSpecies.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.recovery;
+
+    /** One `/species/search` page in the live shape of a Plantae browse. */
+    const page = (overrides: Record<string, unknown> = {}) => ({
+      results: [{ key: 2877951, canonicalName: 'Quercus', rank: 'GENUS' }],
+      count: 2101916,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+      ...overrides,
+    });
+
+    it.each([
+      [99_980, 20],
+      [99_999, 1],
+    ])('sends offset %i + limit %i, a sum at the ceiling', async (offset, limit) => {
+      mockSearchSpecies.mockResolvedValue(page({ offset, limit }));
+
+      const result = await runToolContract(gbifSearchSpecies, { offset, limit });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockSearchSpecies).toHaveBeenCalledTimes(1);
+      expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({ offset, limit });
+    });
+
+    it.each([
+      { offset: 99_981, limit: 20, scope: {} },
+      { offset: 99_990, limit: 20, scope: { kingdom: 'Plantae' } },
+      {
+        offset: 100_000,
+        limit: 1,
+        scope: { kingdom: 'Plantae', family: 'Fagaceae', genus: 'Quercus' },
+      },
+      { offset: 100_000, limit: 20, scope: { q: 'Quercus robur', rank: 'SPECIES' } },
+    ])(
+      'refuses offset $offset + limit $limit with scope $scope before any lookup or search',
+      async ({ offset, limit, scope }) => {
+        matchesByName({ Plantae: 'Plantae', Fagaceae: 'Fagaceae', Quercus: 'Quercus' });
+        mockSearchSpecies.mockResolvedValue(page({ offset, limit }));
+
+        const result = await runToolContract(gbifSearchSpecies, { ...scope, offset, limit });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent?.error).toMatchObject({
+          code: JsonRpcErrorCode.ValidationError,
+          data: { reason: 'pagination_cap_exceeded', recovery: { hint: declaredRecovery() } },
+        });
+        const text = JSON.stringify(result.content);
+        expect(text).toContain(`offset + limit (${offset + limit}) exceeds 100,000`);
+        expect(text).toContain('gbif_get_species_children');
+        expect(mockMatchSpecies).not.toHaveBeenCalled();
+        expect(mockSearchSpecies).not.toHaveBeenCalled();
+      },
+    );
+
+    it('declares a recovery that names the ceiling and only routes this tool can take', () => {
+      const recovery = declaredRecovery() ?? '';
+      expect(recovery).toContain('100,000');
+      expect(recovery).toContain('gbif_get_species_children');
+      const inputs = Object.keys(gbifSearchSpecies.input.shape);
+      for (const field of ['kingdom', 'family', 'genus', 'rank', 'isExtinct', 'q']) {
+        expect(recovery).toContain(field);
+        expect(inputs).toContain(field);
+      }
+      expect(
+        gbifSearchSpecies.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.code,
+      ).toBe(JsonRpcErrorCode.ValidationError);
+    });
+
+    it('states the ceiling in the tool, offset, and notice descriptions', () => {
+      expect(gbifSearchSpecies.description).toContain('100,000');
+      expect(gbifSearchSpecies.input.shape.offset.description).toContain('100,000');
+      expect(gbifSearchSpecies.enrichment?.notice?.description).toContain('100,000');
+    });
+
+    /** Step 1 of #84: a scoped browse one page short of the ceiling, 2,101,916 names deep. */
+    it('names the ceiling and the narrowing route on a match deeper than it, on both surfaces', async () => {
+      matchesByName({ Plantae: 'Plantae' });
+      mockSearchSpecies.mockResolvedValue(page({ offset: 99_980 }));
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        kingdom: 'Plantae',
+        offset: 99_980,
+        limit: 20,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        totalCount: 2101916,
+        offset: 99_980,
+        endOfRecords: false,
+        taxonScope: expect.stringContaining('key 6'),
+      });
+      const notice = result.structuredContent?.notice as string;
+      for (const text of ['2,101,916', '100,000', 'family', 'genus', 'gbif_get_species_children'])
+        expect(notice).toContain(text);
+      const content = JSON.stringify(result.content);
+      expect(content).toContain('2,101,916 taxa match');
+      expect(content).toContain('gbif_get_species_children');
+    });
+
+    it.each([
+      [100_000, false],
+      [100_001, true],
+    ])('carries the ceiling notice at totalCount %i: %s', async (count, expected) => {
+      mockSearchSpecies.mockResolvedValue(page({ count }));
+
+      const result = await runToolContract(gbifSearchSpecies, {});
+
+      expect(result.isError).not.toBe(true);
+      const notice = result.structuredContent?.notice as string | undefined;
+      if (expected) {
+        expect(notice).toContain(`${count.toLocaleString('en-US')} taxa match`);
+        expect(JSON.stringify(result.content)).toContain('100,000');
+      } else {
+        expect(notice).toBeUndefined();
+        expect(JSON.stringify(result.content)).not.toContain('100,000');
+      }
+    });
+
+    it('joins the ceiling notice with the clamp notice in one notice', async () => {
+      mockSearchSpecies.mockResolvedValue(page({ limit: 1000 }));
+
+      const result = await runToolContract(gbifSearchSpecies, { limit: 1001 });
+
+      expect(result.isError).not.toBe(true);
+      const notice = result.structuredContent?.notice as string;
+      expect(notice).toContain('limit requested 1001; applied 1000.');
+      expect(notice).toContain('2,101,916 taxa match');
+      const content = JSON.stringify(result.content);
+      expect(content).toContain('limit requested 1001; applied 1000.');
+      expect(content).toContain('2,101,916 taxa match');
+      expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({ limit: 1000 });
+    });
+
+    /** A past-end page under the ceiling is still served, with the existing past-end notice. */
+    it('serves a past-end page under the ceiling with the past-end notice only', async () => {
+      mockSearchSpecies.mockResolvedValue(
+        page({ results: [], count: 714, offset: 99_980, endOfRecords: true }),
+      );
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        q: 'Quercus robur',
+        offset: 99_980,
+        limit: 20,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent?.notice).toBe(
+        'Offset 99980 exceeds totalCount (714). Reset offset to 0 or reduce it below 714 to page through results.',
+      );
+      expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({ offset: 99_980, limit: 20 });
     });
   });
 });

@@ -718,6 +718,25 @@ describe('gbifOccurrenceFacets', () => {
       expect(described).toContain(text);
     expect(gbifOccurrenceFacets.description).toContain('includeLabels');
   });
+
+  /** #88, #90 — the GADM dimensions gain labels, and the checklist picks the taxon lookup. */
+  it('says includeLabels names GADM GIDs and picks the taxon lookup by checklistKey', () => {
+    const includeLabels = gbifOccurrenceFacets.input.shape.includeLabels.description ?? '';
+    for (const text of [
+      'GADM_LEVEL_0_GID',
+      'GADM_LEVEL_3_GID',
+      'Catalogue of Life',
+      'checklistKey',
+    ])
+      expect(includeLabels).toContain(text);
+    expect(includeLabels).not.toContain('Every other dimension ignores it');
+    const label = gbifOccurrenceFacets.output.shape.counts.element.shape.label.description ?? '';
+    expect(label).toContain('GADM');
+    expect(gbifOccurrenceFacets.description).toContain('GADM');
+    expect(gbifOccurrenceFacets.input.shape.facet.description).toContain(
+      'Under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b',
+    );
+  });
 });
 
 /**
@@ -741,6 +760,24 @@ describe('gbifOccurrenceFacets occurrenceStatus and IUCN dimensions', () => {
     expect(() =>
       gbifOccurrenceFacets.input.parse({ facet: 'IUCN_RED_LIST_CATEGORY' }),
     ).not.toThrow();
+  });
+
+  it('never calls a comma-less coordinate value a range in the invalid_filter recovery', () => {
+    const recovery =
+      gbifOccurrenceFacets.errors?.find((e) => e.reason === 'invalid_filter')?.recovery ?? '';
+    expect(recovery).toContain('the coordinate ranges are "min,max"');
+    expect(recovery).toContain('a value without a comma matches only that exact value');
+    expect(recovery).not.toMatch(/coordinate ranges are a single value/);
+  });
+
+  it('names both occurrenceStatus spellings on the input and the echo', () => {
+    const descriptions = [
+      gbifOccurrenceFacets.input.shape.occurrenceStatus.description,
+      gbifOccurrenceFacets.enrichment?.occurrenceStatus.description,
+    ];
+    for (const description of descriptions)
+      for (const text of ['DETECTED', 'NOT_DETECTED', 'PRESENT', 'ABSENT'])
+        expect(description).toContain(text);
   });
 
   it('scopes to PRESENT by default and announces it', async () => {

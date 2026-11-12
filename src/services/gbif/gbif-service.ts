@@ -1,11 +1,12 @@
 /**
- * @fileoverview GBIF API v1 service — wraps api.gbif.org/v1 with retry and response parsing.
+ * @fileoverview GBIF API service — wraps api.gbif.org/v1, plus the /v2/species/match route derived from it, with retry and response parsing.
  * @module services/gbif/gbif-service
  */
 
 import { type Context, z } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import {
+  configurationError,
   JsonRpcErrorCode,
   McpError,
   serviceUnavailable,
@@ -14,9 +15,12 @@ import {
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { createPacer, httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import {
+  type ChecklistKey,
+  COL_XR_CHECKLIST_KEY,
   type FacetLabelKind,
-  OCCURRENCE_FILTER_KEYS,
+  OCCURRENCE_FILTER_PARAMS,
   type OccurrenceFilters,
+  type RawChecklistSpeciesMatch,
   type RawChildrenResponse,
   type RawDatasetRecord,
   type RawDatasetSearchResponse,
@@ -54,23 +58,90 @@ const RECORD_COUNT_TIMEOUT_MS = 3_000;
  */
 const FACET_LABEL_CONCURRENCY = 8;
 
+/** Per-request bounds for `getJson` and `getBody`. */
+type RequestOptions = { maxRetries?: number; timeoutMs?: number; deadline?: AbortSignal };
+
+/**
+ * How `getFacetLabels` names one kind of bucket key: the path of the record that
+ * holds the name, and how the name is read from that record's 200 body. `label`
+ * returns `undefined` when the body names nothing, which leaves the bucket
+ * unlabeled, and throws on a body the kind never serves (malformed JSON), which
+ * fails the call as a defect rather than passing for a missing name. A non-2xx
+ * answer — 404 for a key GBIF does not hold — never reaches `label`; the lookup
+ * leaves that key unlabeled.
+ *
+ * `label` reads the body text rather than parsed JSON, so a kind whose upstream
+ * answers a key it does not hold with an empty 200 can read that as no name. The
+ * caller checks each key's shape before it becomes a path segment or parameter.
+ *
+ * `path` is under the configured v1 root, or under the v2 root when `root` is
+ * `v2`; `params` adds a query string.
+ */
+type FacetLabelLookup = {
+  root?: 'v2';
+  path: (key: string) => string;
+  params?: (key: string) => Record<string, string>;
+  label: (body: string) => string | undefined;
+};
+
 /** The one field each kind of label lookup reads from the record it fetches. */
 const TAXON_LABEL = z.object({ canonicalName: z.string().min(1) });
-const DATASET_LABEL = z.object({ title: z.string().min(1) });
+const TITLE_LABEL = z.object({ title: z.string().min(1) });
+const NAME_LABEL = z.object({ name: z.string().min(1) });
+const USAGE_LABEL = z.object({ usage: TAXON_LABEL });
+
+/** One entry per `FacetLabelKind`: a new kind is one entry here. */
+const FACET_LABEL_LOOKUPS = {
+  taxon: {
+    path: (key) => `/species/${key}`,
+    label: (body) => TAXON_LABEL.safeParse(JSON.parse(body)).data?.canonicalName,
+  },
+  /**
+   * A Catalogue of Life key read by usage key alone, so no name is matched. A key the
+   * checklist does not hold answers 200 with matchType NONE and no `usage`.
+   */
+  colTaxon: {
+    root: 'v2',
+    path: () => '/species/match',
+    params: (key) => ({ checklistKey: COL_XR_CHECKLIST_KEY, usageKey: key }),
+    label: (body) => USAGE_LABEL.safeParse(JSON.parse(body)).data?.usage.canonicalName,
+  },
+  dataset: {
+    path: (key) => `/dataset/${key}`,
+    label: (body) => TITLE_LABEL.safeParse(JSON.parse(body)).data?.title,
+  },
+  organization: {
+    path: (key) => `/organization/${key}`,
+    label: (body) => TITLE_LABEL.safeParse(JSON.parse(body)).data?.title,
+  },
+  /**
+   * GADM answers a GID it does not hold with HTTP 200 and an empty body rather than
+   * a 404, so the empty body is its not-found; any other unparseable body still fails.
+   */
+  gadm: {
+    path: (key) => `/geocode/gadm/${key}`,
+    label: (body) => (body === '' ? undefined : NAME_LABEL.safeParse(JSON.parse(body)).data?.name),
+  },
+} satisfies Record<FacetLabelKind, FacetLabelLookup>;
 
 /**
  * Converts a non-2xx GBIF response into an `McpError`.
  *
  * One departure from the raw framework helper: **GBIF's explanation is folded
- * into the message.** It otherwise reaches only
- * `structuredContent.error.data.body`, leaving `content[]` clients with the bare
- * status. An HTML body (a rate-limit or outage page) is left out of the message.
+ * into the message.** The body `httpErrorFromResponse` captures stays on the
+ * server — `data.body` reads it here and the failure log records it, but a
+ * tool's `structuredContent.error.data` and a resource read's JSON-RPC
+ * `error.data` leave it out — so without the fold neither `structuredContent`
+ * nor `content[]` would say why GBIF refused the request. An HTML body (a
+ * rate-limit or outage page) is left out of the message.
  *
+ * The rebuilt error spreads `error.data`, which carries the helper's server-only
+ * marker for the body along with it, so the body stays off the wire here too.
  * The request URL never reaches `error.data` — a GBIF query string carries the
  * caller's own filter values, and `httpErrorFromResponse` omits `data.url`
  * unless asked for it with `includeUrl: true`, which nothing here passes.
- * `status`, `body`, and `retryAfter` stay, because `withRetry` and the callers
- * classify on them.
+ * `status` and `retryAfter` reach the caller, and `withRetry` honors
+ * `retryAfter` between attempts.
  *
  * A 400 is a rejected input value rather than an outage, so it also carries the
  * `invalid_filter` contract reason. Every definition that lets this error reach
@@ -99,15 +170,30 @@ async function gbifHttpError(response: Response): Promise<McpError> {
  * included; an `undefined` one is not sent. Blank strings never arrive: the tools
  * reject them first, because the endpoint reads a parameter with no value as no
  * filter and answers the unfiltered scope.
+ *
+ * Each goes out under the parameter `OCCURRENCE_FILTER_PARAMS` names, so
+ * `checklistTaxonKey` is sent as `taxonKey`. The tools never pass it beside a
+ * Backbone `taxonKey`: `occurrenceFilterViolation` admits each only under its own
+ * checklist.
  */
 function occurrenceParams(filters: OccurrenceFilters): Record<string, unknown> {
-  return Object.fromEntries(OCCURRENCE_FILTER_KEYS.map((key) => [key, filters[key]]));
+  return Object.fromEntries(
+    OCCURRENCE_FILTER_PARAMS.flatMap(([key, param]) =>
+      filters[key] === undefined ? [] : [[param, filters[key]]],
+    ),
+  );
 }
 
 // ─── Service class ─────────────────────────────────────────────────────────────
 
 export class GbifService {
   private readonly baseUrl: string;
+  /**
+   * GBIF's v2 root, the configured root with its trailing `/v1` segment replaced by
+   * `/v2`. Undefined when the configured root does not end in `/v1`: no rule recovers
+   * a v2 root from an arbitrary one, so the v2 routes fail rather than guess.
+   */
+  private readonly v2BaseUrl: string | undefined;
   private readonly timeoutMs: number;
   private readonly userAgent: string;
   /**
@@ -126,6 +212,7 @@ export class GbifService {
     opts: { baseUrl: string; timeoutMs: number; userAgent?: string | undefined },
   ) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
+    this.v2BaseUrl = this.baseUrl.endsWith('/v1') ? `${this.baseUrl.slice(0, -3)}/v2` : undefined;
     this.timeoutMs = opts.timeoutMs;
     this.userAgent =
       opts.userAgent ?? `${config.mcpServerName}/${config.mcpServerVersion} (+${REPOSITORY_URL})`;
@@ -133,8 +220,12 @@ export class GbifService {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  private buildUrl(path: string, params: Record<string, unknown> = {}): string {
-    const url = new URL(`${this.baseUrl}${path}`);
+  private buildUrl(
+    path: string,
+    params: Record<string, unknown> = {},
+    root: string = this.baseUrl,
+  ): string {
+    const url = new URL(`${root}${path}`);
     for (const [key, value] of Object.entries(params)) {
       if (value === undefined || value === null) continue;
       if (Array.isArray(value)) {
@@ -146,16 +237,25 @@ export class GbifService {
     return url.toString();
   }
 
+  private getJson<T>(url: string, ctx: Context, opts: RequestOptions = {}): Promise<T> {
+    return this.getBody(url, ctx, opts, (body) => JSON.parse(body) as T);
+  }
+
   /**
+   * `read` turns the text of a 2xx, non-HTML response into the result, inside the
+   * attempt, so what it throws fails that attempt as a parse failure in `getJson`
+   * does.
+   *
    * `deadline` is a caller-owned signal that ends the attempt the way `ctx.signal`
    * does: aborting it aborts the fetch, and the attempt rejects with its reason, by
    * identity. It bounds attempts only — the retry loop between them watches
    * `ctx.signal` alone — so it is for single-attempt (`maxRetries: 0`) requests.
    */
-  private getJson<T>(
+  private getBody<T>(
     url: string,
     ctx: Context,
-    opts: { maxRetries?: number; timeoutMs?: number; deadline?: AbortSignal } = {},
+    opts: RequestOptions,
+    read: (body: string) => T,
   ): Promise<T> {
     const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
     const { deadline } = opts;
@@ -198,7 +298,7 @@ export class GbifService {
         if (HTML_RESPONSE.test(text)) {
           throw serviceUnavailable('GBIF API returned HTML — likely rate-limited or unavailable.');
         }
-        return JSON.parse(text) as T;
+        return read(text);
       } catch (err) {
         // Identity-match the reason, not the rejection value: an abort reason may
         // be any type, so an `instanceof Error` gate would drop the timeout into
@@ -247,6 +347,46 @@ export class GbifService {
     const url = this.buildUrl('/species/match', queryParams);
     ctx.log.debug('Matching species', { name: params.name });
     return this.getJson<RawSpeciesMatch>(url, ctx);
+  }
+
+  /**
+   * `/v2/species/match` against one checklist. The v2 contract renames two
+   * parameters: the name goes as `scientificName` and the rank as `taxonRank`.
+   * `kingdom` and `strict` keep their v1 names and meaning.
+   *
+   * Rejects with a ConfigurationError, before any request, when the configured base
+   * URL does not end in `/v1`, so no v2 root can be derived from it.
+   */
+  matchChecklistSpecies(
+    params: {
+      name: string;
+      checklistKey: ChecklistKey;
+      strict?: boolean;
+      kingdom?: string;
+      rank?: string;
+    },
+    ctx: Context,
+  ): Promise<RawChecklistSpeciesMatch> {
+    if (this.v2BaseUrl === undefined) {
+      return Promise.reject(
+        configurationError(
+          'This server is configured with a GBIF_BASE_URL that does not end in /v1, so the /v2/species/match route a Catalogue of Life match needs cannot be derived from it. Omit checklistKey to match against the GBIF Backbone, or have the operator set GBIF_BASE_URL to a root ending in /v1.',
+        ),
+      );
+    }
+    const queryParams: Record<string, unknown> = {
+      checklistKey: params.checklistKey,
+      scientificName: params.name,
+    };
+    if (params.strict !== undefined) queryParams.strict = params.strict;
+    if (params.kingdom) queryParams.kingdom = params.kingdom;
+    if (params.rank) queryParams.taxonRank = params.rank;
+    const url = this.buildUrl('/species/match', queryParams, this.v2BaseUrl);
+    ctx.log.debug('Matching species against a checklist', {
+      name: params.name,
+      checklistKey: params.checklistKey,
+    });
+    return this.getJson<RawChecklistSpeciesMatch>(url, ctx);
   }
 
   getSpecies(taxonKey: number, ctx: Context): Promise<RawSpeciesRecord> {
@@ -399,10 +539,29 @@ export class GbifService {
   }
 
   /**
-   * Names for facet bucket keys, keyed by bucket key: a taxon key's `canonicalName`
-   * from `/species/{key}`, a dataset UUID's `title` from `/dataset/{key}`. Each key
-   * becomes a path segment, so the caller passes only digit strings for `taxon` and
-   * UUIDs for `dataset`.
+   * The root `kind`'s label lookups are read from. Throws a ConfigurationError,
+   * without a request, when the kind needs the v2 root and the configured base URL
+   * does not end in `/v1`, so a caller can check it before the aggregation the
+   * labels follow.
+   */
+  facetLabelRoot(kind: FacetLabelKind): string {
+    const lookup: FacetLabelLookup = FACET_LABEL_LOOKUPS[kind];
+    if (lookup.root !== 'v2') return this.baseUrl;
+    if (this.v2BaseUrl === undefined) {
+      throw configurationError(
+        'This server is configured with a GBIF_BASE_URL that does not end in /v1, so the /v2/species/match route Catalogue of Life labels are read from cannot be derived from it. Omit includeLabels to aggregate without labels, or have the operator set GBIF_BASE_URL to a root ending in /v1.',
+      );
+    }
+    return this.v2BaseUrl;
+  }
+
+  /**
+   * Names for facet bucket keys, keyed by bucket key, read the way
+   * `FACET_LABEL_LOOKUPS` says for `kind`: a taxon key's `canonicalName` from
+   * `/species/{key}`, a Catalogue of Life key's from `/v2/species/match`, a dataset
+   * or organization UUID's `title` from `/dataset/{key}` or `/organization/{key}`, a
+   * GADM GID's `name` from `/geocode/gadm/{gid}`. Each key becomes a path segment or
+   * parameter, so the caller passes only keys in the kind's own shape.
    *
    * Supplementary to counts already in hand, and one request per key, so bounded:
    * one attempt per key with no retry; at most `FACET_LABEL_CONCURRENCY` lookups in
@@ -413,13 +572,17 @@ export class GbifService {
    * A key is absent from the result when its lookup fails upstream (404, 5xx, 429,
    * transport, timeout), misses the deadline, or returns a record without the
    * field. Caller cancellation rejects with `ctx.signal.reason`; any other failure —
-   * a malformed body, a programming error — propagates.
+   * a malformed body, a programming error — propagates. A v2 kind rejects with a
+   * ConfigurationError, before any request, when the configured base URL does not
+   * end in `/v1`.
    */
   async getFacetLabels(
     params: { kind: FacetLabelKind; keys: readonly string[]; deadlineMs: number },
     ctx: Context,
   ): Promise<Map<string, string>> {
     const { kind, keys, deadlineMs } = params;
+    const lookup: FacetLabelLookup = FACET_LABEL_LOOKUPS[kind];
+    const root = this.facetLabelRoot(kind);
     const labels = new Map<string, string>();
     const deadline = new AbortController();
     const timer = setTimeout(
@@ -431,25 +594,22 @@ export class GbifService {
         ),
       deadlineMs,
     );
-    // A queued lookup leaves the line on either signal; getJson watches both in flight.
+    // A queued lookup leaves the line on either signal; getBody watches both in flight.
     const queueSignal = AbortSignal.any([ctx.signal, deadline.signal]);
-    const path = kind === 'taxon' ? '/species' : '/dataset';
     try {
       await Promise.all(
         keys.map(async (key) => {
           try {
-            const record = await this.labelPacer.run(
+            const label = await this.labelPacer.run(
               () =>
-                this.getJson<unknown>(this.buildUrl(`${path}/${key}`), ctx, {
-                  maxRetries: 0,
-                  deadline: deadline.signal,
-                }),
+                this.getBody(
+                  this.buildUrl(lookup.path(key), lookup.params?.(key), root),
+                  ctx,
+                  { maxRetries: 0, deadline: deadline.signal },
+                  lookup.label,
+                ),
               { signal: queueSignal },
             );
-            const label =
-              kind === 'taxon'
-                ? TAXON_LABEL.safeParse(record).data?.canonicalName
-                : DATASET_LABEL.safeParse(record).data?.title;
             if (label !== undefined) labels.set(key, label);
           } catch (err) {
             ctx.signal.throwIfAborted();

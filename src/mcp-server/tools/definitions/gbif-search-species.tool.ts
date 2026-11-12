@@ -9,12 +9,21 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import type { RawSpeciesMatch, RawSpeciesSearchRecord } from '@/services/gbif/types.js';
+import {
+  BACKBONE_CHECKLIST_KEY,
+  type RawSpeciesMatch,
+  type RawSpeciesSearchRecord,
+} from '@/services/gbif/types.js';
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import { escapeMarkdownText, firstBlankFilter, isGbifUuid } from '../utils.js';
 
-/** GBIF Backbone Taxonomy checklist; name scopes resolve keys within this dataset. */
-const BACKBONE_DATASET_KEY = 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c';
+/**
+ * Largest `offset + limit` GBIF's `/species/search` serves, whatever the query,
+ * scope, or checklist. A larger sum answers HTTP 500, and an offset of 100,000 or
+ * more answers 400 `Max offset of 100000 exceeded.`; a retry changes neither, so
+ * the sum is checked before any request, the scope lookups included.
+ */
+const SPECIES_SEARCH_CEILING = 100_000;
 
 /** The three name filters, ordered broadest first, with the rank each one names. */
 const SCOPE_RANKS = {
@@ -104,7 +113,7 @@ function buildNotice(args: {
      * `higherTaxonKey=9327` (Paridae) returns 641 names on the backbone and 0
      * against the 455-name "Checklist of alien birds of Belgium".
      */
-    if (scopedBy && datasetKey && datasetKey.toLowerCase() !== BACKBONE_DATASET_KEY) {
+    if (scopedBy && datasetKey && datasetKey.toLowerCase() !== BACKBONE_CHECKLIST_KEY) {
       return `No taxa matched. ${scopedBy} resolved to a GBIF backbone key, and GBIF applies a higher-taxon key only within the checklist that key belongs to — so a backbone key paired with another checklist's datasetKey matches nothing whatever that checklist holds. Drop datasetKey to browse the backbone under this ${scopedBy}, or drop ${scopedBy} to browse the checklist.`;
     }
     return 'No taxa matched the query. Try a shorter name fragment, drop the rank filter or the kingdom/family/genus scope, or use gbif_match_species for exact name lookup.';
@@ -115,19 +124,22 @@ function buildNotice(args: {
   return;
 }
 
+/**
+ * Guidance when more taxa match than the ceiling lets a caller page to, or
+ * `undefined` when every match is reachable. Emitted on every page rather than at
+ * the wall, since the choice between paging and narrowing is made on the first.
+ * `endOfRecords` stays GBIF's value — the records exist — and this says why they
+ * are out of reach.
+ */
+function overCeilingNotice(totalCount: number): string | undefined {
+  if (totalCount <= SPECIES_SEARCH_CEILING) return;
+  return `${totalCount.toLocaleString('en-US')} taxa match, past the offset+limit ceiling of ${SPECIES_SEARCH_CEILING.toLocaleString('en-US')} that GBIF's species search serves, so taxa deeper than that cannot be paged to. Narrow the search until it fits — kingdom, family, or genus scopes it to a higher taxon, and rank, isExtinct, and q cut it further — or walk a subtree with gbif_get_species_children, which lists a taxon's direct children without this ceiling.`;
+}
+
 export const gbifSearchSpecies = tool('gbif_search_species', {
   title: 'Search Species Taxonomy',
   description:
-    'Search or browse the GBIF backbone taxonomy by default, or an explicit checklist datasetKey. Accepts scientific name fragments, rank filters, ' +
-    'and higher-taxon constraints. Useful for exploring what species exist under a higher taxon ' +
-    '(e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when ' +
-    'gbif_match_species returns too narrow a result. kingdom, family, and genus scope the browse ' +
-    'to a higher taxon: each is resolved to its backbone key before the search runs, so the ' +
-    'narrowest one supplied is what scopes, an alternative name resolves to the taxon it is a ' +
-    'synonym of, and a name that matches no backbone taxon at that rank fails rather than ' +
-    'returning the whole index. Names are capitalized as GBIF writes them ("Paridae", not ' +
-    '"paridae") and are matched exactly, not fuzzily. Paginated — use limit and offset to walk ' +
-    'through results.',
+    'Search or browse the GBIF backbone taxonomy by default, or an explicit checklist datasetKey. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Useful for exploring what species exist under a higher taxon (e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when gbif_match_species returns too narrow a result. kingdom, family, and genus scope the browse to a higher taxon: each is resolved to its backbone key before the search runs, so the narrowest one supplied is what scopes, an alternative name resolves to the taxon it is a synonym of, and a name that matches no backbone taxon at that rank fails rather than returning the whole index. Names are capitalized as GBIF writes them ("Paridae", not "paridae") and are matched exactly, not fuzzily. Paginated — use limit and offset to walk through results, up to an offset + limit of 100,000.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     q: z
@@ -168,7 +180,14 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of records to return (default 20, max 1000).'),
-    offset: z.number().int().min(0).default(0).describe('Pagination offset.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        "Pagination offset. offset + limit may not exceed 100,000, the deepest page GBIF's species search serves; narrow a larger match with kingdom, family, genus, rank, isExtinct, or q, or walk a subtree with gbif_get_species_children, which has no ceiling, instead of paging past it.",
+      ),
   }),
   output: z.object({
     taxa: z
@@ -239,11 +258,18 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, paging overshot, or an oversized read limit was clamped. Absent when none applies.',
+        'Guidance when results are empty, paging overshot, an oversized read limit was clamped, or more taxa match than the 100,000 offset+limit ceiling lets a caller page to. Absent when none applies.',
       ),
   },
 
   errors: [
+    {
+      reason: 'pagination_cap_exceeded',
+      code: JsonRpcErrorCode.ValidationError,
+      when: "offset + limit exceeds 100,000, the deepest page GBIF's species search serves.",
+      recovery:
+        "Reduce offset or limit so their sum is at most 100,000; taxa past it cannot be paged to from this search. To reach a larger match, narrow it until it fits: kingdom, family, or genus scopes it to a higher taxon, and rank, isExtinct, and q cut it further. To cover a whole subtree, walk it with gbif_get_species_children, which lists a taxon's direct children without this ceiling.",
+    },
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
@@ -271,6 +297,15 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     const clamp = clampReadLimit(input.limit, 1000, 'gbif_search_species', 'limit', ctx);
     input = { ...input, limit: clamp.applied };
     ctx.log.info('Searching species taxonomy', { q: input.q, rank: input.rank });
+
+    // On the applied limit, so a clamped page that fits is still sent.
+    if (input.offset + input.limit > SPECIES_SEARCH_CEILING) {
+      throw ctx.fail(
+        'pagination_cap_exceeded',
+        `offset + limit (${input.offset + input.limit}) exceeds ${SPECIES_SEARCH_CEILING.toLocaleString('en-US')}, the deepest page GBIF's species search serves. Reduce offset or limit, or narrow the search.`,
+      );
+    }
+
     /**
      * Every filter is checked on presence rather than on a non-blank value.
      * `/species/search` answers the two blank `q` forms two different ways and
@@ -406,7 +441,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
         ...(input.rank && { rank: input.rank }),
         ...(scope && { higherTaxonKey: scope.taxonKey }),
         ...(input.isExtinct !== undefined && { isExtinct: input.isExtinct }),
-        datasetKey: input.datasetKey ?? BACKBONE_DATASET_KEY,
+        datasetKey: input.datasetKey ?? BACKBONE_CHECKLIST_KEY,
         limit: input.limit,
         offset: input.offset,
       },
@@ -456,7 +491,9 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       scopedBy: scope?.field,
       datasetKey: input.datasetKey,
     });
-    const combinedNotice = [clamp.notice, notice].filter(Boolean).join(' ');
+    const combinedNotice = [clamp.notice, notice, overCeilingNotice(totalCount)]
+      .filter(Boolean)
+      .join(' ');
     if (combinedNotice) ctx.enrich.notice(combinedNotice);
 
     return { taxa };

@@ -12,6 +12,7 @@ import {
   OCCURRENCE_STATUS_VALUES,
 } from '@/services/gbif/types.js';
 import {
+  exactCoordinateMatchNotice,
   occurrenceFilters,
   occurrenceFilterViolation,
   occurrenceNoMatchNotices,
@@ -25,34 +26,14 @@ import {
 export const gbifCountOccurrences = tool('gbif_count_occurrences', {
   title: 'Count Occurrences',
   description:
-    'Count occurrences matching a taxon + location filter without fetching records. ' +
-    'Use for quick totals ("how many Aves records in Sweden?") or before deciding whether ' +
-    'to paginate a full search. Accepts taxonKey, country (uppercase ISO 3166-1 alpha-2), ' +
-    'publishingCountry, stateProvince, gadmGid, scientificName, spatial ranges and geometry (intersected), month, basisOfRecord, hasCoordinate (alias isGeoreferenced), isInCluster, coordinateUncertaintyInMeters, datasetKey, year, catalogNumber, institutionCode, recordedBy, mediaType, ' +
-    'occurrenceStatus, and iucnRedListCategory. Counts sightings only by default, matching ' +
-    'gbif_search_occurrences — GBIF also indexes absence records, and for some taxa they are ' +
-    'the overwhelming majority. A count above 100,001 is the signal to partition rather than ' +
-    'page: gbif_search_occurrences cannot reach past that offset, so split the query by ' +
-    'DATASET_KEY via gbif_occurrence_facets and search each dataset separately.',
+    'Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. Accepts taxonKey (or checklistTaxonKey with checklistKey, for a Catalogue of Life key), country (uppercase ISO 3166-1 alpha-2), publishingCountry, stateProvince, gadmGid, scientificName, spatial ranges and geometry (intersected), month, basisOfRecord, hasCoordinate (alias isGeoreferenced), hasGeospatialIssue, isInCluster, coordinateUncertaintyInMeters, datasetKey, publishingOrg, year, catalogNumber, institutionCode, recordedBy, mediaType, typeStatus, establishmentMeans, license, occurrenceStatus, and iucnRedListCategory. Counts sightings only by default, matching gbif_search_occurrences — GBIF also indexes absence records, and for some taxa they are the overwhelming majority. A count above 100,001 is the signal to partition rather than page: gbif_search_occurrences cannot reach past that offset, so split the query by DATASET_KEY via gbif_occurrence_facets and search each dataset separately.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     scientificName: z
       .string()
       .optional()
       .describe(
-        'Scientific name; does not match synonyms. With taxonKey GBIF takes their union (OR), not their intersection. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
-      ),
-    decimalLatitude: z
-      .string()
-      .optional()
-      .describe(
-        'Latitude or latitude range "min,max" in decimal degrees (WGS84). All supplied spatial filters intersect, including geometry. Omit to leave latitude unbounded; blank or whitespace-only is rejected.',
-      ),
-    decimalLongitude: z
-      .string()
-      .optional()
-      .describe(
-        'Longitude or longitude range "min,max" in decimal degrees (WGS84). All supplied spatial filters intersect, including geometry. Omit to leave longitude unbounded; blank or whitespace-only is rejected.',
+        'Scientific name, which GBIF resolves to its accepted taxon, so a synonym counts the records of that taxon; a name shared across kingdoms, such as Oenanthe (a bird genus and a plant genus), counts zero — use taxonKey from gbif_match_species with kingdom set for one. With taxonKey GBIF takes their union (OR), not their intersection. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
       ),
     geometry: z
       .string()
@@ -85,19 +66,13 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .describe(
         'True counts likely duplicates; false excludes them. Omit to include all records. GBIF exposes membership only, with no cluster identifier.',
       ),
-    coordinateUncertaintyInMeters: z
-      .string()
-      .optional()
-      .describe(
-        'Coordinate uncertainty radius in meters, e.g. "0,1000"; range endpoints inclusive. Omit for any uncertainty; blank or whitespace-only is rejected.',
-      ),
     taxonKey: z
       .number()
       .int()
       .nonnegative()
       .optional()
       .describe(
-        'GBIF backbone taxon key from gbif_match_species. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
+        'GBIF backbone taxon key from gbif_match_species. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.). Rejected under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b — pass a Catalogue of Life key as checklistTaxonKey there.',
       ),
     country: z
       .string()
@@ -147,7 +122,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .enum(OCCURRENCE_STATUS_VALUES)
       .default('PRESENT')
       .describe(
-        "Presence/absence filter. Defaults to PRESENT: an ABSENT record documents a survey that looked for the taxon and did not find it, so counting one inflates the total with the opposite of a sighting. Use ANY for both (GBIF's own default), or ABSENT for non-observations alone. Matches the gbif_search_occurrences default, so the two tools agree.",
+        "Presence/absence filter. Defaults to PRESENT: an ABSENT record documents a survey that looked for the taxon and did not find it, so counting one inflates the total with the opposite of a sighting. Use ANY for both (GBIF's own default), or ABSENT for non-observations alone. DETECTED and NOT_DETECTED, the spelling records and OCCURRENCE_STATUS facet buckets carry, select the same records as PRESENT and ABSENT and are sent as given. Matches the gbif_search_occurrences default, so the two tools agree.",
       ),
     iucnRedListCategory: z
       .enum(IUCN_RED_LIST_CATEGORY_VALUES)
@@ -167,13 +142,13 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     occurrenceStatus: z
       .string()
       .describe(
-        'The presence/absence filter applied upstream — PRESENT, ABSENT, or ANY when no filter was sent. Says what the count covers.',
+        'The presence/absence filter applied upstream, as sent — PRESENT or DETECTED for sightings, ABSENT or NOT_DETECTED for absences, or ANY when no filter was sent. Says what the count covers.',
       ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when the count is zero under an exact-match stateProvince, gadmGid, or recordedBy filter, larger than gbif_search_occurrences can page to, or narrowed by a presence/absence filter. Absent when none applies.',
+        'Guidance when the count is zero under an exact-match stateProvince, gadmGid, or recordedBy filter, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, the count is larger than gbif_search_occurrences can page to, or a presence/absence filter narrowed it. Absent when none applies.',
       ),
   },
 
@@ -183,9 +158,9 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A string filter other than country and publishingCountry was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), hasCoordinate conflicts with isGeoreferenced, datasetKey is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
+      when: 'A string filter other than country and publishingCountry was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), hasCoordinate conflicts with isGeoreferenced, decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters is a bare "*", datasetKey or publishingOrg is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, checklistTaxonKey holds a character other than an uppercase letter or digit, taxonKey was supplied under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b or checklistTaxonKey without it, typeStatus or establishmentMeans names no concept in its GBIF vocabulary, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
       recovery:
-        'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
+        'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
     },
   ],
 
@@ -215,6 +190,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     ctx.enrich({ occurrenceStatus: input.occurrenceStatus, scope: occurrenceScope(filters) });
     const notice = [
       ...occurrenceNoMatchNotices(input, count),
+      exactCoordinateMatchNotice(input),
       overPaginationCapNotice(count),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]

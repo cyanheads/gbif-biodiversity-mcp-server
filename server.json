@@ -37,7 +37,7 @@
         },
         {
           "name": "GBIF_BASE_URL",
-          "description": "Base URL every GBIF API request is built from. Override to route through a proxy or a mirror of the GBIF v1 API.",
+          "description": "Base URL every GBIF API request is built from. Override to route through a proxy or a mirror of the GBIF v1 API. Keep the trailing /v1: checklistKey on the match tools, and includeLabels on Catalogue of Life facet buckets, call the /v2 route derived by replacing it, and fail without it.",
           "format": "string",
           "isRequired": false,
           "default": "https://api.gbif.org/v1"
@@ -117,7 +117,7 @@
         },
         {
           "name": "GBIF_BASE_URL",
-          "description": "Base URL every GBIF API request is built from. Override to route through a proxy or a mirror of the GBIF v1 API.",
+          "description": "Base URL every GBIF API request is built from. Override to route through a proxy or a mirror of the GBIF v1 API. Keep the trailing /v1: checklistKey on the match tools, and includeLabels on Catalogue of Life facet buckets, call the /v2 route derived by replacing it, and fail without it.",
           "format": "string",
           "isRequired": false,
           "default": "https://api.gbif.org/v1"

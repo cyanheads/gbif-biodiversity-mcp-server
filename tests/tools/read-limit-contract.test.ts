@@ -174,6 +174,52 @@ describe('read limit contract', () => {
     expect(JSON.stringify(past.content)).toContain('DATASET_KEY');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  /**
+   * #84 — the species and dataset ceilings are checked on the limit the clamp
+   * applied, so `limit` 1001 one page short of the ceiling is sent as 1,000 and
+   * keeps working; one record further fails before any request, the species
+   * kingdom/family/genus lookups included.
+   */
+  it.each([
+    {
+      name: 'species',
+      tool: gbifSearchSpecies,
+      ceiling: 100_000,
+      filters: { kingdom: 'Plantae', family: 'Fagaceae', genus: 'Quercus' },
+    },
+    {
+      name: 'datasets',
+      tool: gbifSearchDatasets,
+      ceiling: 125_000,
+      filters: { q: 'bird', type: 'CHECKLIST' },
+    },
+  ])(
+    'applies the $name limit before checking the offset ceiling',
+    async ({ tool, ceiling, filters }) => {
+      const fetch = fixture();
+      const edge = await runToolContract(tool, { limit: 1001, offset: ceiling - 1000 } as never);
+      expect(edge.isError).not.toBe(true);
+      expect(edge.structuredContent).toMatchObject({ limit: 1000, offset: ceiling - 1000 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(new URL(fetch.mock.calls[0][0]).searchParams.get('limit')).toBe('1000');
+      const past = await runToolContract(tool, {
+        ...filters,
+        limit: 1001,
+        offset: ceiling - 999,
+      } as never);
+      expect(past.isError).toBe(true);
+      expect(past.structuredContent?.error).toMatchObject({
+        data: {
+          reason: 'pagination_cap_exceeded',
+          recovery: { hint: expect.stringContaining(ceiling.toLocaleString('en-US')) },
+        },
+      });
+      expect(JSON.stringify(past.content)).toContain(
+        `offset + limit (${ceiling + 1}) exceeds ${ceiling.toLocaleString('en-US')}`,
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
   it('uses applied facet size for lookahead, re-slicing and continuation', async () => {
     const fetch = vi.fn().mockImplementation((address: string) => {
       const url = new URL(address);
@@ -314,6 +360,41 @@ describe('read limit contract', () => {
     const names = Array.from({ length: 51 }, (_, index) => `Species ${index}`);
     expect(gbifBulkMatchSpecies.input.safeParse({ names }).success).toBe(true);
     expect(gbifBulkMatchSpecies.input.safeParse({ names: [...names, ''] }).success).toBe(false);
+  });
+  /**
+   * #81 — the remainder returns each entry as submitted, so resubmitting it sends the
+   * kingdom an object entry carried rather than matching the bare name.
+   */
+  it('round-trips an object entry past the bulk cap with its kingdom', async () => {
+    const fetch = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({ matchType: 'NONE' }))),
+      );
+    vi.stubGlobal('fetch', fetch);
+    const tail = { name: 'Prunella', kingdom: 'Plantae' };
+    const names = [...Array.from({ length: 50 }, (_, i) => `Species ${i}`), tail];
+
+    const result = await runToolContract(gbifBulkMatchSpecies, { names });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.unprocessedNames).toEqual([tail]);
+    expect(JSON.stringify(result.content)).toContain('- Prunella (kingdom: Plantae)');
+    expect(fetch).toHaveBeenCalledTimes(50);
+
+    const next = await runToolContract(gbifBulkMatchSpecies, {
+      names: result.structuredContent?.unprocessedNames as typeof names,
+    });
+
+    expect(next.isError).not.toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(51);
+    const sent = new URL(fetch.mock.calls[50]?.[0] as string);
+    expect(sent.pathname).toBe('/v1/species/match');
+    expect(Object.fromEntries(sent.searchParams)).toEqual({
+      name: 'Prunella',
+      strict: 'false',
+      kingdom: 'Plantae',
+    });
   });
   it.each(cases)(
     'preserves $tool.name cap, lower bound and integer type',

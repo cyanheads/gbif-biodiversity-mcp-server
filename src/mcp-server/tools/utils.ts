@@ -6,22 +6,37 @@
 import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import {
+  CHECKLIST_KEY_VALUES,
+  type ChecklistKey,
+  COL_XR_CHECKLIST_KEY,
+  ESTABLISHMENT_MEANS_VALUES,
+  LICENSE_VALUES,
   MEDIA_TYPE_VALUES,
   OCCURRENCE_FILTER_KEYS,
   type OccurrenceFilters,
   type OccurrenceStatusFilter,
+  type RawChecklistSpeciesMatch,
   type RawContact,
   type RawDatasetRecord,
   type RawGeographicCoverage,
+  type RawSpeciesMatch,
   type RawTemporalCoverage,
+  TYPE_STATUS_VALUES,
 } from '@/services/gbif/types.js';
 
 /**
  * The biological filters as an occurrence tool parses them: GBIF's own filter set,
- * with `occurrenceStatus` widened to this server's `ANY` sentinel.
+ * with `occurrenceStatus` widened to this server's `ANY` sentinel, and `typeStatus`
+ * and `establishmentMeans` as the caller wrote them, before each is matched to its
+ * concept.
  */
-export type OccurrenceFilterInput = Omit<OccurrenceFilters, 'occurrenceStatus'> & {
+export type OccurrenceFilterInput = Omit<
+  OccurrenceFilters,
+  'occurrenceStatus' | 'typeStatus' | 'establishmentMeans'
+> & {
   occurrenceStatus: OccurrenceStatusFilter;
+  typeStatus?: string | undefined;
+  establishmentMeans?: string | undefined;
 };
 
 /** Filter echo shared by occurrence search, count and facets on both response surfaces. */
@@ -31,25 +46,100 @@ export const occurrenceScopeSchema = z
     'Effective supplied biological filters, with occurrenceStatus always included; excludes pagination and facet controls.',
   );
 
-/** Preserve supplied filter bytes and false/zero values; controls never enter the scope. */
+/**
+ * Preserve supplied filter bytes and false/zero values; controls never enter the
+ * scope. The one exception is `typeStatus` and `establishmentMeans`: each echoes
+ * the concept it was matched to, in GBIF's spelling, because that concept is what
+ * was sent and what the scope has to describe — `" holotype "` echoes `Holotype`.
+ */
 export function occurrenceScope(input: OccurrenceFilterInput) {
+  const sent = { ...input, ...occurrenceConcepts(input) };
   return Object.fromEntries(
-    OCCURRENCE_FILTER_KEYS.flatMap((key) => (input[key] === undefined ? [] : [[key, input[key]]])),
+    OCCURRENCE_FILTER_KEYS.flatMap((key) => (sent[key] === undefined ? [] : [[key, sent[key]]])),
   );
 }
 
 /**
  * The filter set to send upstream for a tool's parsed filter fields. GBIF has no
- * term meaning "either", so `ANY` resolves to sending no `occurrenceStatus` at all.
+ * term meaning "either", so `ANY` resolves to sending no `occurrenceStatus` at all,
+ * and `typeStatus` and `establishmentMeans` go out as their concepts' own spelling.
  * Callers pass their filter fields with the controls (limit, facet, …) already
- * destructured off; the service forwards only filter keys regardless.
+ * destructured off; the service forwards only filter keys regardless. Run
+ * `occurrenceFilterViolation` first: a concept value it would reject throws here.
  */
 export function occurrenceFilters({
   occurrenceStatus,
+  typeStatus,
+  establishmentMeans,
   ...filters
 }: OccurrenceFilterInput): OccurrenceFilters {
-  return { ...filters, ...(occurrenceStatus !== 'ANY' && { occurrenceStatus }) };
+  return {
+    ...filters,
+    ...occurrenceConcepts({ typeStatus, establishmentMeans }),
+    ...(occurrenceStatus !== 'ANY' && { occurrenceStatus }),
+  };
 }
+
+/**
+ * Each concept vocabulary keyed by its concepts' lowercased names. No two concepts
+ * in either vocabulary lowercase to the same name, so a match is never ambiguous.
+ */
+const foldConcepts = <T extends string>(concepts: readonly T[]): ReadonlyMap<string, T> =>
+  new Map(concepts.map((concept) => [concept.toLowerCase(), concept]));
+const TYPE_STATUS_CONCEPTS = foldConcepts(TYPE_STATUS_VALUES);
+const ESTABLISHMENT_MEANS_CONCEPTS = foldConcepts(ESTABLISHMENT_MEANS_VALUES);
+
+/**
+ * The concept a caller's value names: matched ignoring case and surrounding
+ * whitespace, since GBIF matches only the exact concept name and answers `holotype`
+ * or `Introduced` with zero records, though neither can mean anything else.
+ */
+const conceptOf = <T extends string>(concepts: ReadonlyMap<string, T>, value: string) =>
+  concepts.get(value.trim().toLowerCase());
+
+/**
+ * `conceptOf` for a value `occurrenceFilterViolation` already passed. Dropping an
+ * unmatched one would send no filter and widen the query, so it throws instead.
+ */
+function knownConcept<T extends string>(
+  concepts: ReadonlyMap<string, T>,
+  field: string,
+  value: string,
+): T {
+  const concept = conceptOf(concepts, value);
+  if (concept === undefined)
+    throw new Error(`${field} "${value}" reached the filter set unchecked.`);
+  return concept;
+}
+
+/** The supplied `typeStatus` and `establishmentMeans`, each as the concept it names. */
+function occurrenceConcepts({
+  typeStatus,
+  establishmentMeans,
+}: Pick<OccurrenceFilterInput, 'typeStatus' | 'establishmentMeans'>): Pick<
+  OccurrenceFilters,
+  'typeStatus' | 'establishmentMeans'
+> {
+  return {
+    ...(typeStatus !== undefined && {
+      typeStatus: knownConcept(TYPE_STATUS_CONCEPTS, 'typeStatus', typeStatus),
+    }),
+    ...(establishmentMeans !== undefined && {
+      establishmentMeans: knownConcept(
+        ESTABLISHMENT_MEANS_CONCEPTS,
+        'establishmentMeans',
+        establishmentMeans,
+      ),
+    }),
+  };
+}
+
+/** The coordinate filters GBIF reads as a range only when the value holds a comma. */
+const COORDINATE_FILTERS = [
+  'decimalLatitude',
+  'decimalLongitude',
+  'coordinateUncertaintyInMeters',
+] as const;
 
 /**
  * The characters a GADM GID is built from — `ESP`, `ESP.1_1`, `ESP.1.6.3_1`, and
@@ -58,6 +148,18 @@ export function occurrenceFilters({
  * is linear in the input.
  */
 const GADM_GID = /^[A-Z0-9._]+$/;
+
+/**
+ * The characters a Catalogue of Life key is built from — `3WSJV`, `N`, `8288` — which
+ * GBIF matches case-sensitively. One anchored character class, so the scan is linear
+ * in the input.
+ */
+const COL_TAXON_KEY = /^[0-9A-Z]+$/;
+
+/** True when `value` has the shape of a Catalogue of Life taxon key. */
+export function isColTaxonKey(value: string): boolean {
+  return COL_TAXON_KEY.test(value);
+}
 
 /**
  * Message for the first unusable filter among the free-text and key-shaped ones
@@ -79,9 +181,24 @@ const GADM_GID = /^[A-Z0-9._]+$/;
  * gadmGid is checked against the GID alphabet because GBIF matches a GID exactly
  * and case-sensitively and answers any other form — `esp.1_1`, a place name, a
  * padded value — with 200 and zero records rather than an error.
+ *
+ * A bare `*` on a coordinate filter is refused because GBIF answers it with HTTP
+ * 404 and an empty body, which reaches the caller as a not-found with no reason;
+ * `*` works only as one end of a `coordinateUncertaintyInMeters` range (`*,1000`).
+ *
+ * publishingOrg is checked like datasetKey. typeStatus and establishmentMeans must
+ * name a concept of their vocabulary, ignoring case and surrounding whitespace,
+ * because GBIF answers any other string with 200 and zero records.
+ *
+ * Each taxon key must match its checklist: GBIF reads `taxonKey` against the
+ * checklist `checklistKey` selects, and answers a key from the other one with 200
+ * and zero records — or, for a digit-only key both checklists hold, with an
+ * unrelated taxon (8288 is the Catalogue of Life genus Tringa and the Backbone family
+ * Lagenismataceae). So taxonKey is refused under the Catalogue of Life, and
+ * checklistTaxonKey, whose alphabet is checked first, anywhere else.
  */
 export function occurrenceFilterViolation(
-  input: Omit<OccurrenceFilters, 'occurrenceStatus'>,
+  input: Omit<OccurrenceFilterInput, 'occurrenceStatus'>,
 ): string | undefined {
   const blank = firstBlankFilter({
     scientificName: input.scientificName,
@@ -95,13 +212,35 @@ export function occurrenceFilterViolation(
     catalogNumber: input.catalogNumber,
     institutionCode: input.institutionCode,
     recordedBy: input.recordedBy,
+    typeStatus: input.typeStatus,
+    establishmentMeans: input.establishmentMeans,
+    checklistTaxonKey: input.checklistTaxonKey,
   });
   if (blank)
     return `${blank} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`;
+  const star = COORDINATE_FILTERS.find((field) => input[field]?.trim() === '*');
+  if (star)
+    return `${star} "${input[star]}" is not a range: GBIF needs both ends, written "min,max" with each end inclusive${star === 'coordinateUncertaintyInMeters' ? ', where "*" may stand for one open end, as in "*,1000"' : ''}. Omit the field to leave it unfiltered.`;
   if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey))
     return `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`;
+  if (input.publishingOrg !== undefined && !isGbifUuid(input.publishingOrg))
+    return `publishingOrg "${input.publishingOrg}" is not a GBIF organization UUID.`;
   if (input.gadmGid !== undefined && !GADM_GID.test(input.gadmGid))
     return `gadmGid "${input.gadmGid}" is not a GADM GID: a GID holds only uppercase letters, digits, dots, and underscores (ESP, ESP.1_1, ESP.1.5_1), and GBIF matches any other form against nothing.`;
+  if (input.checklistTaxonKey !== undefined && !isColTaxonKey(input.checklistTaxonKey))
+    return `checklistTaxonKey "${input.checklistTaxonKey}" is not a Catalogue of Life key: a key holds only uppercase letters and digits (3WSJV, 8288), and GBIF matches it case-sensitively, so a lowercase form matches nothing.`;
+  const colChecklist = input.checklistKey === COL_XR_CHECKLIST_KEY;
+  if (colChecklist && input.taxonKey !== undefined)
+    return `taxonKey ${input.taxonKey} is a Backbone key, but checklistKey ${COL_XR_CHECKLIST_KEY} makes GBIF read taxonKey as a Catalogue of Life key, where a Backbone key matches nothing or an unrelated taxon. Pass the Catalogue of Life key as checklistTaxonKey instead, or omit checklistKey to scope by the Backbone taxonKey.`;
+  if (!colChecklist && input.checklistTaxonKey !== undefined)
+    return `checklistTaxonKey "${input.checklistTaxonKey}" is a Catalogue of Life key, so it needs checklistKey ${COL_XR_CHECKLIST_KEY}: under the Backbone, the default, GBIF reads it as a Backbone key and matches nothing or an unrelated taxon. Set checklistKey to ${COL_XR_CHECKLIST_KEY}, or pass a Backbone key as taxonKey instead.`;
+  if (input.typeStatus !== undefined && !conceptOf(TYPE_STATUS_CONCEPTS, input.typeStatus))
+    return `typeStatus "${input.typeStatus}" names no concept in GBIF's TypeStatus vocabulary, and GBIF would match it against nothing. Use one of ${TYPE_STATUS_VALUES.join(', ')} — letter case does not matter.`;
+  if (
+    input.establishmentMeans !== undefined &&
+    !conceptOf(ESTABLISHMENT_MEANS_CONCEPTS, input.establishmentMeans)
+  )
+    return `establishmentMeans "${input.establishmentMeans}" names no concept in GBIF's EstablishmentMeans vocabulary, and GBIF would match it against nothing. Use one of ${ESTABLISHMENT_MEANS_VALUES.join(', ')} — letter case does not matter.`;
   return;
 }
 
@@ -112,6 +251,36 @@ export function occurrenceFilterViolation(
  */
 export function sharedOccurrenceFilterFields() {
   return {
+    checklistKey: z
+      .enum(CHECKLIST_KEY_VALUES)
+      .optional()
+      .describe(
+        'Taxonomy taxon keys are read in, both in this scope and in KINGDOM_KEY through SPECIES_KEY facet buckets. Omitted, or d7dddbf4-2cf0-4f39-9b2a-bb099caae36c, is the GBIF Backbone, whose integer keys taxonKey takes; GBIF no longer updates it. 7ddf754f-d193-4cc9-b351-99906754a03b is the Catalogue of Life eXtended Release, the taxonomy GBIF now maintains: scope by one of its keys with checklistTaxonKey, which requires this value, and taxonKey is rejected under it. Records keep their Backbone taxonKey either way.',
+      ),
+    checklistTaxonKey: z
+      .string()
+      .optional()
+      .describe(
+        'Catalogue of Life taxon key, such as 3WSJV (Lynx pardinus), to scope to that taxon and every descendant — the checklistTaxonKey gbif_match_species or gbif_bulk_match_species returns under the same checklistKey, or a KINGDOM_KEY through SPECIES_KEY bucket of gbif_occurrence_facets under it. Requires checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b, and goes to GBIF as its taxonKey. Uppercase letters and digits only, matched case-sensitively; a digit-only key such as 8288 (the genus Tringa) is not the Backbone taxonKey of the same spelling, which names an unrelated taxon. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    decimalLatitude: z
+      .string()
+      .optional()
+      .describe(
+        'Latitude in decimal degrees (WGS84) as a range "min,max", both ends inclusive (e.g. "47.0,48.5"); pair it with a decimalLongitude range for a bounding box. A value without a comma is not a range: GBIF matches only records at exactly that latitude, so "38" is not "around 38". All supplied spatial filters intersect, geometry included. Omit the field to leave latitude unbounded — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    decimalLongitude: z
+      .string()
+      .optional()
+      .describe(
+        'Longitude in decimal degrees (WGS84) as a range "min,max", both ends inclusive (e.g. "8.0,9.5"); pair it with a decimalLatitude range for a bounding box. A value without a comma is not a range: GBIF matches only records at exactly that longitude, so "-3" is not "around -3". All supplied spatial filters intersect, geometry included. Omit the field to leave longitude unbounded — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    coordinateUncertaintyInMeters: z
+      .string()
+      .optional()
+      .describe(
+        'Coordinate uncertainty in meters as a range "min,max", both ends inclusive, where "*" may stand for one open end: "0,1000" or "*,1000" keeps records placed to within 1 km. A value without a comma is not an upper bound: GBIF matches only records whose uncertainty is exactly that value, so "1000" is not "within 1 km". Omit the field to accept any uncertainty — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
     gadmGid: z
       .string()
       .optional()
@@ -141,6 +310,36 @@ export function sharedOccurrenceFilterFields() {
       .optional()
       .describe(
         'Only records carrying at least one media item of this type: StillImage (photographs, scans), MovingImage (video), Sound (audio), or InteractiveResource. Records without media are excluded when this is set.',
+      ),
+    publishingOrg: z
+      .string()
+      .optional()
+      .describe(
+        'UUID (8-4-4-4-12 hex) of the GBIF organization that published the records, to scope to what it shares across all its datasets — not the organization whose installation hosts them, and not publishingCountry. Take one from gbif_search_publishers, the publishingOrganizationKey of gbif_get_dataset, a gbif_search_datasets row, gbif_get_occurrence, or a gbif_search_occurrences row, or a PUBLISHING_ORG facet on gbif_occurrence_facets; a well-formed key GBIF does not hold matches zero records. Omit the field to leave it unfiltered — an empty string is rejected rather than read as no filter, because GBIF answers a blank publishingOrg with the unfiltered scope.',
+      ),
+    hasGeospatialIssue: z
+      .boolean()
+      .optional()
+      .describe(
+        'True keeps only records GBIF flagged with a spatial issue when interpreting them — zero coordinates, coordinates out of range, or coordinates outside the stated country, for example; false keeps only records with no such flag. GBIF often drops the coordinates of a flagged record, and a record without coordinates can carry either value, so for records to map pair false with hasCoordinate true. Omit for both.',
+      ),
+    typeStatus: z
+      .string()
+      .optional()
+      .describe(
+        "Nomenclatural type status of a specimen — a concept from GBIF's TypeStatus vocabulary such as Holotype, Isotype, Lectotype, Paratype, Syntype, Neotype, Type, or NotAType. Matched ignoring case and surrounding whitespace, then sent and echoed in scope in GBIF's own spelling; a value naming no concept is rejected with the full list. A concept also matches every narrower one — Type covers every kind of type, Lectotype covers Isolectotype — and a TYPE_STATUS facet on gbif_occurrence_facets lists the concepts in a scope. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.",
+      ),
+    establishmentMeans: z
+      .string()
+      .optional()
+      .describe(
+        "How the organism came to be where it was recorded — a concept from GBIF's EstablishmentMeans vocabulary: native, nativeEndemic, nativeReintroduced, introduced, introducedAssistedColonisation, uncertain, or vagrant. Matched ignoring case and surrounding whitespace, then sent and echoed in scope in GBIF's own spelling; any other value is rejected. A concept also matches its narrower ones: native covers nativeEndemic and nativeReintroduced, and introduced covers introducedAssistedColonisation. Most records state none and match no value. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.",
+      ),
+    license: z
+      .enum(LICENSE_VALUES)
+      .optional()
+      .describe(
+        'License the record is published under, as its GBIF code: CC0_1_0, CC_BY_4_0, or CC_BY_NC_4_0 — every record carries one of the three. A record states its license as a Creative Commons URL instead (http://creativecommons.org/licenses/by/4.0/legalcode for CC_BY_4_0), which this filter does not take.',
       ),
   };
 }
@@ -299,19 +498,68 @@ export function recordedByNoMatchNotice(
 }
 
 /**
+ * Agent-facing guidance when a query that carried `scientificName` matched nothing,
+ * or `undefined` otherwise.
+ *
+ * GBIF resolves the name against the Backbone, synonyms included, but answers a
+ * name shared across kingdoms with 200 and zero records: `Oenanthe` (a bird genus
+ * and a plant genus) counts none while `taxonKey` 2492483 counts millions. That
+ * zero cannot be told apart from a taxon with no records in scope, so the notice
+ * names the key route, where a kingdom picks one taxon.
+ */
+export function scientificNameNoMatchNotice(
+  scientificName: string | undefined,
+  matched: number,
+): string | undefined {
+  if (!scientificName?.trim() || matched > 0) return;
+  return `Nothing matched, and scientificName "${scientificName}" was applied. GBIF resolves the name against the Backbone, synonyms included, but answers a name shared across kingdoms (Oenanthe is a bird genus and a plant genus) with zero records instead of an error, so this result does not distinguish such a name from a taxon with no records in this scope. Resolve the name with gbif_match_species, setting kingdom for a shared name, and pass the returned taxonKey instead.`;
+}
+
+/**
  * Every exact-match no-result notice that applies to an occurrence query — one
  * call per tool, in a fixed order, so search, count, and facets explain an empty
  * result identically. Entries that do not apply are `undefined`.
  */
 export function occurrenceNoMatchNotices(
-  input: Pick<OccurrenceFilters, 'stateProvince' | 'gadmGid' | 'recordedBy'>,
+  input: Pick<OccurrenceFilters, 'scientificName' | 'stateProvince' | 'gadmGid' | 'recordedBy'>,
   matched: number,
 ): (string | undefined)[] {
   return [
+    scientificNameNoMatchNotice(input.scientificName, matched),
     stateProvinceNoMatchNotice(input.stateProvince, matched),
     gadmGidNoMatchNotice(input.gadmGid, matched),
     recordedByNoMatchNotice(input.recordedBy, matched),
   ];
+}
+
+/**
+ * Agent-facing note naming each coordinate filter supplied without a comma, or
+ * `undefined` when there is none. Search, count, and facets each add it to every
+ * result they return.
+ *
+ * GBIF reads `decimalLatitude`, `decimalLongitude`, and
+ * `coordinateUncertaintyInMeters` as a range only when the value holds a comma, and
+ * anything else as one exact value: on one measured scope `decimalLatitude: "38"`
+ * matches 0 records where `"38,39"` matches 504, and
+ * `coordinateUncertaintyInMeters: "1000"` matches 1 where `"0,1000"` matches 615. A
+ * single value reads as "near" or "within" and is neither. It is still forwarded
+ * unchanged — the exact match is a filter GBIF answers and a caller can mean it —
+ * so the note rides every result, not only an empty one.
+ *
+ * The comma alone decides. Padding does not change the reading (GBIF trims it), and
+ * every comma form either ranges or fails upstream before any result exists.
+ */
+export function exactCoordinateMatchNotice(
+  input: Pick<OccurrenceFilters, (typeof COORDINATE_FILTERS)[number]>,
+): string | undefined {
+  const exact = COORDINATE_FILTERS.filter((field) => {
+    const value = input[field];
+    return value !== undefined && !value.includes(',');
+  });
+  if (exact.length === 0) return;
+  const fields = new Intl.ListFormat('en', { type: 'conjunction' }).format(exact);
+  const [verb, pronoun] = exact.length === 1 ? ['has', 'it'] : ['have', 'each'];
+  return `${fields} ${verb} no comma, so GBIF matched ${pronoun} as one exact value — only records at exactly that value, not a range around it. Send a range as "min,max", both ends inclusive ("38,39"; "0,1000" for within 1 km).`;
 }
 
 /**
@@ -321,13 +569,21 @@ export function occurrenceNoMatchNotices(
  * The occurrence tools default to `PRESENT` because an `ABSENT` record documents
  * a survey that looked and did not find the taxon — counting one as a sighting
  * inverts what the record asserts. The default must never be silent, so every
- * tool that applies it emits this alongside its results.
+ * tool that applies it emits this alongside its results. `DETECTED` and
+ * `NOT_DETECTED` select the same records as `PRESENT` and `ABSENT` and announce
+ * the same way.
  */
 export function occurrenceStatusNotice(status: OccurrenceStatusFilter): string | undefined {
-  if (status === 'ANY') return;
-  return status === 'PRESENT'
-    ? 'Absence records — occurrenceStatus ABSENT, meaning a survey looked for the taxon and did not find it — are excluded from these figures. Pass occurrenceStatus "ANY" to include them, or "ABSENT" for absences alone.'
-    : 'Only absence records are included — occurrenceStatus ABSENT means a survey looked for the taxon and did not find it, so these are not sightings. Pass occurrenceStatus "ANY" for both, or "PRESENT" for sightings alone.';
+  switch (status) {
+    case 'ANY':
+      return;
+    case 'PRESENT':
+    case 'DETECTED':
+      return 'Absence records — occurrenceStatus ABSENT, meaning a survey looked for the taxon and did not find it — are excluded from these figures. Pass occurrenceStatus "ANY" to include them, or "ABSENT" for absences alone.';
+    case 'ABSENT':
+    case 'NOT_DETECTED':
+      return 'Only absence records are included — occurrenceStatus ABSENT means a survey looked for the taxon and did not find it, so these are not sightings. Pass occurrenceStatus "ANY" for both, or "PRESENT" for sightings alone.';
+  }
 }
 
 const CLASSIFICATION_RANKS = [
@@ -341,14 +597,165 @@ const CLASSIFICATION_RANKS = [
 ] as const;
 type ClassificationRank = (typeof CLASSIFICATION_RANKS)[number];
 
-/** The `/species/match` fields a HIGHERRANK disclosure reads; GBIF sends JSON null for absent ones. */
-type HigherRankMatch = {
-  usageKey?: number | null;
-  rank?: string | null;
-  canonicalName?: string | null;
-} & { [R in ClassificationRank]?: string | null } & {
+/** The flat Backbone classification of a `/species/match` answer; GBIF sends JSON null for absent fields. */
+type BackboneClassification = { [R in ClassificationRank]?: string | null } & {
   [R in ClassificationRank as `${R}Key`]?: number | null;
 };
+
+/**
+ * The key a match tool hands downstream, in the field its checklist owns: a Backbone
+ * integer in `taxonKey`, or a Catalogue of Life string in `checklistTaxonKey`. The two
+ * never share a field — a digit-only COL key (`8288`, the genus Tringa) parses as an
+ * unrelated Backbone key (`8288`, the family Lagenismataceae). `matched` is the key of
+ * the name GBIF matched, present only when that name is a synonym of the taxon `value` is.
+ */
+export type MatchKey =
+  | { field: 'taxonKey'; value: number; matched?: number }
+  | { field: 'checklistTaxonKey'; value: string; matched?: string };
+
+/** One matched name as both match tools read it, whichever checklist answered. */
+export type MatchedTaxon = {
+  key: MatchKey;
+  matchType: string;
+  confidence: number | undefined;
+  /** The matched name, with authorship — the synonym itself when `key.matched` is set. */
+  scientificName: string | undefined;
+  canonicalName: string | undefined;
+  rank: string | undefined;
+  status: string | undefined;
+  /** Canonical name of the accepted taxon a synonym resolves to, when the answer names it. */
+  acceptedName?: string;
+  /** The accepted taxon's classification at the seven principal ranks. */
+  classification: { [R in ClassificationRank]?: string };
+  /** Backbone rank keys; empty under the Catalogue of Life, whose rank keys are not surfaced. */
+  classificationKeys: { [R in ClassificationRank as `${R}Key`]?: number };
+};
+
+/** A species-match answer: a matched taxon, or no usable match with GBIF's note when it gave one. */
+export type SpeciesMatch = { kind: 'none'; note?: string } | { kind: 'match'; taxon: MatchedTaxon };
+
+/**
+ * Canonical name of the accepted taxon a Backbone synonym match resolves to, read from
+ * the match itself. `/species/match` has no accepted-name field, `verbose=true`
+ * included, but its classification fields are the accepted taxon's, so the rank field
+ * whose key equals `acceptedKey` names it: `Parus caeruleus` carries species "Cyanistes
+ * caeruleus" under speciesKey 2487879, its acceptedUsageKey. Identity is proven by that
+ * key, never assumed from a rank — for `Chrysanthemum leucanthemum` the speciesKey
+ * 8848598 names Leucanthemum vulgare while the accepted taxon, 7222149, is a subspecies
+ * no rank field holds — so with no matching key the accepted taxon goes unnamed.
+ */
+export function backboneAcceptedName(
+  match: BackboneClassification,
+  acceptedKey: number,
+): string | undefined {
+  const rank = CLASSIFICATION_RANKS.find((r) => match[`${r}Key`] === acceptedKey);
+  return rank ? (match[rank] ?? undefined) : undefined;
+}
+
+/** A `/v1/species/match` answer, read against the Backbone. */
+export function fromBackboneMatch(raw: RawSpeciesMatch): SpeciesMatch {
+  // Presence, not truthiness: usageKey 0 is the Backbone kingdom incertae sedis.
+  if (raw.usageKey == null || raw.matchType == null || raw.matchType === 'NONE') {
+    return { kind: 'none', ...(raw.note && { note: raw.note }) };
+  }
+  /**
+   * `taxonKey` is the accepted taxon's key, which is what makes it safe to hand straight
+   * to the occurrence tools: filtering on the synonym's own key returns only the records
+   * filed under that name.
+   */
+  const matched = raw.usageKey;
+  const value = raw.acceptedUsageKey ?? matched;
+  const acceptedName = value === matched ? undefined : backboneAcceptedName(raw, value);
+  return {
+    kind: 'match',
+    taxon: {
+      key: { field: 'taxonKey', value, ...(value !== matched && { matched }) },
+      matchType: raw.matchType,
+      confidence: raw.confidence ?? undefined,
+      scientificName: raw.scientificName ?? undefined,
+      canonicalName: raw.canonicalName ?? undefined,
+      rank: raw.rank ?? undefined,
+      status: raw.status ?? undefined,
+      ...(acceptedName !== undefined && { acceptedName }),
+      classification: Object.fromEntries(
+        CLASSIFICATION_RANKS.flatMap((r) => (raw[r] != null ? [[r, raw[r]]] : [])),
+      ),
+      classificationKeys: Object.fromEntries(
+        CLASSIFICATION_RANKS.flatMap((r) => {
+          const key = raw[`${r}Key`];
+          return key != null ? [[`${r}Key`, key]] : [];
+        }),
+      ),
+    },
+  };
+}
+
+/**
+ * A `/v2/species/match` answer, read against the Catalogue of Life. The fields v1 keeps
+ * at the top level sit under `diagnostics`, the matched and accepted taxa under `usage`
+ * and `acceptedUsage` with string keys, and the classification is a list over more ranks
+ * than the seven read here. The accepted name is `acceptedUsage.canonicalName`, never
+ * `.name`, which carries authorship.
+ */
+export function fromChecklistMatch(raw: RawChecklistSpeciesMatch): SpeciesMatch {
+  const { usage, acceptedUsage, diagnostics } = raw;
+  const matchType = diagnostics?.matchType;
+  if (usage?.key == null || matchType == null || matchType === 'NONE') {
+    return { kind: 'none', ...(diagnostics?.note && { note: diagnostics.note }) };
+  }
+  const matched = usage.key;
+  const value = acceptedUsage?.key ?? matched;
+  const acceptedName = value === matched ? undefined : (acceptedUsage?.canonicalName ?? undefined);
+  return {
+    kind: 'match',
+    taxon: {
+      key: { field: 'checklistTaxonKey', value, ...(value !== matched && { matched }) },
+      matchType,
+      confidence: diagnostics?.confidence ?? undefined,
+      scientificName: usage.name ?? undefined,
+      canonicalName: usage.canonicalName ?? undefined,
+      rank: usage.rank ?? undefined,
+      status: usage.status ?? undefined,
+      ...(acceptedName !== undefined && { acceptedName }),
+      classification: Object.fromEntries(
+        CLASSIFICATION_RANKS.flatMap((r) => {
+          const node = raw.classification?.find((n) => n.rank === r.toUpperCase());
+          return node?.name ? [[r, node.name]] : [];
+        }),
+      ),
+      classificationKeys: {},
+    },
+  };
+}
+
+/**
+ * Match one name against the checklist `checklistKey` selects. Omitted, or the Backbone,
+ * sends `/v1/species/match` exactly as before the parameter existed; the Catalogue of
+ * Life goes through `/v2/species/match`, the only route that matches against it.
+ */
+export async function matchName(
+  params: { name: string; strict: boolean; kingdom?: string; rank?: string },
+  checklistKey: ChecklistKey | undefined,
+  ctx: Context,
+): Promise<SpeciesMatch> {
+  const gbif = getGbifService();
+  return checklistKey === COL_XR_CHECKLIST_KEY
+    ? fromChecklistMatch(await gbif.matchChecklistSpecies({ ...params, checklistKey }, ctx))
+    : fromBackboneMatch(await gbif.matchSpecies(params, ctx));
+}
+
+/** The output fields carrying a match's keys, named for the checklist that answered. */
+export function matchKeyFields(key: MatchKey) {
+  return key.field === 'taxonKey'
+    ? {
+        taxonKey: key.value,
+        ...(key.matched !== undefined && { matchedTaxonKey: key.matched }),
+      }
+    : {
+        checklistTaxonKey: key.value,
+        ...(key.matched !== undefined && { checklistMatchedTaxonKey: key.matched }),
+      };
+}
 
 /**
  * Disclosure for a HIGHERRANK match, shared by gbif_match_species and gbif_bulk_match_species.
@@ -360,16 +767,17 @@ type HigherRankMatch = {
  * named as missing, never filled in.
  *
  * The taxon GBIF falls back to can itself be a synonym — `Nyctea xyzzyqq` comes back as
- * the genus Nyctea, whose accepted genus is Bubo — and then taxonKey is that accepted
- * taxon, not the one GBIF named. `/species/match` carries no accepted-name field, but its
- * classification is the accepted taxon's: the rank field whose key equals taxonKey names
- * it (genus "Bubo" under genusKey 5959091). Identity is proven by that key, never assumed
- * from the rank — for `Chrysanthemum leucanthemum` the speciesKey 8848598 names
- * Leucanthemum vulgare while the accepted taxon is 7222149 — so with no matching key the
- * accepted taxon goes unnamed.
+ * the genus Nyctea, whose accepted genus is Bubo — and then the key is that accepted
+ * taxon, not the one GBIF named, so the note names the accepted taxon when the answer
+ * does. Only a Backbone key gets the gbif_get_species pointer, which takes Backbone
+ * integers; a Catalogue of Life key reaches the occurrence tools only as
+ * checklistTaxonKey beside its own checklistKey, so its pointer says so.
  */
-export function higherRankNote(name: string, taxonKey: number, match: HigherRankMatch): string {
-  const { rank, canonicalName } = match;
+export function higherRankNote(
+  name: string,
+  match: Pick<MatchedTaxon, 'key' | 'rank' | 'canonicalName' | 'acceptedName'>,
+): string {
+  const { key, rank, canonicalName, acceptedName } = match;
   const taxon =
     canonicalName && rank
       ? `${canonicalName}, rank ${rank}`
@@ -379,16 +787,18 @@ export function higherRankNote(name: string, taxonKey: number, match: HigherRank
           ? `a taxon of rank ${rank} (GBIF reported no name)`
           : 'a higher taxon GBIF did not name';
   const head = `GBIF returned a higher-rank match for "${name}" (matchType HIGHERRANK): ${taxon}`;
-  const reach = 'so the occurrence tools given it count and return records across all of it.';
-  if (match.usageKey == null || match.usageKey === taxonKey) {
-    const lookup = canonicalName ? '' : ` Call gbif_get_species with ${taxonKey} to see which.`;
-    return `${head}. taxonKey ${taxonKey} covers that whole taxon, ${reach}${lookup}`;
+  const backbone = key.field === 'taxonKey';
+  const reach = backbone
+    ? ', so the occurrence tools given it count and return records across all of it.'
+    : `, so the occurrence tools given it as checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}, count and return records across all of it.`;
+  const lookup = (which: string) =>
+    backbone ? ` Call gbif_get_species with ${key.value} to see which${which}.` : '';
+  if (key.matched === undefined) {
+    return `${head}. ${key.field} ${key.value} covers that whole taxon${reach}${canonicalName ? '' : lookup('')}`;
   }
-  const acceptedRank = CLASSIFICATION_RANKS.find((r) => match[`${r}Key`] === taxonKey);
-  const accepted = acceptedRank ? match[acceptedRank] : undefined;
-  return accepted
-    ? `${head}, a synonym. taxonKey ${taxonKey} is its accepted taxon, ${accepted}, and covers all of ${accepted}, ${reach}`
-    : `${head}, a synonym. taxonKey ${taxonKey} is its accepted taxon and covers all of that taxon, ${reach} Call gbif_get_species with ${taxonKey} to see which taxon that is.`;
+  return acceptedName
+    ? `${head}, a synonym. ${key.field} ${key.value} is its accepted taxon, ${acceptedName}, and covers all of ${acceptedName}${reach}`
+    : `${head}, a synonym. ${key.field} ${key.value} is its accepted taxon and covers all of that taxon${reach}${lookup(' taxon that is')}`;
 }
 
 /**

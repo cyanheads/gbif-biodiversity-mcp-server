@@ -11,6 +11,27 @@ import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import { escapeMarkdownText, firstBlankFilter, isGbifUuid, stripHtml } from '../utils.js';
 
 /**
+ * Largest `offset + limit` GBIF's `/dataset/search` serves, whatever the filter. A
+ * larger sum answers HTTP 500 at any offset, which a retry cannot change, so the
+ * sum is checked before the request.
+ */
+const DATASET_SEARCH_CEILING = 125_000;
+
+/**
+ * Guidance when more datasets match than the ceiling lets a caller page to, or
+ * `undefined` when every match is reachable. Emitted on every page rather than at
+ * the wall, since the choice between paging and narrowing is made on the first.
+ *
+ * `type` leads the narrowing route because it partitions: every dataset carries
+ * exactly one of the four types the filter accepts, so the four type totals sum to
+ * the unfiltered total with nothing dropped and nothing counted twice.
+ */
+function overCeilingNotice(totalCount: number): string | undefined {
+  if (totalCount <= DATASET_SEARCH_CEILING) return;
+  return `${totalCount.toLocaleString('en-US')} datasets match, past the offset+limit ceiling of ${DATASET_SEARCH_CEILING.toLocaleString('en-US')} that GBIF's dataset search serves, so datasets deeper than that cannot be paged to. Narrow the search until it fits — type splits the index with no gap or overlap, since every dataset has exactly one of the four types, and q, publishingCountry, publishingOrg, and hostingOrg narrow it further.`;
+}
+
+/**
  * Empty-result and pagination-overshoot guidance.
  *
  * The empty case splits on whether both organization filters were applied.
@@ -88,7 +109,14 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of datasets to return (default 20, max 1000).'),
-    offset: z.number().int().min(0).default(0).describe('Pagination offset.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        "Pagination offset. offset + limit may not exceed 125,000, the deepest page GBIF's dataset search serves; narrow a larger match with type, q, publishingCountry, publishingOrg, or hostingOrg instead of paging past it.",
+      ),
   }),
   output: z.object({
     datasets: z
@@ -145,11 +173,18 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, paging overshot, or an oversized read limit was clamped. Absent when none applies.',
+        'Guidance when results are empty, paging overshot, an oversized read limit was clamped, or more datasets match than the 125,000 offset+limit ceiling lets a caller page to. Absent when none applies.',
       ),
   },
 
   errors: [
+    {
+      reason: 'pagination_cap_exceeded',
+      code: JsonRpcErrorCode.ValidationError,
+      when: "offset + limit exceeds 125,000, the deepest page GBIF's dataset search serves.",
+      recovery:
+        'Reduce offset or limit so their sum is at most 125,000; datasets past it cannot be paged to from this search. To reach a larger match, narrow it until it fits: type splits the index with no gap or overlap, since every dataset has exactly one of the four types, so page each type separately; q, publishingCountry, publishingOrg, and hostingOrg narrow it further.',
+    },
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
@@ -163,6 +198,15 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     const clamp = clampReadLimit(input.limit, 1000, 'gbif_search_datasets', 'limit', ctx);
     input = { ...input, limit: clamp.applied };
     ctx.log.info('Searching datasets', { q: input.q, type: input.type });
+
+    // On the applied limit, so a clamped page that fits is still sent.
+    if (input.offset + input.limit > DATASET_SEARCH_CEILING) {
+      throw ctx.fail(
+        'pagination_cap_exceeded',
+        `offset + limit (${input.offset + input.limit}) exceeds ${DATASET_SEARCH_CEILING.toLocaleString('en-US')}, the deepest page GBIF's dataset search serves. Reduce offset or limit, or narrow the search.`,
+      );
+    }
+
     /**
      * `q` is checked on presence rather than on a non-blank value, because
      * `/dataset/search` answers the two blank forms two different ways and neither
@@ -248,7 +292,9 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       offset,
       bothOrgFilters: input.publishingOrg !== undefined && input.hostingOrg !== undefined,
     });
-    const combinedNotice = [clamp.notice, notice].filter(Boolean).join(' ');
+    const combinedNotice = [clamp.notice, notice, overCeilingNotice(totalCount)]
+      .filter(Boolean)
+      .join(' ');
     if (combinedNotice) ctx.enrich.notice(combinedNotice);
 
     return { datasets };

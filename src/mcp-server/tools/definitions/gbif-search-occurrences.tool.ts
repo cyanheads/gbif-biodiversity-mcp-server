@@ -14,6 +14,7 @@ import {
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
   escapeMarkdownText,
+  exactCoordinateMatchNotice,
   occurrenceFilters,
   occurrenceFilterViolation,
   occurrenceNoMatchNotices,
@@ -44,16 +45,7 @@ function buildNotice(args: {
 export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   title: 'Search Occurrences',
   description:
-    'Search GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
-    'for reliable results — it resolves synonyms automatically. Accepts country (uppercase ISO 3166-1 ' +
-    "alpha-2, where the record was observed), publishingCountry (the publishing organization's country — a different " +
-    'question), stateProvince, gadmGid (a GADM administrative-area code GBIF derives from coordinates), bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon ' +
-    'geometry, year range, month, ' +
-    'basis of record, coordinate filter, dataset key, catalogNumber, institutionCode, recordedBy (collector), and mediaType. Returns sightings only by default — GBIF also ' +
-    'indexes absence records (surveys that looked and found nothing), and occurrenceStatus controls ' +
-    'whether they are included. Pagination is capped at offset+limit=100,001 and GBIF offers no ' +
-    'cursor or scroll, so a larger result set is covered only by partitioning it — facet it by ' +
-    'DATASET_KEY with gbif_occurrence_facets and search each datasetKey separately. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still over the cap; YEAR, MONTH, STATE_PROVINCE, and SPECIES_KEY lose records lacking that dimension. Repeat every biological filter on the facet call and each partition search, including the same occurrenceStatus, and compare sub-split sums against the bucket total. Bulk retrieval is outside this server: use the asynchronous GBIF Download API with a GBIF.org account or the monthly GBIF Parquet snapshot on AWS Open Data.',
+    "Search GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species for reliable results — a key names exactly one taxon, where a scientificName shared across kingdoms matches nothing; a Catalogue of Life key goes in checklistTaxonKey with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b. Accepts country (uppercase ISO 3166-1 alpha-2, where the record was observed), publishingCountry (the publishing organization's country — a different question), stateProvince, gadmGid (a GADM administrative-area code GBIF derives from coordinates), bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon geometry, year range, month, basis of record, coordinate filter, hasGeospatialIssue, dataset key, publishingOrg (the publishing organization), catalogNumber, institutionCode, recordedBy (collector), mediaType, typeStatus, establishmentMeans, and license. Rows carry no media unless includeMedia is set. Returns sightings only by default — GBIF also indexes absence records (surveys that looked and found nothing), and occurrenceStatus controls whether they are included. Pagination is capped at offset+limit=100,001 and GBIF offers no cursor or scroll, so a larger result set is covered only by partitioning it — facet it by DATASET_KEY with gbif_occurrence_facets and search each datasetKey separately. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still over the cap; YEAR, MONTH, STATE_PROVINCE, and SPECIES_KEY lose records lacking that dimension. Repeat every biological filter on the facet call and each partition search, including the same occurrenceStatus, and compare sub-split sums against the bucket total. Bulk retrieval is outside this server: use the asynchronous GBIF Download API with a GBIF.org account or the monthly GBIF Parquet snapshot on AWS Open Data.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
@@ -62,13 +54,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .nonnegative()
       .optional()
       .describe(
-        'GBIF backbone taxon key from gbif_match_species. Preferred over scientificName — matches all synonyms automatically. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
+        'GBIF backbone taxon key from gbif_match_species. Preferred over scientificName — a key names exactly one taxon, where a name can be shared across kingdoms. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.). Rejected under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b — pass a Catalogue of Life key as checklistTaxonKey there.',
       ),
     scientificName: z
       .string()
       .optional()
       .describe(
-        'Scientific name filter. Less precise than taxonKey — does not match synonyms. Use taxonKey from gbif_match_species for reliable results. Supplying both does not narrow the search: GBIF combines the two taxon filters with OR, so the result is the union of the two, not their intersection. Omit the field to search every name — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
+        'Scientific name filter, which GBIF resolves to its accepted taxon, so a synonym returns the records of that taxon. Less precise than taxonKey: a name shared across kingdoms, such as Oenanthe (a bird genus and a plant genus), matches nothing, so use taxonKey from gbif_match_species with kingdom set for one. Supplying both does not narrow the search: GBIF combines the two taxon filters with OR, so the result is the union of the two, not their intersection. Omit the field to search every name — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
       ),
     country: z
       .string()
@@ -95,18 +87,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .optional()
       .describe(
         'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. GBIF stores what each dataset recorded without normalizing it, so there is no vocabulary to guess from: "England", "England - Greater London", and "Greater London" are three distinct values, and "england" is none of them. Take one from a STATE_PROVINCE facet on gbif_occurrence_facets scoped the same way and pass it back unchanged — an unmatched value returns zero records rather than an error. Omit the field to search every state or province — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set. Records carrying no stateProvince match no value, so this cannot partition a scope.',
-      ),
-    decimalLatitude: z
-      .string()
-      .optional()
-      .describe(
-        'Latitude range as "min,max" (e.g., "47.0,48.5"). Decimal degrees, WGS84. Combine with decimalLongitude for a bounding box. Omit the field to leave latitude unbounded — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
-      ),
-    decimalLongitude: z
-      .string()
-      .optional()
-      .describe(
-        'Longitude range as "min,max" (e.g., "8.0,9.5"). Decimal degrees, WGS84. Combine with decimalLatitude for a bounding box. Omit the field to leave longitude unbounded — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
       ),
     geometry: z
       .string()
@@ -147,12 +127,6 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
           'Note: GBIF does not expose a cluster identifier — only the membership flag. To de-duplicate, set ' +
           'isInCluster: false to exclude all clustered records.',
       ),
-    coordinateUncertaintyInMeters: z
-      .string()
-      .optional()
-      .describe(
-        'Filter by coordinate uncertainty radius in meters. Range format: "min,max" (e.g., "0,1000" for sub-kilometer precision). Both endpoints inclusive. Omit the field to accept any uncertainty — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered result set.',
-      ),
     datasetKey: z
       .string()
       .optional()
@@ -163,7 +137,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .enum(OCCURRENCE_STATUS_VALUES)
       .default('PRESENT')
       .describe(
-        "Presence/absence filter. Defaults to PRESENT: an ABSENT record documents a survey that looked for the taxon and did not find it, so including one would read as a sighting of the opposite. Use ANY for both (GBIF's own default), or ABSENT for non-observations alone.",
+        "Presence/absence filter. Defaults to PRESENT: an ABSENT record documents a survey that looked for the taxon and did not find it, so including one would read as a sighting of the opposite. Use ANY for both (GBIF's own default), or ABSENT for non-observations alone. DETECTED and NOT_DETECTED, the spelling records and OCCURRENCE_STATUS facet buckets carry, select the same records as PRESENT and ABSENT and are sent as given.",
       ),
     iucnRedListCategory: z
       .enum(IUCN_RED_LIST_CATEGORY_VALUES)
@@ -172,6 +146,12 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
         'Restrict to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Records with no category are excluded when this is set.',
       ),
     ...sharedOccurrenceFilterFields(),
+    includeMedia: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Add each record's media items to its row as media — type, identifier URL, license, and rightsHolder for each, in the record's own order. Every item on a matched record is returned, whatever mediaType selected: that filter picks records carrying the type, not items. Off by default because each item adds to both response surfaces; gbif_get_occurrence returns one record's media with title and format.",
+      ),
     limit: readLimitSchema(z.number().int().min(1), 300)
       .default(20)
       .describe('Number of records to return (default 20, max 300).'),
@@ -193,7 +173,12 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .number()
               .optional()
               .describe('GBIF occurrence key for gbif_get_occurrence chaining.'),
-            taxonKey: z.number().optional().describe('Backbone taxon key.'),
+            taxonKey: z
+              .number()
+              .optional()
+              .describe(
+                'Backbone taxon key — also when checklistKey scoped the search by a Catalogue of Life key.',
+              ),
             scientificName: z
               .string()
               .optional()
@@ -205,6 +190,18 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .optional()
               .describe(
                 'Status of the identification carried on this record — ACCEPTED, PROVISIONALLY_ACCEPTED, SYNONYM, DOUBTFUL, and so on. Says whether the occurrence was filed under an accepted name or a synonym. May be absent.',
+              ),
+            acceptedTaxonKey: z
+              .number()
+              .optional()
+              .describe(
+                'Backbone taxon key of the accepted taxon. Equals taxonKey for a record filed under an accepted name; when taxonomicStatus is SYNONYM, taxonKey is the synonym and this is the taxon it resolves to. Passed as taxonKey, it covers the accepted taxon and every synonym. May be absent.',
+              ),
+            acceptedScientificName: z
+              .string()
+              .optional()
+              .describe(
+                'Scientific name of the accepted taxon as GBIF writes it, with authorship where GBIF has one (e.g. "Quercus castanea Née") — the accepted counterpart of scientificName. May be absent.',
               ),
             decimalLatitude: z
               .number()
@@ -218,6 +215,16 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .number()
               .optional()
               .describe('Coordinate uncertainty radius in meters. May be absent.'),
+            elevation: z
+              .number()
+              .optional()
+              .describe('Elevation in meters above sea level. May be absent.'),
+            depth: z
+              .number()
+              .optional()
+              .describe(
+                'Depth in meters below the local surface, such as a water surface. May be absent.',
+              ),
             country: z.string().optional().describe('Country name. May be absent.'),
             countryCode: z
               .string()
@@ -239,11 +246,23 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
             month: z.number().optional().describe('Observation month (1–12). May be absent.'),
             day: z.number().optional().describe('Observation day. May be absent.'),
             basisOfRecord: z.string().optional().describe('How the occurrence was recorded.'),
+            typeStatus: z
+              .string()
+              .optional()
+              .describe(
+                'Nomenclatural type status of the specimen (e.g. Holotype, Isolectotype), as the GBIF concept name the typeStatus filter takes unchanged. May be absent.',
+              ),
             occurrenceStatus: z
               .string()
               .optional()
               .describe(
-                'PRESENT when the record asserts the taxon was there, ABSENT when it documents a survey that looked and did not find it. An ABSENT record is not a sighting. May be absent.',
+                'Whether the record asserts presence or absence: DETECTED when the taxon was there, NOT_DETECTED when it documents a survey that looked and did not find it. GBIF serves these spellings; the occurrenceStatus filter also takes the older PRESENT and ABSENT, which select the same records. A NOT_DETECTED record is not a sighting. May be absent.',
+              ),
+            establishmentMeans: z
+              .string()
+              .optional()
+              .describe(
+                'How the organism came to be at the location (e.g. native, introduced), as the GBIF concept name the establishmentMeans filter takes unchanged. May be absent.',
               ),
             iucnRedListCategory: z
               .string()
@@ -264,6 +283,24 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .string()
               .optional()
               .describe('Country code of the publishing organization.'),
+            publishingOrganizationKey: z
+              .string()
+              .optional()
+              .describe(
+                "UUID of the organization that published the record — GBIF's publishingOrgKey. Pass it as publishingOrg to the occurrence tools or gbif_search_datasets. May be absent.",
+              ),
+            license: z
+              .string()
+              .optional()
+              .describe(
+                'License the record is published under, as the Creative Commons URL GBIF stores (e.g. http://creativecommons.org/licenses/by-nc/4.0/legalcode). The license filter takes the matching code instead — CC0_1_0, CC_BY_4_0, or CC_BY_NC_4_0 — not this URL. May be absent.',
+              ),
+            rightsHolder: z
+              .string()
+              .optional()
+              .describe(
+                'Person or organization that owns or manages rights over the record — the name to credit under a CC BY license. May be absent.',
+              ),
             recordedBy: z.string().optional().describe('Collector name(s). May be absent.'),
             institutionCode: z
               .string()
@@ -277,10 +314,45 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .describe(
                 'Catalog number the holding collection assigned — the value the catalogNumber filter matches. May be absent.',
               ),
+            recordNumber: z
+              .string()
+              .optional()
+              .describe(
+                'Number the collector assigned when collecting (e.g. "JL 157") — how herbarium specimens are cited, beside recordedBy. Not the catalogNumber. May be absent.',
+              ),
             issues: z
               .array(z.string())
               .optional()
               .describe('GBIF data quality issue flags for this record.'),
+            media: z
+              .array(
+                z
+                  .object({
+                    type: z
+                      .string()
+                      .optional()
+                      .describe('Media type (StillImage, Sound, MovingImage, …). May be absent.'),
+                    identifier: z
+                      .string()
+                      .optional()
+                      .describe('URL of the media file. May be absent.'),
+                    license: z
+                      .string()
+                      .optional()
+                      .describe(
+                        "License of the item as its source states it — a URL or free text, which can differ from the record's license. May be absent.",
+                      ),
+                    rightsHolder: z
+                      .string()
+                      .optional()
+                      .describe('Rights holder to credit for the item. May be absent.'),
+                  })
+                  .describe('A media item (image, sound, video) attached to the record.'),
+              )
+              .optional()
+              .describe(
+                "Every media item on the record, in the record's order, whatever mediaType selected. Present only when includeMedia is true and the record has media.",
+              ),
           })
           .describe(
             'A single occurrence record with location, taxon, date, and provenance fields.',
@@ -299,13 +371,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     occurrenceStatus: z
       .string()
       .describe(
-        'The presence/absence filter applied upstream — PRESENT, ABSENT, or ANY when no filter was sent. Says what totalCount and the returned records cover.',
+        'The presence/absence filter applied upstream, as sent — PRESENT or DETECTED for sightings, ABSENT or NOT_DETECTED for absences, or ANY when no filter was sent. Says what totalCount and the returned records cover.',
       ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, paging overshot, a read limit was clamped, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
+        'Guidance when results are empty, paging overshot, a read limit was clamped, an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
       ),
   },
 
@@ -322,9 +394,9 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A filter value is unusable — a string filter other than country and publishingCountry supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), a datasetKey that is not an 8-4-4-4-12 hex UUID, a gadmGid holding a character other than an uppercase letter, digit, dot, or underscore, a two-letter country or publishingCountry code GBIF does not know, or a WKT geometry or range GBIF rejects.',
+      when: 'A filter value is unusable — a string filter other than country and publishingCountry supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), a bare "*" as decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters, a datasetKey or publishingOrg that is not an 8-4-4-4-12 hex UUID, a gadmGid holding a character other than an uppercase letter, digit, dot, or underscore, a checklistTaxonKey holding a character other than an uppercase letter or digit, a taxonKey under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b or a checklistTaxonKey without it, a typeStatus or establishmentMeans naming no concept in its GBIF vocabulary, a two-letter country or publishingCountry code GBIF does not know, or a WKT geometry or range GBIF rejects.',
       recovery:
-        'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+        'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
   ],
 
@@ -348,7 +420,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     const violation = occurrenceFilterViolation(input);
     if (violation) throw ctx.fail('invalid_filter', violation);
 
-    const { limit: requestedLimit, offset: requestedOffset, ...filters } = input;
+    const { limit: requestedLimit, offset: requestedOffset, includeMedia, ...filters } = input;
     const raw = await getGbifService().searchOccurrences(
       { ...occurrenceFilters(filters), limit: requestedLimit, offset: requestedOffset },
       ctx,
@@ -361,9 +433,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       canonicalName: r.canonicalName,
       rank: r.taxonRank,
       taxonomicStatus: r.taxonomicStatus,
+      acceptedTaxonKey: r.acceptedTaxonKey,
+      acceptedScientificName: r.acceptedScientificName,
       decimalLatitude: r.decimalLatitude,
       decimalLongitude: r.decimalLongitude,
       coordinateUncertaintyInMeters: r.coordinateUncertaintyInMeters,
+      elevation: r.elevation,
+      depth: r.depth,
       country: r.country,
       countryCode: r.countryCode,
       stateProvince: r.stateProvince,
@@ -374,16 +450,31 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       month: r.month,
       day: r.day,
       basisOfRecord: r.basisOfRecord,
+      typeStatus: r.typeStatus,
       occurrenceStatus: r.occurrenceStatus,
+      establishmentMeans: r.establishmentMeans,
       iucnRedListCategory: r.iucnRedListCategory,
       individualCount: r.individualCount,
       datasetKey: r.datasetKey,
       datasetName: r.datasetName,
       publishingCountry: r.publishingCountry,
+      publishingOrganizationKey: r.publishingOrgKey,
+      license: r.license,
+      rightsHolder: r.rightsHolder,
       recordedBy: r.recordedBy,
       institutionCode: r.institutionCode,
       catalogNumber: r.catalogNumber,
+      recordNumber: r.recordNumber,
       issues: r.issues?.length ? r.issues : undefined,
+      media:
+        includeMedia && r.media?.length
+          ? r.media.map((m) => ({
+              type: m.type,
+              identifier: m.identifier,
+              license: m.license,
+              rightsHolder: m.rightsHolder,
+            }))
+          : undefined,
     }));
 
     const totalCount = raw.count ?? 0;
@@ -403,6 +494,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       clamp.notice,
       buildNotice({ totalCount, occurrenceCount: occurrences.length, offset }),
       ...occurrenceNoMatchNotices(input, totalCount),
+      exactCoordinateMatchNotice(input),
       overPaginationCapNotice(totalCount),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
@@ -422,15 +514,24 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       lines.push(`\n## ${canonical}${sci}`);
       if (occ.key != null) lines.push(`**Occurrence key:** ${occ.key}`);
       if (occ.taxonKey != null) lines.push(`**Taxon key:** ${occ.taxonKey}`);
+      if (occ.acceptedScientificName)
+        lines.push(
+          `**Accepted taxon:** ${escapeMarkdownText(occ.acceptedScientificName)}${occ.acceptedTaxonKey != null ? ` (key: ${occ.acceptedTaxonKey})` : ''}`,
+        );
+      else if (occ.acceptedTaxonKey != null)
+        lines.push(`**Accepted taxon key:** ${occ.acceptedTaxonKey}`);
       if (occ.rank) lines.push(`**Rank:** ${occ.rank}`);
       if (occ.taxonomicStatus) lines.push(`**Taxonomic status:** ${occ.taxonomicStatus}`);
       if (occ.basisOfRecord) lines.push(`**Basis of record:** ${occ.basisOfRecord}`);
+      if (occ.typeStatus) lines.push(`**Type status:** ${escapeMarkdownText(occ.typeStatus)}`);
       /**
-       * Rendered for every record that carries it, PRESENT included. An absence
+       * Rendered for every record that carries it, DETECTED included. An absence
        * is only distinguishable from a sighting if the status is on the record
        * itself — a `content[]`-only client has no other place to read it.
        */
       if (occ.occurrenceStatus) lines.push(`**Occurrence status:** ${occ.occurrenceStatus}`);
+      if (occ.establishmentMeans)
+        lines.push(`**Establishment means:** ${escapeMarkdownText(occ.establishmentMeans)}`);
       if (occ.iucnRedListCategory)
         lines.push(`**IUCN Red List category:** ${occ.iucnRedListCategory}`);
       if (occ.eventDate) {
@@ -449,6 +550,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       if (occ.decimalLatitude == null && occ.decimalLongitude == null) {
         lines.push('**Coordinates:** Not available');
       }
+      if (occ.elevation != null) lines.push(`**Elevation:** ${occ.elevation} m`);
+      if (occ.depth != null) lines.push(`**Depth:** ${occ.depth} m`);
       const geo: string[] = [];
       if (occ.locality) geo.push(occ.locality);
       if (occ.stateProvince) geo.push(occ.stateProvince);
@@ -459,15 +562,36 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
         );
       else if (occ.countryCode) lines.push(`**Country code:** ${occ.countryCode}`);
       if (occ.publishingCountry) lines.push(`**Publishing country:** ${occ.publishingCountry}`);
+      if (occ.publishingOrganizationKey)
+        lines.push(
+          `**Publishing organization key:** ${escapeMarkdownText(occ.publishingOrganizationKey)}`,
+        );
+      if (occ.license) lines.push(`**License:** ${escapeMarkdownText(occ.license)}`);
+      if (occ.rightsHolder)
+        lines.push(`**Rights holder:** ${escapeMarkdownText(occ.rightsHolder)}`);
       if (occ.recordedBy) lines.push(`**Recorded by:** ${occ.recordedBy}`);
       if (occ.institutionCode)
         lines.push(`**Institution:** ${escapeMarkdownText(occ.institutionCode)}`);
       if (occ.catalogNumber)
         lines.push(`**Catalog number:** ${escapeMarkdownText(occ.catalogNumber)}`);
+      if (occ.recordNumber)
+        lines.push(`**Record number:** ${escapeMarkdownText(occ.recordNumber)}`);
       if (occ.individualCount != null) lines.push(`**Count:** ${occ.individualCount}`);
       if (occ.datasetKey)
         lines.push(`**Dataset:** ${occ.datasetName ?? occ.datasetKey} (key: ${occ.datasetKey})`);
       if (occ.issues?.length) lines.push(`**Issues:** ${occ.issues.join(', ')}`);
+      if (occ.media?.length) {
+        lines.push(`**Media:** ${occ.media.length} item(s)`);
+        for (const m of occ.media) {
+          const license = m.license ? ` [${escapeMarkdownText(m.license)}]` : '';
+          const rights = m.rightsHolder
+            ? ` (rights holder: ${escapeMarkdownText(m.rightsHolder)})`
+            : '';
+          lines.push(
+            `  - ${m.type ?? 'Media'}${license}${rights}${m.identifier ? `: ${m.identifier}` : ''}`,
+          );
+        }
+      }
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },
