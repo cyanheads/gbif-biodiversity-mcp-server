@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-11-12
+
+Catalogue of Life eXtended Release keys on the match and occurrence tools, new occurrence filters and facets, richer occurrence records, per-name kingdoms in bulk matching, and offset ceilings on species and dataset search.
+
 ## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-11-01
 
 Published agent skill gbif-biodiversity-guide, new occurrence filters (gadmGid, catalogNumber, institutionCode, recordedBy, mediaType), labeled facet buckets, and integer-typed numeric inputs.
