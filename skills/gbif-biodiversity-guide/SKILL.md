@@ -21,13 +21,14 @@ It does not:
 
 | Identifier | Where it comes from | Where it goes |
 |:--|:--|:--|
-| Backbone `taxonKey` | `taxonKey` from `gbif_match_species` or `gbif_bulk_match_species`; `key` from `gbif_get_species`, `gbif_get_species_children`, and `gbif_get_species_classification`; `nubKey` (not `key`) on `gbif_search_species` rows; `taxonKey` on occurrence rows; a `KINGDOM_KEY` … `SPECIES_KEY` bucket's `name` | Occurrence tools, species tools |
+| Backbone `taxonKey` | `taxonKey` from `gbif_match_species` or `gbif_bulk_match_species`; `key` from `gbif_get_species`, `gbif_get_species_children`, and `gbif_get_species_classification`; `nubKey` (not `key`) on `gbif_search_species` rows; `taxonKey` on occurrence records and rows, with `acceptedTaxonKey` beside it (the accepted taxon when the record is filed under a synonym); a `KINGDOM_KEY` … `SPECIES_KEY` bucket's `name` under the default checklist | Occurrence tools, species tools |
 | `datasetKey` | `gbif_search_datasets`, an occurrence row, a `DATASET_KEY` bucket | Occurrence tools, `gbif_get_dataset` |
-| Organization key | `gbif_search_publishers`; `publishingOrganizationKey` on the dataset tools | `gbif_search_datasets` as `publishingOrg` |
+| Organization key | `gbif_search_publishers`; `publishingOrganizationKey` on the dataset tools, `gbif_get_occurrence`, and occurrence rows; a `PUBLISHING_ORG` bucket's `name` | `publishingOrg` on `gbif_search_datasets` and the occurrence tools |
+| Catalogue of Life key | `checklistTaxonKey` from the match tools when `checklistKey` selects the Catalogue of Life; a `KINGDOM_KEY` … `SPECIES_KEY` bucket's `name` when the facet call sets that `checklistKey` | `checklistTaxonKey` on the occurrence tools, with the same `checklistKey`. Never `taxonKey` or the species tools: it is a case-sensitive string, not a backbone key, and a digit-only one such as `8288` names an unrelated backbone taxon |
 | Occurrence key | `gbif_search_occurrences` | `gbif_get_occurrence` |
-| GADM GID (`ESP`, `ESP.1_1`) | The `gadm` block of `gbif_get_occurrence`, or a `GADM_LEVEL_0_GID` … `GADM_LEVEL_3_GID` bucket | `gadmGid` on the occurrence tools |
+| GADM GID (`ESP`, `ESP.1_1`) | The `gadm` block of `gbif_get_occurrence`, or a `GADM_LEVEL_0_GID` … `GADM_LEVEL_3_GID` bucket (`includeLabels` names the area) | `gadmGid` on the occurrence tools |
 
-Facet bucket names are strings. A `SPECIES_KEY` bucket named `"2878688"` is the backbone key 2878688: pass it as a number.
+Facet bucket names are strings. Under the default checklist, a `SPECIES_KEY` bucket named `"2878688"` is the backbone key 2878688: pass it as a number. When the facet call sets the Catalogue of Life `checklistKey`, the same buckets are Catalogue of Life keys: pass them as `checklistTaxonKey` strings, all-digit ones included, on a call that sets the same `checklistKey`.
 
 ## Gates
 
@@ -40,14 +41,14 @@ Facet bucket names are strings. A `SPECIES_KEY` bucket named `"2878688"` is the 
    For Iberian lynx in Spain, `stateProvince` "Andalucía" matches 381 records and `gadmGid` `ESP.1_1` matches 787, while 237 Spanish records carry no coordinates and fall outside every GID. Name the filter that defined the region whenever you report a regional count.
 3. **A count is records, not organisms.** One specimen or sighting can be indexed by several datasets. `isInCluster` false drops every member of a likely-duplicate cluster, the original included, so it gives a lower bound rather than a deduplicated total. `individualCount` is per record and often absent. Say "records" when you quote a number.
 4. **Record volume over time measures effort before it measures populations.** Digitization and citizen-science uptake drive the curve: all bird records from Sweden rose from 666,092 in 2000 to 5,450,939 in 2022. Before calling a trend, divide the taxon's yearly counts by those of a reference group (its family or class) under the same filters.
-5. **Zero records is not absence.** Before saying a taxon is absent from an area, confirm the key came from a tool and names the taxon you meant (gate 1), since a `taxonKey` GBIF does not hold counts zero rather than erroring. Then confirm the region filter did not exclude the records you expected (gate 2), and rerun with `occurrenceStatus` ANY to look for survey absences. An ABSENT record documents one survey at one place and time, not a range limit. Report the result as "no records in GBIF under these filters" and list the filters.
+5. **Zero records is not absence.** Before saying a taxon is absent from an area, confirm the key came from a tool and names the taxon you meant (gate 1), since a `taxonKey` GBIF does not hold counts zero rather than erroring. Then confirm the region filter did not exclude the records you expected (gate 2), and rerun with `occurrenceStatus` ANY to look for survey absences. A NOT_DETECTED record (the filter takes ABSENT or NOT_DETECTED for it) documents one survey at one place and time, not a range limit. Report the result as "no records in GBIF under these filters" and list the filters.
 6. **YEAR buckets are ranked by count, not by year.** A ten-year *Parus major* series for Sweden lists 2016 ahead of 2017. Set `facetLimit` to at least the number of years, sort the buckets by year yourself, and read a year missing from a page with no `truncated` flag as zero records under that scope.
 
 ## Workflows
 
 ### Where and when a taxon was recorded
 
-Match the name (gate 1), take a total with `gbif_count_occurrences`, then break it down with `gbif_occurrence_facets` on COUNTRY, a GADM level, STATE_PROVINCE, or YEAR (gate 6). Pull example records with `gbif_search_occurrences`, and open one with `gbif_get_occurrence` for its full GADM chain, identifiers, and media.
+Match the name (gate 1), take a total with `gbif_count_occurrences`, then break it down with `gbif_occurrence_facets` on COUNTRY, a GADM level (`includeLabels` names each area), STATE_PROVINCE, or YEAR (gate 6). Pull example records with `gbif_search_occurrences`, and open one with `gbif_get_occurrence` for its full GADM chain, identifiers, and media.
 
 ### Species of a group in a region
 
@@ -65,17 +66,20 @@ Send names through `gbif_bulk_match_species`, 50 per call, and sort the rows:
 - EXACT or FUZZY at confidence 80 or above: accept, and record `taxonKey`.
 - FUZZY below 80: review before accepting.
 - HIGHERRANK where the list named a species: unreconciled. The row's `note` names the genus or kingdom it fell back to.
-- NONE: unreconciled. When the row carries a `note`, follow it.
+- NONE: unreconciled. When the row carries a `note`, follow it: for a name shared across kingdoms, such as *Oenanthe*, it points at resubmitting that name as an entry with its own `kingdom`, which leaves the rest of the batch untouched.
 - ERROR: retry that name.
 
-Then group the accepted rows by `taxonKey`. Two names on the list that share a key are one species, whether as a synonym (`matchedTaxonKey` marks which name was the synonym) or as a misspelling GBIF matched fuzzily.
+Then group the accepted rows by `taxonKey` (`checklistTaxonKey` in a Catalogue of Life rerun). Two names on the list that share a key are one species, whether as a synonym (`matchedTaxonKey` marks which name was the synonym, and `acceptedName` names the accepted taxon when GBIF's answer does) or as a misspelling GBIF matched fuzzily.
+
+GBIF no longer updates the backbone, so a name described or revised since its last build falls back to a higher taxon there (HIGHERRANK). Rerun those with `checklistKey` set to the Catalogue of Life eXtended Release to see whether it matches them exactly; its rows use VARIANT in place of FUZZY, can carry the status PROVISIONALLY_ACCEPTED, and return string keys that fit no species tool. To count or list a rerun name's records, pass its key to the occurrence tools as `checklistTaxonKey` with the same `checklistKey`; records and rows keep their backbone `taxonKey`.
 
 ### Which collections hold a taxon
 
 - Specimens are spread across several `basisOfRecord` values (PRESERVED_SPECIMEN, FOSSIL_SPECIMEN, LIVING_SPECIMEN, MATERIAL_SAMPLE), and the filter takes one at a time. Facet on BASIS_OF_RECORD first to see which are present.
 - An INSTITUTION_CODE facet names the holding institutions.
-- A DATASET_KEY facet followed by `gbif_get_dataset` gives each source dataset's title and its publisher's organization key.
+- A DATASET_KEY facet followed by `gbif_get_dataset` gives each source dataset's title and its publisher's organization key. A single record already carries that key as `publishingOrganizationKey`, with its `license`, `rightsHolder`, and `recordNumber` (the collector's number, how herbarium specimens are cited).
+- Photos of a taxon: search with `mediaType` StillImage and `includeMedia` on, which returns every media item of each record in one call instead of one `gbif_get_occurrence` per row. Each item has its own `license` and `rightsHolder`; read those, not the record's, for the image.
 
 ### What an organization publishes
 
-The occurrence tools take no organization filter. To scope records to one publisher, list its datasets through `gbif_search_datasets` with `publishingOrg`, then count or facet each `datasetKey` on its own.
+Take the organization key from `gbif_search_publishers` and pass it as `publishingOrg` to `gbif_count_occurrences`, `gbif_search_occurrences`, or `gbif_occurrence_facets` to scope records to everything that organization published, across all its datasets. A PUBLISHING_ORG facet lists the organizations behind any scope. To see the datasets themselves, list them through `gbif_search_datasets` with the same `publishingOrg`, or facet on DATASET_KEY. `publishingOrg` is the organization whose data it is, not `publishingCountry` and not the installation hosting it.
