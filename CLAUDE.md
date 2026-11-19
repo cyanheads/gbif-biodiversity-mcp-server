@@ -353,7 +353,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting (safe fixes only) |
 | `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
-| `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`) |
+| `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`). `vitest` is pinned at exactly `5.1.0` in `devDependencies`, because the forks pool in 5.1.1 calls `child.channel.unref()`, which Bun 1.4.4 does not implement, so every test file fails under `bun run test`; re-test on a newer Bun or Vitest before lifting the pin |
 | `bun run start:stdio` | Production mode (stdio) |
 | `bun run start:http` | Production mode (HTTP) |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
