@@ -9,6 +9,7 @@ import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpeciesChildren } from '@/mcp-server/tools/definitions/gbif-get-species-children.tool.js';
+import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
   getGbifService: vi.fn(),
@@ -320,6 +321,100 @@ describe('gbifGetSpeciesChildren', () => {
       gbifGetSpeciesChildren.output.shape.children.element.shape.numOccurrences.description;
     expect(description).toContain('gbif_count_occurrences');
     expect(description).toMatch(/absent/);
+  });
+
+  /**
+   * #94 — /species/{key}/children lists a usage's children within its own checklist:
+   * live, the children of checklist genus 342995876 (checklist 6d9e952f-…) are usages of
+   * that checklist, each with the nubKey and datasetKey GBIF sends for it.
+   */
+  describe('checklist identity (#94)', () => {
+    const CHECKLIST = '6d9e952f-948c-4483-9807-575348147c7e';
+
+    it("carries each child's nubKey and datasetKey on both surfaces, inferring none", async () => {
+      mockGetSpeciesChildren.mockResolvedValue({
+        results: [
+          {
+            key: 152543218,
+            nubKey: 2498252,
+            datasetKey: CHECKLIST,
+            canonicalName: 'Alopochen aegyptiaca',
+            rank: 'SPECIES',
+          },
+          { key: 342999001, datasetKey: CHECKLIST, canonicalName: 'Alopochen unmapped' },
+        ],
+        offset: 0,
+        limit: 20,
+        endOfRecords: true,
+      });
+
+      const result = await runToolContract(gbifGetSpeciesChildren, { taxonKey: 342995876 });
+
+      expect(result.isError).not.toBe(true);
+      const wire = JSON.parse(JSON.stringify(result.structuredContent));
+      expect(wire.children[0]).toMatchObject({
+        key: 152543218,
+        nubKey: 2498252,
+        datasetKey: CHECKLIST,
+      });
+      expect(wire.children[1]).toMatchObject({ key: 342999001, datasetKey: CHECKLIST });
+      expect(wire.children[1]).not.toHaveProperty('nubKey');
+
+      const text = result.content[0]?.type === 'text' ? result.content[0].text : '';
+      const [mapped, unmapped] = text.split('\n- ').slice(1);
+      expect(mapped).toContain('Taxon usage key: 152543218');
+      expect(mapped).toContain(`Dataset key: ${CHECKLIST}`);
+      expect(mapped).toContain('Backbone key: 2498252');
+      expect(unmapped).toContain('Taxon usage key: 342999001');
+      expect(unmapped).toContain(`Dataset key: ${CHECKLIST}`);
+      expect(unmapped).not.toContain('Backbone key');
+    });
+
+    it('describes the identity keys as gbif_search_species does, and none as backbone', () => {
+      const row = gbifGetSpeciesChildren.output.shape.children.element.shape;
+      const searchRow = gbifSearchSpecies.output.shape.taxa.element.shape;
+      for (const field of ['key', 'datasetKey', 'nubKey'] as const) {
+        expect(row[field].description, field).toBe(searchRow[field].description);
+      }
+      expect(row.numDescendants.description).not.toMatch(/backbone/i);
+      expect(row.numOccurrences.description).toContain('nubKey');
+      expect(gbifGetSpeciesChildren.input.shape.taxonKey.description).not.toMatch(
+        /backbone taxon key/i,
+      );
+    });
+
+    it('keeps backbone out of the no-children notice, error conditions, and message', async () => {
+      mockGetSpeciesChildren.mockResolvedValue({
+        results: [],
+        offset: 0,
+        limit: 20,
+        endOfRecords: true,
+      });
+      mockGetSpecies.mockResolvedValue({ key: 152543218, datasetKey: CHECKLIST });
+      const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
+      await gbifGetSpeciesChildren.handler(
+        gbifGetSpeciesChildren.input.parse({ taxonKey: 152543218 }),
+        ctx,
+      );
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('no direct children');
+      expect(notice).not.toMatch(/backbone/i);
+
+      for (const entry of gbifGetSpeciesChildren.errors ?? []) {
+        expect(entry.when, entry.reason).not.toMatch(/backbone/i);
+      }
+      const invalid = gbifGetSpeciesChildren.errors?.find((e) => e.reason === 'invalid_filter');
+      expect(invalid?.recovery).not.toMatch(/backbone/i);
+
+      const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
+      mockGetSpecies.mockRejectedValue(new McpError(JsonRpcErrorCode.NotFound, 'Not found'));
+      const err = await gbifGetSpeciesChildren
+        .handler(gbifGetSpeciesChildren.input.parse({ taxonKey: 2147483647 }), ctx)
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ data: { reason: 'not_found' } });
+      expect((err as Error).message).toContain('2147483647');
+      expect((err as Error).message).not.toMatch(/backbone/i);
+    });
   });
 
   /**

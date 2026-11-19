@@ -15,6 +15,13 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+  (result.content ?? []).map((block) => (block.type === 'text' ? block.text : '')).join('\n');
+
+/** structuredContent as the client receives it — JSON drops undefined-valued keys. */
+const wireOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+  JSON.parse(JSON.stringify(result.structuredContent)) as Record<string, unknown>;
+
 describe('gbifGetOccurrence', () => {
   const mockGetOccurrence = vi.fn();
 
@@ -463,11 +470,6 @@ describe('gbifGetOccurrence newly surfaced record fields', () => {
  */
 describe('gbifGetOccurrence reuse, publisher, accepted taxon, and specimen fields (#87)', () => {
   const mockGetOccurrence = vi.fn();
-  const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
-    (result.content ?? []).map((block) => (block.type === 'text' ? block.text : '')).join('\n');
-  /** structuredContent as the client receives it — JSON drops undefined-valued keys. */
-  const wireOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
-    JSON.parse(JSON.stringify(result.structuredContent)) as Record<string, unknown>;
   const NEW_LABELS = [
     'Accepted taxon',
     'License',
@@ -638,7 +640,9 @@ describe('gbifGetOccurrence reuse, publisher, accepted taxon, and specimen field
     const lines = textOf(result).split('\n');
     const first = lines.findIndex((line) => line.includes('V0060057F.jpg'));
     expect(lines[first]).toContain('(rights holder: Field Museum of Natural History)');
-    expect(lines[first + 1]).toBe('  - Sound: https://static.inaturalist.org/sounds/1785847.wav');
+    expect(lines[first + 1]).toBe(
+      '  - Sound: [https://static.inaturalist.org/sounds/1785847.wav](<https://static.inaturalist.org/sounds/1785847.wav>)',
+    );
   });
 
   it('describes each field in the form it arrives and where it chains', () => {
@@ -653,6 +657,461 @@ describe('gbifGetOccurrence reuse, publisher, accepted taxon, and specimen field
     expect(shape.establishmentMeans.description).toContain('establishmentMeans filter');
     expect(shape.elevation.description).toContain('meters');
     expect(shape.depth.description).toContain('meters');
+  });
+});
+
+/**
+ * #99 — fields that change how a record is read. Fixtures are live records:
+ * 5938208610 (an iNaturalist Lynx pardinus whose coordinates were generalized to
+ * protect it), 6503038304 (a SEINet Agave specimen carrying 2,203 characters of
+ * remarks), and 6506006485 (a DATRAS trawl haul counted by organismQuantity).
+ */
+describe('gbifGetOccurrence withheld information, references, remarks, and sampling (#99)', () => {
+  const mockGetOccurrence = vi.fn();
+  const linesOf = (record: Record<string, unknown>) => {
+    const blocks = gbifGetOccurrence.format!(record);
+    return (blocks[0]?.type === 'text' ? blocks[0].text : '').split('\n');
+  };
+  const NEW_FIELDS = [
+    'informationWithheld',
+    'dataGeneralizations',
+    'references',
+    'occurrenceRemarks',
+    'habitat',
+    'samplingProtocol',
+    'datasetName',
+    'organismQuantity',
+    'organismQuantityType',
+    'dateIdentified',
+    'isInCluster',
+    'kingdomKey',
+    'phylumKey',
+    'orderKey',
+    'familyKey',
+    'genusKey',
+    'speciesKey',
+  ];
+  const NEW_LABELS = [
+    'Information withheld',
+    'Data generalizations',
+    'References',
+    'Remarks',
+    'Habitat',
+    'Sampling protocol',
+    'Dataset name',
+    'Organism quantity',
+    'Date identified',
+    'In cluster',
+    'Kingdom key',
+    'Phylum key',
+    'Order key',
+    'Family key',
+    'Genus key',
+    'Species key',
+  ];
+  const LYNX = {
+    key: 5938208610,
+    datasetKey: '50c9509d-22c7-4a22-a47d-8c48425ef4a7',
+    taxonKey: 2435261,
+    scientificName: 'Lynx pardinus (Temminck, 1827)',
+    kingdom: 'Animalia',
+    kingdomKey: 1,
+    phylum: 'Chordata',
+    phylumKey: 44,
+    class: 'Mammalia',
+    classKey: 359,
+    order: 'Carnivora',
+    orderKey: 732,
+    family: 'Felidae',
+    familyKey: 9703,
+    genus: 'Lynx',
+    genusKey: 2435239,
+    species: 'Lynx pardinus',
+    speciesKey: 2435261,
+    decimalLatitude: 38.165988,
+    decimalLongitude: -3.946439,
+    coordinateUncertaintyInMeters: 28300,
+    informationWithheld: 'Coordinate uncertainty increased to 28300m to protect threatened taxon',
+    references: 'https://www.inaturalist.org/observations/333328658',
+    datasetName: 'iNaturalist research-grade observations',
+    dateIdentified: '2026-01-03T19:16:59',
+    identifiedBy: 'Franck Curk',
+    isInCluster: false,
+    occurrenceRemarks:
+      'Oligisto, a 9 years old female. Observation conducted with the assistance of the naturalist guide Silvia Medina Vicaria.',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({ getOccurrence: mockGetOccurrence } as never);
+  });
+
+  it('returns the withheld-information record on both surfaces', async () => {
+    mockGetOccurrence.mockResolvedValue(LYNX);
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 5938208610 });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      informationWithheld: 'Coordinate uncertainty increased to 28300m to protect threatened taxon',
+      references: 'https://www.inaturalist.org/observations/333328658',
+      datasetName: 'iNaturalist research-grade observations',
+      dateIdentified: '2026-01-03T19:16:59',
+      isInCluster: false,
+      speciesKey: 2435261,
+      kingdomKey: 1,
+      phylumKey: 44,
+      orderKey: 732,
+      familyKey: 9703,
+      genusKey: 2435239,
+    });
+    const lines = textOf(result).split('\n');
+    expect(lines).toContain(
+      '**Information withheld:** Coordinate uncertainty increased to 28300m to protect threatened taxon',
+    );
+    expect(lines).toContain(
+      '**References:** [https://www.inaturalist.org/observations/333328658](<https://www.inaturalist.org/observations/333328658>)',
+    );
+    expect(lines).toContain('**Dataset name:** iNaturalist research-grade observations');
+    expect(lines).toContain('**Date identified:** 2026-01-03T19:16:59');
+    expect(lines).toContain('**In cluster:** false');
+    expect(lines).toContain(
+      '**Remarks:** Oligisto, a 9 years old female. Observation conducted with the assistance of the naturalist guide Silvia Medina Vicaria.',
+    );
+    expect(lines).toContain(
+      '**Taxonomy:** Kingdom: Animalia (1) › Phylum: Chordata (44) › Class: Mammalia (359) › Order: Carnivora (732) › Family: Felidae (9703) › Genus: Lynx (2435239) › Species: Lynx pardinus (2435261)',
+    );
+  });
+
+  it('renders the withheld information and generalizations beside the coordinates', () => {
+    const lines = linesOf({
+      ...LYNX,
+      dataGeneralizations: 'WGS84 coordinates generalized with formula: round(x, 1)',
+    });
+    const uncertainty = lines.indexOf('**Coordinate uncertainty:** 28300 m');
+    expect(uncertainty).toBeGreaterThan(-1);
+    expect(lines[uncertainty + 1]).toBe(
+      '**Information withheld:** Coordinate uncertainty increased to 28300m to protect threatened taxon',
+    );
+    expect(lines[uncertainty + 2]).toBe(
+      '**Data generalizations:** WGS84 coordinates generalized with formula: round&#40;x, 1&#41;',
+    );
+  });
+
+  it('keeps every character of long remarks on both surfaces and links the references', async () => {
+    // 2,203 characters, the length of the live record's remarks, ending on punctuation.
+    const remarks = `${'Agave Voucher Project.; Clone of ca 16 plants (width of group 2 m); '
+      .repeat(40)
+      .slice(0, 2202)}.`;
+    mockGetOccurrence.mockResolvedValue({
+      key: 6503038304,
+      occurrenceRemarks: remarks,
+      references:
+        'https://swbiodiversity.org/seinet/collections/individual/index.php?occid=35160319',
+      dateIdentified: '2026-01-01T00:00:00',
+    });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 6503038304 });
+
+    expect(remarks).toHaveLength(2203);
+    expect(result.structuredContent?.occurrenceRemarks).toBe(remarks);
+    const lines = textOf(result).split('\n');
+    expect(lines).toContain(
+      `**Remarks:** ${remarks.replaceAll('(', '&#40;').replaceAll(')', '&#41;')}`,
+    );
+    expect(lines).toContain(
+      '**References:** [https://swbiodiversity.org/seinet/collections/individual/index.php?occid=35160319](<https://swbiodiversity.org/seinet/collections/individual/index.php?occid=35160319>)',
+    );
+    expect(lines).toContain('**Date identified:** 2026-01-01T00:00:00');
+  });
+
+  it('renders organism quantity with its type, habitat, and sampling protocol', async () => {
+    mockGetOccurrence.mockResolvedValue({
+      key: 6506006485,
+      organismQuantity: 38,
+      organismQuantityType: 'Individuals',
+      samplingProtocol: 'GOV Trawl',
+      habitat: 'Sandy bottom, 80 m',
+      datasetName: 'DATRAS: ICES Database of trawl surveys',
+    });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 6506006485 });
+
+    expect(result.structuredContent).toMatchObject({
+      organismQuantity: 38,
+      organismQuantityType: 'Individuals',
+      samplingProtocol: 'GOV Trawl',
+      habitat: 'Sandy bottom, 80 m',
+    });
+    const lines = textOf(result).split('\n');
+    expect(lines).toContain('**Organism quantity:** 38 Individuals');
+    expect(lines).toContain('**Sampling protocol:** GOV Trawl');
+    expect(lines).toContain('**Habitat:** Sandy bottom, 80 m');
+    expect(lines).toContain('**Dataset name:** DATRAS: ICES Database of trawl surveys');
+    expect(linesOf({ key: 1, organismQuantity: 0 })).toContain('**Organism quantity:** 0');
+    expect(linesOf({ key: 1, organismQuantityType: '% biomass' })).toContain(
+      '**Organism quantity type:** % biomass',
+    );
+  });
+
+  it('renders each rank key beside its name, or alone when the name is absent', () => {
+    const lines = linesOf({
+      key: 1,
+      kingdomKey: 1,
+      phylumKey: 44,
+      family: 'Felidae',
+      familyKey: 9703,
+    });
+    expect(lines).toContain(
+      '**Taxonomy:** Kingdom key: 1 › Phylum key: 44 › Family: Felidae (9703)',
+    );
+    expect(linesOf({ key: 1, isInCluster: true })).toContain('**In cluster:** true');
+  });
+
+  it('renders none of the fields, and no placeholder, on a record carrying none', async () => {
+    mockGetOccurrence.mockResolvedValue({ key: 304, taxonKey: 5231190, kingdom: 'Animalia' });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 304 });
+
+    expect(result.isError).not.toBe(true);
+    for (const field of NEW_FIELDS) expect(wireOf(result)).not.toHaveProperty(field);
+    const text = textOf(result);
+    for (const label of NEW_LABELS) expect(text).not.toContain(label);
+    expect(text).toContain('**Taxonomy:** Kingdom: Animalia\n');
+  });
+
+  it('renders free text literally in content while structuredContent keeps it as sent', async () => {
+    const raw = {
+      key: 7,
+      informationWithheld: 'Locality <withheld> & *obscured*',
+      dataGeneralizations: 'Rounded to 0.1° [see](javascript:x) &amp; more',
+      occurrenceRemarks: 'Line one\n# Line two | `code` ~x~ {y} \\z!',
+      habitat: '_Pinus_ forest &#64; edge',
+      samplingProtocol: 'Trap [A](b)',
+      datasetName: 'Survey *2024*',
+      organismQuantityType: '% cover <est.>',
+      organismQuantity: 5,
+      eventTime: 'ca. 9h [night](x) *dusk*',
+    };
+    mockGetOccurrence.mockResolvedValue(raw);
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 7 });
+
+    const { key: _key, ...sent } = raw;
+    expect(result.structuredContent).toMatchObject(sent);
+    const lines = textOf(result).split('\n');
+    expect(lines).toContain(
+      '**Information withheld:** Locality &#60;withheld&#62; &#38; &#42;obscured&#42;',
+    );
+    expect(lines).toContain(
+      '**Data generalizations:** Rounded to 0.1° &#91;see&#93;&#40;javascript:x&#41; &#38;amp; more',
+    );
+    expect(lines).toContain(
+      '**Remarks:** Line one&#10;&#35; Line two &#124; &#96;code&#96; &#126;x&#126; &#123;y&#125; &#92;z&#33;',
+    );
+    expect(lines).toContain('**Habitat:** &#95;Pinus&#95; forest &#38;&#35;64; edge');
+    expect(lines).toContain('**Sampling protocol:** Trap &#91;A&#93;&#40;b&#41;');
+    expect(lines).toContain('**Dataset name:** Survey &#42;2024&#42;');
+    expect(lines).toContain('**Organism quantity:** 5 % cover &#60;est.&#62;');
+    expect(lines).toContain('**Time:** ca. 9h &#91;night&#93;&#40;x&#41; &#42;dusk&#42;');
+  });
+
+  /**
+   * `references` is a link only when it is an absolute http(s) URL on one line; any
+   * other value is escaped text. The full table of hostile values is
+   * `linkOrEscapedText`'s, in tests/tools/utils.test.ts; one case per branch here
+   * proves the field reaches it.
+   */
+  it.each([
+    {
+      references: 'javascript:alert(1)',
+      line: '**References:** javascript:alert&#40;1&#41;',
+    },
+    {
+      references: 'https://example.org/a)b c',
+      line: '**References:** [https://example.org/a)b c](<https://example.org/a)b c>)',
+    },
+  ])('renders references $references as one safe link or as text', async ({ references, line }) => {
+    mockGetOccurrence.mockResolvedValue({ key: 8, references });
+
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: 8 });
+
+    expect(result.structuredContent?.references).toBe(references);
+    const lines = textOf(result).split('\n');
+    expect(lines).toContain(line);
+  });
+
+  it('describes dateIdentified padding, cluster membership, and the record-level names', () => {
+    const { shape } = gbifGetOccurrence.output;
+    expect(shape.dateIdentified.description).toContain('T00:00:00');
+    expect(shape.dateIdentified.description).toContain('-01-01T00:00:00');
+    expect(shape.isInCluster.description).toContain('isInCluster filter');
+    expect(shape.informationWithheld.description).toContain('withheld');
+    expect(shape.dataGeneralizations.description).toContain('informationWithheld');
+    expect(shape.datasetName.description).toContain('gbif_get_dataset');
+    expect(shape.organismQuantity.description).toContain('organismQuantityType');
+    expect(shape.speciesKey.description).toMatch(/backbone/i);
+    expect(gbifGetOccurrence.description).not.toContain('complete');
+    for (const field of ['informationWithheld', 'dataGeneralizations', 'references', 'isInCluster'])
+      expect(gbifGetOccurrence.description).toContain(field);
+  });
+});
+
+/**
+ * Every publisher-supplied string the detail formatter renders goes through
+ * `escapeMarkdownText`, so Markdown or character-reference syntax in it renders
+ * literally; a value holding none renders byte-identical, and structuredContent
+ * keeps each value as sent. The URL-valued fields — occurrenceID, references, each
+ * media identifier, each identifiers[].identifier — go through `linkOrEscapedText`
+ * instead: an http(s) value is a link to itself, any other value escaped text.
+ */
+describe('gbifGetOccurrence publisher text in content', () => {
+  const mockGetOccurrence = vi.fn();
+  const linesOf = async (raw: Record<string, unknown>) => {
+    mockGetOccurrence.mockResolvedValue(raw);
+    const result = await runToolContract(gbifGetOccurrence, { occurrenceKey: raw.key as number });
+    expect(result.isError).not.toBe(true);
+    return {
+      structured: result.structuredContent,
+      lines: (result.content ?? [])
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n')
+        .split('\n'),
+    };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({ getOccurrence: mockGetOccurrence } as never);
+  });
+
+  it('renders plain publisher values unchanged', async () => {
+    const { lines } = await linesOf({
+      key: 9,
+      locality: 'Hyde Park',
+      stateProvince: 'England',
+      country: 'United Kingdom',
+      countryCode: 'GB',
+      recordedBy: 'J. Smith',
+      identifiedBy: 'A. Jones',
+      institutionCode: 'RSPB',
+      collectionCode: 'obs',
+      catalogNumber: 'OBS-001',
+      occurrenceID: 'https://www.inaturalist.org/observations/333428940',
+      media: [
+        {
+          type: 'StillImage',
+          format: 'image/jpeg',
+          title: 'Great Tit photo',
+          license: 'http://creativecommons.org/licenses/by/4.0/',
+          identifier: 'https://example.com/photo.jpg',
+        },
+      ],
+      identifiers: [{ type: 'URL', identifier: '333428940' }],
+    });
+
+    for (const line of [
+      '**Location:** Hyde Park, England, United Kingdom (GB)',
+      '**Recorded by:** J. Smith',
+      '**Identified by:** A. Jones',
+      '**Institution:** RSPB',
+      '**Collection:** obs',
+      '**Catalog number:** OBS-001',
+      '**Occurrence ID:** [https://www.inaturalist.org/observations/333428940](<https://www.inaturalist.org/observations/333428940>)',
+      '  - StillImage — Great Tit photo (image/jpeg) [http://creativecommons.org/licenses/by/4.0/]: [https://example.com/photo.jpg](<https://example.com/photo.jpg>)',
+      '  - [URL] 333428940',
+    ])
+      expect(lines).toContain(line);
+  });
+
+  it('renders Markdown and character-reference syntax literally, keeping values as sent', async () => {
+    const raw = {
+      key: 10,
+      locality: 'Km 5 [road](x) & *ditch*',
+      stateProvince: '<Cádiz>',
+      country: 'Spain',
+      countryCode: 'ES',
+      recordedBy: 'Smith_J & *Jones*',
+      identifiedBy: '# Doe',
+      institutionCode: 'MCZ_*',
+      collectionCode: 'Herp|Main',
+      catalogNumber: '[x](y) #1',
+      occurrenceID: 'urn:x:<1>&#64;',
+      media: [
+        {
+          type: 'StillImage',
+          format: 'image/<jpeg>',
+          title: 'Plate *1*',
+          license: '(c) A & B',
+          identifier: 'https://example.org/a_b(1).jpg',
+        },
+      ],
+      identifiers: [{ type: 'URL*', identifier: '[1](2)' }],
+    };
+    const { structured, lines } = await linesOf(raw);
+
+    const { key: _key, ...sent } = raw;
+    expect(structured).toMatchObject(sent);
+    for (const line of [
+      '**Location:** Km 5 &#91;road&#93;&#40;x&#41; &#38; &#42;ditch&#42;, &#60;Cádiz&#62;, Spain (ES)',
+      '**Recorded by:** Smith&#95;J &#38; &#42;Jones&#42;',
+      '**Identified by:** &#35; Doe',
+      '**Institution:** MCZ&#95;&#42;',
+      '**Collection:** Herp&#124;Main',
+      '**Catalog number:** &#91;x&#93;&#40;y&#41; &#35;1',
+      '**Occurrence ID:** urn:x:&#60;1&#62;&#38;&#35;64;',
+      '  - StillImage — Plate &#42;1&#42; (image/&#60;jpeg&#62;) [&#40;c&#41; A &#38; B]: [https://example.org/a_b(1).jpg](<https://example.org/a_b(1).jpg>)',
+      '  - [URL&#42;] &#91;1&#93;&#40;2&#41;',
+    ])
+      expect(lines).toContain(line);
+  });
+
+  /**
+   * The URL-valued fields: an absolute http(s) value is one link whose destination is
+   * the value, `&` and `_` as sent; any other value is escaped text. `linkOrEscapedText`
+   * carries the full value table — these cases prove each field reaches it.
+   */
+  const urlFields = [
+    {
+      field: 'occurrenceID',
+      raw: (value: string) => ({ occurrenceID: value }),
+      sent: (structured: Record<string, unknown> | undefined) => structured?.occurrenceID,
+      line: (text: string) => `**Occurrence ID:** ${text}`,
+    },
+    {
+      field: 'media identifier',
+      raw: (value: string) => ({ media: [{ type: 'StillImage', identifier: value }] }),
+      sent: (structured: Record<string, unknown> | undefined) =>
+        (structured?.media as { identifier?: string }[] | undefined)?.[0]?.identifier,
+      line: (text: string) => `  - StillImage: ${text}`,
+    },
+    {
+      field: 'identifiers[].identifier',
+      raw: (value: string) => ({ identifiers: [{ type: 'URL', identifier: value }] }),
+      sent: (structured: Record<string, unknown> | undefined) =>
+        (structured?.identifiers as { identifier?: string }[] | undefined)?.[0]?.identifier,
+      line: (text: string) => `  - [URL] ${text}`,
+    },
+  ];
+
+  it.each(urlFields)('renders an http(s) $field as one link to the value', async (field) => {
+    const url = 'https://example.org/media?id=1&size=large_2';
+    const { structured, lines } = await linesOf({ key: 11, ...field.raw(url) });
+
+    expect(field.sent(structured)).toBe(url);
+    expect(lines).toContain(
+      field.line(
+        '[https://example.org/media?id=1&size=large_2](<https://example.org/media?id=1&size=large_2>)',
+      ),
+    );
+  });
+
+  it.each(urlFields)('renders a non-URL $field as escaped text', async (field) => {
+    const urn = 'urn:catalog:MCZ:Herp:A-1_2';
+    const { structured, lines } = await linesOf({ key: 12, ...field.raw(urn) });
+
+    expect(field.sent(structured)).toBe(urn);
+    expect(lines).toContain(field.line('urn:catalog:MCZ:Herp:A-1&#95;2'));
   });
 });
 

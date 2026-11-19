@@ -7,6 +7,7 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifSpeciesResource } from '@/mcp-server/resources/definitions/gbif-species.resource.js';
+import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 import { callWorker } from '../helpers/worker-request.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
@@ -171,7 +172,7 @@ describe('gbifSpeciesResource', () => {
       data: {
         reason: 'invalid_filter',
         recovery: {
-          hint: 'Address the resource with a whole backbone taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
+          hint: 'Address the resource with a whole taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
         },
       },
     });
@@ -280,7 +281,8 @@ describe('gbifSpeciesResource', () => {
 
     const err = await gbifSpeciesResource.handler(params, ctx).catch((e: unknown) => e);
     expect(err).toMatchObject({ data: { reason: 'not_found' } });
-    expect((err as McpError).message).toMatch(/Taxon key 999999999 not found in the GBIF backbone/);
+    expect((err as McpError).message).toMatch(/Taxon key 999999999 not found in GBIF/);
+    expect((err as McpError).message).not.toMatch(/backbone/i);
     // Upstream HTTP envelope must not leak through.
     expect((err as McpError).message).not.toContain('HTTP 404');
   });
@@ -367,6 +369,60 @@ describe('gbifSpeciesResource', () => {
     await gbifSpeciesResource.handler(params, ctx);
 
     expect(mockGetSpecies).toHaveBeenCalledWith(5231190, ctx);
+  });
+
+  /**
+   * #94 — /species/{key} reads every checklist. Live /species/152543218 is a usage of
+   * checklist 6d9e952f-… whose backbone key is nubKey 2498252; /species/206094766 sends
+   * no nubKey at all, because the backbone has no mapping for it.
+   */
+  describe('checklist identity (#94)', () => {
+    const CHECKLIST = '6d9e952f-948c-4483-9807-575348147c7e';
+
+    it('returns the nubKey and datasetKey of a checklist usage through resources/read', async () => {
+      mockGetSpecies.mockResolvedValue({
+        key: 152543218,
+        nubKey: 2498252,
+        datasetKey: CHECKLIST,
+        canonicalName: 'Alopochen aegyptiaca',
+      });
+      const body = await readSpecies('152543218');
+      expect(body.error).toBeUndefined();
+      expect(JSON.parse(body.result!.contents[0].text)).toMatchObject({
+        key: 152543218,
+        nubKey: 2498252,
+        datasetKey: CHECKLIST,
+      });
+    });
+
+    it('infers no nubKey for an unmapped usage', async () => {
+      mockGetSpecies.mockResolvedValue({
+        key: 206094766,
+        datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed',
+        canonicalName: 'Septoria galinsogae',
+      });
+      const body = await readSpecies('206094766');
+      const record = JSON.parse(body.result!.contents[0].text);
+      expect(record).toMatchObject({ datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed' });
+      expect(record).not.toHaveProperty('nubKey');
+    });
+
+    it('describes the identity keys as gbif_search_species does, and no usage key as backbone', () => {
+      const { shape } = gbifSpeciesResource.output!;
+      const searchRow = gbifSearchSpecies.output.shape.taxa.element.shape;
+      for (const field of ['key', 'datasetKey', 'nubKey'] as const) {
+        expect(shape[field].description, field).toBe(searchRow[field].description);
+      }
+      for (const field of ['acceptedKey', 'numDescendants'] as const) {
+        expect(shape[field].description, field).not.toMatch(/backbone/i);
+      }
+      expect(gbifSpeciesResource.description).toContain('nubKey');
+      for (const entry of gbifSpeciesResource.errors ?? []) {
+        expect(entry.when, entry.reason).not.toMatch(/backbone/i);
+      }
+      const invalid = gbifSpeciesResource.errors?.find((e) => e.reason === 'invalid_filter');
+      expect(invalid?.recovery).not.toMatch(/backbone/i);
+    });
   });
 
   /**

@@ -19,8 +19,9 @@ import {
 /**
  * One notice for the match: a later enrich.notice() call replaces an earlier one, and a
  * higher-rank match on a synonym (Nyctea xyzzyqq → genus Nyctea → Bubo) needs both
- * disclosures. Only a Backbone key is pointed at the occurrence tools and
- * gbif_get_species, which take Backbone integers.
+ * disclosures. Only a Backbone key is pointed at the occurrence tools, which take
+ * Backbone integers, and at gbif_get_species, which takes integer usage keys: a
+ * Catalogue of Life key is a string that fits neither.
  */
 function matchNotice(name: string, taxon: MatchedTaxon): string | undefined {
   const { key, matchType, canonicalName, status, acceptedName } = taxon;

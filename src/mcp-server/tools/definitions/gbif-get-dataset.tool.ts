@@ -21,11 +21,7 @@ import {
 export const gbifGetDataset = tool('gbif_get_dataset', {
   title: 'Get Dataset',
   description:
-    'Fetch full dataset metadata by UUID key — title, description, citation text, contacts, license, ' +
-    'DOI, record count, numConstituents (sub-datasets), temporal/geographic coverage, and the publishing ' +
-    'organization key, which gbif_search_datasets takes as publishingOrg. Use after gbif_search_datasets ' +
-    "or when an occurrence record's datasetKey needs provenance detail. " +
-    'Contacts are capped by contactLimit (default 10); contactsTotal and contactsReturned report the full count.',
+    "Fetch full dataset metadata by UUID key — title, description, citation text, contacts, license, DOI, record count, numConstituents (sub-datasets), temporal coverage, geographic coverage with its bounding boxes, the deletion timestamp of a dataset GBIF no longer publishes, and the publishing organization key, which gbif_search_datasets takes as publishingOrg. Use after gbif_search_datasets or when an occurrence record's datasetKey needs provenance detail. Contacts are capped by contactLimit (default 10); contactsTotal and contactsReturned report the full count.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     datasetKey: z
@@ -40,6 +36,12 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
   output: z.object({
     key: z.string().optional().describe('Dataset UUID.'),
     title: z.string().optional().describe('Dataset title.'),
+    deleted: z
+      .string()
+      .optional()
+      .describe(
+        'When GBIF deleted the dataset, as the timestamp GBIF sends (e.g. 2026-11-10T20:11:45.006+00:00). A deleted dataset is no longer published or searchable, and GBIF indexes none of its occurrences. Absent on a published dataset.',
+      ),
     type: z.string().optional().describe('Dataset type (OCCURRENCE, CHECKLIST, etc.).'),
     description: z.string().optional().describe('Full dataset description. May be absent.'),
     license: z.string().optional().describe('License identifier. May be absent.'),
@@ -153,11 +155,34 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
               .string()
               .optional()
               .describe('Geographic coverage description (e.g. "Worldwide"). May be absent.'),
+            boundingBox: z
+              .object({
+                minLatitude: z.number().optional().describe('Southern bound in decimal degrees.'),
+                maxLatitude: z.number().optional().describe('Northern bound in decimal degrees.'),
+                minLongitude: z
+                  .number()
+                  .optional()
+                  .describe("Western bound in decimal degrees — EML's westBoundingCoordinate."),
+                maxLongitude: z
+                  .number()
+                  .optional()
+                  .describe("Eastern bound in decimal degrees — EML's eastBoundingCoordinate."),
+                globalCoverage: z
+                  .boolean()
+                  .optional()
+                  .describe("GBIF's global-coverage flag for the box, as sent."),
+              })
+              .optional()
+              .describe(
+                'Bounding box the dataset declares, with every value as GBIF sends it. GBIF maps EML west and east bounds to minLongitude and maxLongitude, so a minLongitude above maxLongitude is a box crossing the antimeridian, not an error. May be absent.',
+              ),
           })
-          .describe('A geographic coverage entry.'),
+          .describe('A geographic coverage entry: a description, a bounding box, or both.'),
       )
       .optional()
-      .describe('Geographic coverage descriptions declared by the dataset. May be absent.'),
+      .describe(
+        'Geographic coverage declared by the dataset — descriptions and bounding boxes. May be absent.',
+      ),
   }),
 
   /**
@@ -261,6 +286,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     return {
       key: raw.key,
       title: raw.title,
+      deleted: raw.deleted,
       type: raw.type,
       description: raw.description ? stripHtml(raw.description) : undefined,
       license: raw.license,
@@ -280,6 +306,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     const result = {
       ...rawResult,
       title: escapeMarkdownText(rawResult.title ?? 'Dataset'),
+      deleted: rawResult.deleted && escapeMarkdownText(rawResult.deleted),
       key: rawResult.key && escapeMarkdownText(rawResult.key),
       type: rawResult.type && escapeMarkdownText(rawResult.type),
       license: rawResult.license && escapeMarkdownText(rawResult.license),
@@ -292,6 +319,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       citationText: rawResult.citationText && escapeMarkdownText(rawResult.citationText),
       description: rawResult.description && escapeMarkdownText(rawResult.description, false),
       geographicCoverages: rawResult.geographicCoverages?.map((entry) => ({
+        ...entry,
         description: entry.description && escapeMarkdownText(entry.description),
       })),
       contacts: rawResult.contacts?.map((contact) => ({
@@ -304,6 +332,10 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     };
     const lines: string[] = [];
     lines.push(`## ${result.title ?? 'Dataset'}`);
+    if (result.deleted)
+      lines.push(
+        `**Deleted:** ${result.deleted} — no longer published or searchable; GBIF indexes none of its occurrences.`,
+      );
     if (result.key) lines.push(`**Key:** ${result.key}`);
     if (result.type) lines.push(`**Type:** ${result.type}`);
     if (result.license) lines.push(`**License:** ${result.license}`);
@@ -336,8 +368,18 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     }
     if (result.temporalCoverageNotice) lines.push(result.temporalCoverageNotice);
     if (result.geographicCoverages?.length) {
-      const descs = result.geographicCoverages.map((g) => g.description).filter(Boolean);
-      if (descs.length > 0) lines.push(`**Geographic coverage:** ${descs.join('; ')}`);
+      const entries = result.geographicCoverages
+        .map(({ description, boundingBox }) => {
+          // Every value as sent: a bound rendered through toLocaleString would round it.
+          const box =
+            boundingBox &&
+            `bounding box in decimal degrees (${Object.entries(boundingBox)
+              .flatMap(([field, value]) => (value === undefined ? [] : [`${field}: ${value}`]))
+              .join(', ')})`;
+          return [description, box].filter(Boolean).join(' — ');
+        })
+        .filter(Boolean);
+      if (entries.length > 0) lines.push(`**Geographic coverage:** ${entries.join('; ')}`);
     }
     if (result.citationText) lines.push(`\n**Citation:**\n> ${result.citationText}`);
     if (result.description) lines.push(`\n${result.description}`);

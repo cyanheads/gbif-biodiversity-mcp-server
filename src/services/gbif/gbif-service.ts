@@ -31,6 +31,7 @@ import {
   type RawSpeciesMatch,
   type RawSpeciesRecord,
   type RawSpeciesSearchResponse,
+  type TaxonomicStatus,
 } from './types.js';
 
 /**
@@ -169,12 +170,14 @@ async function gbifHttpError(response: Response): Promise<McpError> {
  * same filters. Every supplied value goes out byte-identically, `0` and `false`
  * included; an `undefined` one is not sent. Blank strings never arrive: the tools
  * reject them first, because the endpoint reads a parameter with no value as no
- * filter and answers the unfiltered scope.
+ * filter and answers the unfiltered scope. An array stays an array here, and
+ * `buildUrl` sends one repeated parameter per member, in order, which GBIF ORs;
+ * an empty one would send nothing, so the tools refuse it first too.
  *
  * Each goes out under the parameter `OCCURRENCE_FILTER_PARAMS` names, so
- * `checklistTaxonKey` is sent as `taxonKey`. The tools never pass it beside a
- * Backbone `taxonKey`: `occurrenceFilterViolation` admits each only under its own
- * checklist.
+ * `checklistTaxonKey`, one key or several, is sent as `taxonKey`. The tools never
+ * pass it beside a Backbone `taxonKey`: `occurrenceFilterViolation` admits each only
+ * under its own checklist.
  */
 function occurrenceParams(filters: OccurrenceFilters): Record<string, unknown> {
   return Object.fromEntries(
@@ -413,11 +416,16 @@ export class GbifService {
    * checklist's. Repeated values are OR-ed, not intersected — `higherTaxonKey=1` and
    * `higherTaxonKey=6` together return 6,534,100, exactly their sum — so only one is
    * sent.
+   *
+   * `status` goes out as one repeated parameter per value, and GBIF OR-s those the
+   * same way, which is what a list of statuses means: under Quercus at rank SPECIES,
+   * `status=ACCEPTED` returns 966 and `status=ACCEPTED&status=DOUBTFUL` 1,146.
    */
   searchSpecies(
     params: {
       q?: string;
       rank?: string;
+      status?: readonly TaxonomicStatus[];
       higherTaxonKey?: number;
       isExtinct?: boolean;
       datasetKey?: string;
@@ -429,6 +437,7 @@ export class GbifService {
     const queryParams: Record<string, unknown> = {};
     if (params.q) queryParams.q = params.q;
     if (params.rank) queryParams.rank = params.rank;
+    if (params.status) queryParams.status = params.status;
     if (params.higherTaxonKey !== undefined) queryParams.higherTaxonKey = params.higherTaxonKey;
     if (params.isExtinct !== undefined) queryParams.isExtinct = params.isExtinct;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;

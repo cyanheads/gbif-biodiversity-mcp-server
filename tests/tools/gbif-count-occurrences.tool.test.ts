@@ -102,7 +102,7 @@ describe('gbifCountOccurrences', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
+            hint: 'A blank filter is not a way to skip one — omit the field instead. Supply hasCoordinate or its alias isGeoreferenced alone, or both with equal values. Otherwise correct the named filter: geometry is a closed WKT ring in longitude latitude order, geoDistance is latitude,longitude,distance with the distance ending in km or m ("38.17,-3.95,25km"), ranges are "min,max", where "*" may stand for an open end, written with no whitespace between the "*" and the comma ("*,1990"), but never for the whole value, datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry come from COUNTRY or PUBLISHING_COUNTRY facets.',
           },
         },
       },
@@ -434,13 +434,15 @@ describe('gbifCountOccurrences', () => {
   /**
    * GBIF answers an unrecognized iucnRedListCategory with HTTP 200 and a count of
    * zero rather than an error, so the schema enum is the only thing standing
-   * between a caller typo and a confident empty answer. NE is rejected on the same
-   * grounds: it matches no record in the index.
+   * between a caller typo and a confident empty answer. NE (Not Evaluated) is a
+   * category GBIF indexes, so the enum takes it.
    */
   it('rejects a category GBIF would answer with a silent zero', () => {
     expect(() => gbifCountOccurrences.input.parse({ iucnRedListCategory: 'VULNERABLE' })).toThrow();
     expect(() => gbifCountOccurrences.input.parse({ iucnRedListCategory: 'vu' })).toThrow();
-    expect(() => gbifCountOccurrences.input.parse({ iucnRedListCategory: 'NE' })).toThrow();
+    expect(
+      gbifCountOccurrences.input.parse({ iucnRedListCategory: 'NE' }).iucnRedListCategory,
+    ).toBe('NE');
     expect(() => gbifCountOccurrences.input.parse({ iucnRedListCategory: 'VU' })).not.toThrow();
   });
 

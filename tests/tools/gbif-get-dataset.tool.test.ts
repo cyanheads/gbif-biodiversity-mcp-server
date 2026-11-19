@@ -477,8 +477,8 @@ describe('gbifGetDataset', () => {
   });
 
   it('drops coverage entries that carry no bound or description', async () => {
-    // GBIF also emits verbatim/single-date temporal shapes and boundingBox-only geographic
-    // entries; without a start/end or description they project to nothing and are omitted.
+    // A temporal entry with no usable date and a geographic entry with neither a
+    // description nor a bounding box project to nothing and are omitted.
     mockGetDataset.mockResolvedValue({
       key: INAT_KEY,
       temporalCoverages: [{}],
@@ -504,6 +504,107 @@ describe('gbifGetDataset', () => {
     expect(text).toContain('1800-01-01');
     expect(text).toContain('2024-12-31');
     expect(text).toContain('Worldwide');
+    expect(text.split('\n')).toContain('**Geographic coverage:** Worldwide');
+  });
+
+  /**
+   * #95 — fixtures are live /v1/dataset records: 59f27a74 (deleted 2026-11-10),
+   * 50c9509d (iNaturalist, a box beside the description "Bounding Box"), and
+   * eb974f54 (a box with no description).
+   */
+  describe('deleted datasets and coverage bounding boxes (#95)', () => {
+    const DELETED_KEY = '59f27a74-b861-4e34-a2d8-a50b75a83caa';
+    const BOX_ONLY_KEY = 'eb974f54-0a3c-496a-85ac-703b9c63e55a';
+    const DELETED = '2026-11-10T20:11:45.006+00:00';
+    const INAT_BOX = {
+      minLatitude: -87.80586803331971,
+      maxLatitude: 89.98972198460251,
+      minLongitude: 0,
+      maxLongitude: -1.6763806343078613e-7,
+      globalCoverage: false,
+    };
+    const AIRDNA_BOX = {
+      minLatitude: 56.8336111111,
+      maxLatitude: 56.8347222222,
+      minLongitude: 10.2477777778,
+      maxLongitude: 10.2516666667,
+      globalCoverage: false,
+    };
+    const textOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.content ?? []).map((block) => (block.type === 'text' ? block.text : '')).join('\n');
+
+    it('returns deleted on both surfaces, on the line under the title', async () => {
+      mockGetDataset.mockResolvedValue({
+        key: DELETED_KEY,
+        title: 'UCarpHT vegetation data',
+        type: 'OCCURRENCE',
+        deleted: DELETED,
+      });
+      mockCount.mockResolvedValue(0);
+
+      const result = await runToolContract(gbifGetDataset, { datasetKey: DELETED_KEY });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ deleted: DELETED, recordCount: 0 });
+      const lines = textOf(result).split('\n');
+      expect(lines[0]).toBe('## UCarpHT vegetation data');
+      expect(lines[1]).toBe(
+        '**Deleted:** 2026-11-10T20:11:45.006+00:00 — no longer published or searchable; GBIF indexes none of its occurrences.',
+      );
+    });
+
+    it('returns neither the field nor the line for a published dataset', async () => {
+      mockGetDataset.mockResolvedValue({ key: INAT_KEY, title: 'iNaturalist', numRecords: 1 });
+
+      const result = await runToolContract(gbifGetDataset, { datasetKey: INAT_KEY });
+
+      expect(JSON.parse(JSON.stringify(result.structuredContent))).not.toHaveProperty('deleted');
+      const text = textOf(result);
+      expect(text).not.toContain('Deleted');
+      expect(text).not.toContain('no longer published');
+    });
+
+    it('says what deletion means in the field description', () => {
+      const description = gbifGetDataset.output.shape.deleted.description ?? '';
+      for (const phrase of ['no longer published', 'searchable', 'indexes none', 'Absent'])
+        expect(description).toContain(phrase);
+    });
+
+    it('returns a box beside its description, and a box alone, on both surfaces', async () => {
+      mockGetDataset.mockResolvedValue({
+        key: INAT_KEY,
+        title: 'iNaturalist Research-grade Observations',
+        numRecords: 1,
+        geographicCoverages: [{ description: 'Bounding Box', boundingBox: INAT_BOX }],
+      });
+      const described = await runToolContract(gbifGetDataset, { datasetKey: INAT_KEY });
+      expect(described.structuredContent?.geographicCoverages).toEqual([
+        { description: 'Bounding Box', boundingBox: INAT_BOX },
+      ]);
+      expect(textOf(described).split('\n')).toContain(
+        '**Geographic coverage:** Bounding Box — bounding box in decimal degrees (minLatitude: -87.80586803331971, maxLatitude: 89.98972198460251, minLongitude: 0, maxLongitude: -1.6763806343078613e-7, globalCoverage: false)',
+      );
+
+      mockGetDataset.mockResolvedValue({
+        key: BOX_ONLY_KEY,
+        title: 'Advancing airDNA Experiment 3 BirT',
+        numRecords: 1,
+        geographicCoverages: [{ boundingBox: AIRDNA_BOX }],
+      });
+      const boxOnly = await runToolContract(gbifGetDataset, { datasetKey: BOX_ONLY_KEY });
+      expect(boxOnly.structuredContent?.geographicCoverages).toEqual([{ boundingBox: AIRDNA_BOX }]);
+      expect(textOf(boxOnly).split('\n')).toContain(
+        '**Geographic coverage:** bounding box in decimal degrees (minLatitude: 56.8336111111, maxLatitude: 56.8347222222, minLongitude: 10.2477777778, maxLongitude: 10.2516666667, globalCoverage: false)',
+      );
+    });
+
+    it('describes a box crossing the antimeridian as sent', () => {
+      const description =
+        gbifGetDataset.output.shape.geographicCoverages.unwrap().element.shape.boundingBox
+          .description ?? '';
+      expect(description).toContain('antimeridian');
+      expect(description).toContain('minLongitude');
+    });
   });
 
   it('formats output with key fields', () => {

@@ -4,6 +4,8 @@ import { gbifCountOccurrences } from '@/mcp-server/tools/definitions/gbif-count-
 import { gbifOccurrenceFacets } from '@/mcp-server/tools/definitions/gbif-occurrence-facets.tool.js';
 import { gbifSearchDatasets } from '@/mcp-server/tools/definitions/gbif-search-datasets.tool.js';
 import { gbifSearchOccurrences } from '@/mcp-server/tools/definitions/gbif-search-occurrences.tool.js';
+import { gbifSearchPublishers } from '@/mcp-server/tools/definitions/gbif-search-publishers.tool.js';
+import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 
 describe('individual tool guidance', () => {
   it.each([gbifCountOccurrences, gbifSearchOccurrences])(
@@ -77,5 +79,41 @@ describe('individual tool guidance', () => {
       for (const text of ['984', 'first 25', 'Butterfly Conservation', '13 publish'])
         expect(description).not.toContain(text);
     }
+  });
+  /**
+   * #100 — the strict `/species/match` the scope filters call ignores letter case
+   * ("animalia", "pARidae", and "QUERCUS" each resolve), so no scope surface may state a
+   * capitalization rule. A misspelling, a wrong rank, and a name several kingdoms share
+   * still fail, and stay in the error contract.
+   */
+  it('states no capitalization rule on the gbif_search_species scope surfaces', () => {
+    const unresolved = gbifSearchSpecies.errors?.find((e) => e.reason === 'unresolved_taxon_scope');
+    const scopeFields = (['kingdom', 'family', 'genus'] as const).map(
+      (field) => gbifSearchSpecies.input.shape[field].description ?? '',
+    );
+    const recovery = unresolved?.recovery ?? '';
+    const when = unresolved?.when ?? '';
+    for (const text of [gbifSearchSpecies.description, ...scopeFields, when, recovery]) {
+      expect(text).not.toMatch(/capitaliz/i);
+      expect(text).not.toMatch(/lowercase/i);
+      expect(text).not.toMatch(/"(animalia|paridae)"/);
+    }
+    for (const text of [gbifSearchSpecies.description, ...scopeFields, recovery])
+      expect(text).toContain('letter case');
+    for (const text of ['misspelling', 'wrong rank', 'shared across kingdoms'])
+      expect(when).toContain(text);
+  });
+  /**
+   * #100 — `/organization` parses alpha-2 and alpha-3 codes and GBIF's own enum name for
+   * a country ("Sweden", "United Kingdom", "UNITED_KINGDOM"), and answers HTTP 400 to any
+   * other name ("Britain", "UK") or a numeric code, so the recovery cannot reject country
+   * names wholesale.
+   */
+  it('keeps the gbif_search_publishers country recovery true of what /organization parses', () => {
+    const recovery =
+      gbifSearchPublishers.errors?.find((e) => e.reason === 'invalid_filter')?.recovery ?? '';
+    expect(recovery).not.toMatch(/country name is not accepted/i);
+    for (const text of ['alpha-2', 'alpha-3', 'UNITED_KINGDOM', 'Britain'])
+      expect(recovery).toContain(text);
   });
 });

@@ -6,6 +6,7 @@
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
 import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
@@ -528,9 +529,10 @@ describe('gbifSearchSpecies', () => {
   });
 
   /**
-   * Under `strict` a misspelling, a lowercase name, and a name several kingdoms share
-   * all answer matchType NONE. Failing by name beats the old behavior, where the
-   * unmatched value was forwarded and ignored and the whole index came back.
+   * Under `strict` a misspelling and a name several kingdoms share both answer
+   * matchType NONE; letter case alone does not ("pARidae" matches Paridae). Failing
+   * by name beats the old behavior, where the unmatched value was forwarded and
+   * ignored and the whole index came back.
    */
   it('rejects a scope name that matches no backbone taxon', async () => {
     matchesByName({});
@@ -850,6 +852,18 @@ describe('gbifSearchSpecies', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
 
     expect(text).toContain('Unknown');
+  });
+
+  /**
+   * On a checklist row the count is that checklist's, not the backbone's, and it counts
+   * every descendant rather than only direct children — the reading gbif_get_species
+   * already gives the same field.
+   */
+  it('describes numDescendants as gbif_get_species does, with no backbone or children claim', () => {
+    const description =
+      gbifSearchSpecies.output.shape.taxa.element.shape.numDescendants.description;
+    expect(description).toBe('Count of descendant taxa under this taxon in its source checklist.');
+    expect(description).toBe(gbifGetSpecies.output.shape.numDescendants.description);
   });
 
   /**
@@ -1201,7 +1215,7 @@ describe('gbifSearchSpecies', () => {
       expect(recovery).toContain('100,000');
       expect(recovery).toContain('gbif_get_species_children');
       const inputs = Object.keys(gbifSearchSpecies.input.shape);
-      for (const field of ['kingdom', 'family', 'genus', 'rank', 'isExtinct', 'q']) {
+      for (const field of ['kingdom', 'family', 'genus', 'rank', 'status', 'isExtinct', 'q']) {
         expect(recovery).toContain(field);
         expect(inputs).toContain(field);
       }
@@ -1293,6 +1307,229 @@ describe('gbifSearchSpecies', () => {
         'Offset 99980 exceeds totalCount (714). Reset offset to 0 or reduce it below 714 to page through results.',
       );
       expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({ offset: 99_980, limit: 20 });
+    });
+  });
+
+  /**
+   * #96 — listing a genus's accepted species is the standard checklist question, and
+   * without a status filter a caller pages every row and filters taxonomicStatus
+   * itself: live, genus Quercus at rank SPECIES holds 3,132 names of which 966 are
+   * ACCEPTED. `/species/search` takes `status` repeated and OR-s the values.
+   */
+  describe('taxonomic status filter (#96)', () => {
+    const BACKBONE = 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c';
+    const QUERCUS_ROBUR = {
+      key: 2878688,
+      nubKey: 2878688,
+      datasetKey: BACKBONE,
+      scientificName: 'Quercus robur L.',
+      canonicalName: 'Quercus robur',
+      rank: 'SPECIES',
+      taxonomicStatus: 'ACCEPTED',
+      kingdom: 'Plantae',
+      family: 'Fagaceae',
+      genus: 'Quercus',
+      numDescendants: 3,
+      numOccurrences: 0,
+    };
+    const quercusPage = (count: number) => ({
+      results: [QUERCUS_ROBUR],
+      count,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    /** Omitted, the request and both response surfaces are what they were before the filter. */
+    it('sends and answers exactly as before when status is omitted', async () => {
+      matchesByName({ Quercus: 'Quercus' });
+      mockSearchSpecies.mockResolvedValue(quercusPage(3132));
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        genus: 'Quercus',
+        rank: 'SPECIES',
+      });
+
+      expect(mockSearchSpecies.mock.calls[0][0]).toStrictEqual({
+        rank: 'SPECIES',
+        higherTaxonKey: 2877951,
+        datasetKey: BACKBONE,
+        limit: 20,
+        offset: 0,
+      });
+      expect(JSON.parse(JSON.stringify(result.structuredContent))).toStrictEqual({
+        taxa: [
+          {
+            key: 2878688,
+            datasetKey: BACKBONE,
+            nubKey: 2878688,
+            scientificName: 'Quercus robur L.',
+            canonicalName: 'Quercus robur',
+            rank: 'SPECIES',
+            taxonomicStatus: 'ACCEPTED',
+            kingdom: 'Plantae',
+            family: 'Fagaceae',
+            genus: 'Quercus',
+            numDescendants: 3,
+          },
+        ],
+        totalCount: 3132,
+        offset: 0,
+        limit: 20,
+        endOfRecords: false,
+        taxonScope: 'genus "Quercus" scoped the search to backbone taxon Quercus (key 2877951).',
+      });
+      expect(result.content).toStrictEqual([
+        {
+          type: 'text',
+          text: [
+            '**Results:** 1',
+            '\n## Quercus robur [Quercus robur L.]',
+            '**Taxon usage key:** 2878688',
+            `**Dataset key:** ${BACKBONE}`,
+            '**Backbone key:** 2878688',
+            '**Rank:** SPECIES',
+            '**Status:** ACCEPTED',
+            '**Classification:** Kingdom: Plantae › Family: Fagaceae › Genus: Quercus',
+            '**Descendants:** 3',
+          ].join('\n'),
+        },
+        {
+          type: 'text',
+          text: '\n\n**totalCount:** 3132\n**offset:** 0\n**limit:** 20\n**endOfRecords:** false\n**taxonScope:** `genus "Quercus" scoped the search to backbone taxon Quercus (key 2877951).`',
+        },
+      ]);
+    });
+
+    it('forwards status beside the scope and echoes it under its own key on both surfaces', async () => {
+      matchesByName({ Quercus: 'Quercus' });
+      mockSearchSpecies.mockResolvedValue(quercusPage(966));
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        genus: 'Quercus',
+        rank: 'SPECIES',
+        status: ['ACCEPTED'],
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({
+        rank: 'SPECIES',
+        higherTaxonKey: 2877951,
+        status: ['ACCEPTED'],
+      });
+      expect(result.structuredContent).toMatchObject({
+        totalCount: 966,
+        status: ['ACCEPTED'],
+        taxonScope: 'genus "Quercus" scoped the search to backbone taxon Quercus (key 2877951).',
+      });
+      const trailer = result.content?.at(-1);
+      expect(trailer?.type === 'text' && trailer.text).toContain('**status:** ["ACCEPTED"]');
+    });
+
+    /** GBIF OR-s repeated values: ACCEPTED plus DOUBTFUL returns 1,146 on the scope above, the sum of the two. */
+    it('sends several statuses together, alongside q and a checklist datasetKey', async () => {
+      mockSearchSpecies.mockResolvedValue(quercusPage(1146));
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        q: 'Quercus',
+        datasetKey: 'e1c3be64-2799-4342-8312-49d076993132',
+        status: ['ACCEPTED', 'DOUBTFUL'],
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(mockSearchSpecies.mock.calls[0][0]).toMatchObject({
+        q: 'Quercus',
+        datasetKey: 'e1c3be64-2799-4342-8312-49d076993132',
+        status: ['ACCEPTED', 'DOUBTFUL'],
+      });
+      expect(result.structuredContent?.status).toStrictEqual(['ACCEPTED', 'DOUBTFUL']);
+      expect(JSON.stringify(result.content)).toContain('ACCEPTED\\",\\"DOUBTFUL');
+    });
+
+    it('accepts each status /species/search parses and keeps it through input parsing', () => {
+      for (const status of [
+        'ACCEPTED',
+        'DOUBTFUL',
+        'SYNONYM',
+        'HETEROTYPIC_SYNONYM',
+        'HOMOTYPIC_SYNONYM',
+        'PROPARTE_SYNONYM',
+        'MISAPPLIED',
+      ]) {
+        expect(gbifSearchSpecies.input.parse({ status: [status] }).status).toStrictEqual([status]);
+      }
+    });
+
+    /**
+     * `/species/search` answers anything outside its seven with HTTP 400 `Cannot parse
+     * … into a known TaxonomicStatus` — AMBIGUOUS_SYNONYM and PROVISIONALLY_ACCEPTED
+     * included, though `/enumeration/basic/TaxonomicStatus` lists both — and an empty
+     * list would send no status at all. The schema stops each before any request.
+     */
+    it.each([
+      [[]],
+      [['AMBIGUOUS_SYNONYM']],
+      [['PROVISIONALLY_ACCEPTED']],
+      [['accepted']],
+      [['ACCEPTED', 'UNKNOWN']],
+      ['ACCEPTED'],
+    ])('rejects status %j at the schema', (status) => {
+      const parsed = gbifSearchSpecies.input.safeParse({ status });
+      expect(parsed.success).toBe(false);
+      // On the value itself, not as an undeclared key the strict input refuses.
+      expect(parsed.error?.issues.map((i) => i.path[0])).toContain('status');
+    });
+
+    it('advertises status as a non-empty array of the seven statuses', () => {
+      const status = advertisedInput(gbifSearchSpecies).properties.status as {
+        type?: string;
+        minItems?: number;
+        items?: { enum?: string[] };
+      };
+      expect(status.type).toBe('array');
+      expect(status.minItems).toBe(1);
+      expect([...(status.items?.enum ?? [])].sort()).toStrictEqual([
+        'ACCEPTED',
+        'DOUBTFUL',
+        'HETEROTYPIC_SYNONYM',
+        'HOMOTYPIC_SYNONYM',
+        'MISAPPLIED',
+        'PROPARTE_SYNONYM',
+        'SYNONYM',
+      ]);
+    });
+
+    /** Live: SYNONYM alone returns 1,574 Quercus species and HETEROTYPIC_SYNONYM another 223. */
+    it('says SYNONYM excludes the other synonym forms', () => {
+      const description = gbifSearchSpecies.input.shape.status.description ?? '';
+      for (const text of ['SYNONYM', 'heterotypic', 'homotypic', 'pro parte'])
+        expect(description).toContain(text);
+    });
+
+    it('names status among the routes for an empty match', async () => {
+      mockSearchSpecies.mockResolvedValue(emptyPage);
+
+      const result = await runToolContract(gbifSearchSpecies, {
+        q: 'Quercus',
+        status: ['MISAPPLIED'],
+      });
+
+      expect(result.structuredContent?.notice).toContain('status');
+      expect(JSON.stringify(result.content)).toContain('drop the rank or status filter');
+    });
+
+    it('names status among the narrowing routes past the ceiling', async () => {
+      mockSearchSpecies.mockResolvedValue({
+        ...emptyPage,
+        results: [QUERCUS_ROBUR],
+        count: 2101916,
+      });
+
+      const result = await runToolContract(gbifSearchSpecies, {});
+
+      expect(result.structuredContent?.notice).toContain('rank, status, isExtinct, and q');
+      expect(gbifSearchSpecies.input.shape.offset.description).toContain('status');
+      expect(gbifSearchSpecies.description).toContain('status');
     });
   });
 });

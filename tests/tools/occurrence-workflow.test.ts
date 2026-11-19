@@ -323,6 +323,10 @@ describe('equivalent population filters (#70)', () => {
     geometry: 'POLYGON((15 -35,35 -35,35 -20,15 -20,15 -35))',
     year: '2020,2024',
     month: 12,
+    eventDate: '2025,2026-03',
+    geoDistance: '38.17, -3.95, 25km',
+    elevation: '-5,2000.5',
+    depth: '*,200',
     basisOfRecord: 'FOSSIL_SPECIMEN',
     hasCoordinate: false,
     isInCluster: false,
@@ -396,6 +400,11 @@ describe('equivalent population filters (#70)', () => {
       'POLYGON((-125 45,-120 45,-120 50,-125 50,-125 45))',
     ],
     ['month', 1, 12],
+    // #97: each pair and the omitted control count three different Lynx, Quercus, or Gadus populations.
+    ['eventDate', '2026-01-01,2026-06-30', '2025-01-01,2025-12-31'],
+    ['geoDistance', '38.17,-3.95,25km', '37.0,-6.45,25km'],
+    ['elevation', '2000,9000', '0,1999'],
+    ['depth', '200,10000', '0,199'],
     ['basisOfRecord', 'FOSSIL_SPECIMEN', 'OBSERVATION'],
     ['hasCoordinate', false, true],
     ['isInCluster', false, true],
@@ -415,7 +424,7 @@ describe('equivalent population filters (#70)', () => {
     ['typeStatus', 'Holotype', 'Isotype'],
     ['establishmentMeans', 'introduced', 'native'],
     ['license', 'CC0_1_0', 'CC_BY_4_0'],
-    // #90: with no taxon key, either checklist scopes the same population.
+    // #90: with no taxon key, each checklist keeps only the records GBIF classified in it, not the omitted key's population.
     ['checklistKey', BACKBONE_CHECKLIST_KEY, COL_XR_CHECKLIST_KEY],
   ] as const;
   for (const [field, value, exclusive] of filters) {
@@ -526,6 +535,11 @@ describe('equivalent population filters (#70)', () => {
     'typeStatus',
     'establishmentMeans',
     'checklistTaxonKey',
+    'month',
+    'eventDate',
+    'geoDistance',
+    'elevation',
+    'depth',
   ]) {
     it.each(calls)(`$name rejects blank ${field} with recovery`, async ({ run }) => {
       for (const blank of ['', ' \n ']) {
@@ -557,6 +571,9 @@ describe('integer numeric inputs (#75)', () => {
       { name, run, field: 'taxonKey', value: 2435261.5 },
       { name, run, field: 'taxonKey', value: -5 },
       { name, run, field: 'month', value: 1.5 },
+      // #97 adds a string form for GBIF to read; a number stays a whole month 1–12.
+      { name, run, field: 'month', value: 0 },
+      { name, run, field: 'month', value: 13 },
     ]),
     { name: 'search', run: search!.run, field: 'limit', value: 2.5 },
     { name: 'search', run: search!.run, field: 'limit', value: 300.5 },
@@ -584,8 +601,31 @@ describe('integer numeric inputs (#75)', () => {
   const MAX = Number.MAX_SAFE_INTEGER;
   it.each([
     ...[gbifSearchOccurrences, gbifCountOccurrences, gbifOccurrenceFacets].flatMap((tool) => [
-      { tool, field: 'taxonKey', schema: { type: 'integer', minimum: 0, maximum: MAX } },
-      { tool, field: 'month', schema: { type: 'integer', minimum: 1, maximum: 12 } },
+      // #98: one key, or an array of 1–100 keys each held to the same bounds.
+      {
+        tool,
+        field: 'taxonKey',
+        schema: {
+          anyOf: [
+            { type: 'integer', minimum: 0, maximum: MAX },
+            {
+              type: 'array',
+              items: { type: 'integer', minimum: 0, maximum: MAX },
+              minItems: 1,
+              maxItems: 100,
+            },
+          ],
+        },
+      },
+      /**
+       * #97 — month also takes a string, a single month or a "min,max" range GBIF
+       * reads and rejects by name when malformed; the number form keeps its bounds.
+       */
+      {
+        tool,
+        field: 'month',
+        schema: { anyOf: [{ type: 'integer', minimum: 1, maximum: 12 }, { type: 'string' }] },
+      },
     ]),
     {
       tool: gbifSearchOccurrences,
@@ -1644,6 +1684,40 @@ describe('Catalogue of Life scope (#90)', () => {
       expect(JSON.stringify(result.content)).toContain('returned checklistTaxonKey');
     },
   );
+
+  /**
+   * Live, PRESENT: taxonKey 2435261 counts 2,269 and 0 beside scientificName "Zzzz zzzz",
+   * and checklistTaxonKey 3WSJV under the Catalogue of Life checklistKey does the same, so
+   * the notice on that zero says the key's own records were emptied too. Key 0 is a key.
+   */
+  it.each(calls)(
+    '$name says an unresolved scientificName beside taxonKey 0 or a checklistTaxonKey list empties the key records too',
+    async ({ run }) => {
+      for (const [args, key] of [
+        [{ scientificName: 'Zzzz zzzz', taxonKey: 0 }, 'taxonKey'],
+        [
+          {
+            scientificName: 'Zzzz zzzz',
+            checklistKey: COL_XR_CHECKLIST_KEY,
+            checklistTaxonKey: ['3WSJV', '6QR9T'],
+          },
+          'checklistTaxonKey',
+        ],
+      ] as const) {
+        bodies.push({ count: 0, results: [], facets: [] });
+        const result = await run(args);
+        expect(result.isError).not.toBe(true);
+        const applied = `was applied beside ${key}`;
+        const included = `the ${key} records included`;
+        expect(result.structuredContent?.notice).toContain(applied);
+        expect(result.structuredContent?.notice).toContain(included);
+        const text = JSON.stringify(result.content);
+        expect(text).toContain(applied);
+        expect(text).toContain(included);
+      }
+      expect(requests).toHaveLength(2);
+    },
+  );
 });
 
 /**
@@ -1777,6 +1851,120 @@ describe('single-value coordinate filters (#83)', () => {
       expect(requests.at(-1)!.searchParams.get('coordinateUncertaintyInMeters')).toBe(range);
     }
   });
+});
+
+/**
+ * #93, #97 — the date, radius, and vertical range filters. GBIF answers a bare "*"
+ * year with HTTP 404 and an empty body, so it is refused before any request; every
+ * other value goes out byte-identically, and GBIF's own 400 names a malformed one.
+ */
+describe('date, radius, and vertical range filters (#93, #97)', () => {
+  it.each(calls)(
+    '$name rejects a bare "*" year as invalid_filter before any request',
+    async ({ run }) => {
+      for (const star of ['*', ' * ', '*\n']) {
+        const result = await run({ year: star });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: {
+            data: {
+              reason: 'invalid_filter',
+              recovery: { hint: expect.stringContaining('"min,max"') },
+            },
+          },
+        });
+        const text = JSON.stringify(result.content);
+        expect(text).toContain('year');
+        expect(text).toContain('*,1990');
+      }
+      expect(requests).toHaveLength(0);
+    },
+  );
+  it.each(calls)(
+    '$name forwards an open-ended or single year byte-identically, with no exact-match notice',
+    async ({ run }) => {
+      for (const year of ['*,1990', '2020,*', '*,*', '2024']) {
+        population();
+        const result = await run({ year });
+        expect(result.isError).not.toBe(true);
+        expect(requests.at(-1)!.searchParams.get('year')).toBe(year);
+        expect(result.structuredContent?.scope).toEqual({ year, occurrenceStatus: 'PRESENT' });
+        expect(result.structuredContent?.notice ?? '').not.toContain('no comma');
+      }
+      expect(requests).toHaveLength(4);
+    },
+  );
+  it.each(calls)(
+    '$name rejects a bare "*" month string and a geoDistance without a lowercase km or m before any request',
+    async ({ run }) => {
+      for (const [field, value, named] of [
+        ['month', ' * ', '*,5'],
+        ['geoDistance', '38.17,-3.95,25', 'km or m'],
+        ['geoDistance', '38.17,-3.95,25KM', 'km or m'],
+      ] as const) {
+        const result = await run({ [field]: value });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: { data: { reason: 'invalid_filter', recovery: { hint: expect.any(String) } } },
+        });
+        const text = JSON.stringify(result.content);
+        expect(text).toContain(field);
+        expect(text).toContain(named);
+      }
+      expect(requests).toHaveLength(0);
+    },
+  );
+  it.each(calls)(
+    '$name forwards and echoes month 3 as 3 and "3,5" as "3,5"',
+    async ({ run, controls }) => {
+      for (const month of [3, '3,5']) {
+        population();
+        const result = await run({ month, ...controls });
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent?.scope).toEqual({ month, occurrenceStatus: 'PRESENT' });
+        const text = (result.content as { text?: string }[]).map((c) => c.text ?? '').join('\n');
+        expect(text).toContain(`"month":${JSON.stringify(month)}`);
+        expect(requests.at(-1)!.searchParams.get('month')).toBe(String(month));
+      }
+      expect(requests).toHaveLength(2);
+    },
+  );
+  it.each(calls)(
+    '$name answers a taxonKey or month sent as a numeric string as it answers the number',
+    async ({ run, controls }) => {
+      population();
+      const result = await run({ taxonKey: '2435261', month: ' 3', ...controls });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent?.scope).toEqual({
+        taxonKey: 2435261,
+        month: 3,
+        occurrenceStatus: 'PRESENT',
+      });
+      const sent = requests.at(-1)!.searchParams;
+      expect(sent.getAll('taxonKey')).toEqual(['2435261']);
+      expect(sent.get('month')).toBe('3');
+      expect(requests).toHaveLength(1);
+    },
+  );
+  it.each(calls)(
+    '$name draws the exact-match notice for a single elevation or depth only',
+    async ({ run }) => {
+      population();
+      const single = await run({ elevation: '2000', depth: '200,*' });
+      expect(single.structuredContent?.notice).toContain('elevation has no comma');
+      expect(single.structuredContent?.notice).not.toContain('depth');
+      expect(JSON.stringify(single.content)).toContain('elevation has no comma');
+      population();
+      const periods = await run({
+        year: '2024',
+        month: '3',
+        eventDate: '2026-03',
+        geoDistance: '38.17,-3.95,25km',
+      });
+      expect(periods.isError).not.toBe(true);
+      expect(periods.structuredContent?.notice ?? '').not.toContain('no comma');
+    },
+  );
 });
 
 /**
@@ -2074,4 +2262,157 @@ describe('row values passed back to the occurrence filters (#87)', () => {
     });
     expect(requests).toHaveLength(2);
   });
+});
+
+/**
+ * #98 — country, basisOfRecord, taxonKey, and checklistTaxonKey take one value or a
+ * non-empty array, sent as one repeated parameter per member, which GBIF ORs. Live,
+ * PRESENT: Lynx pardinus (2435261) counts 1,348 in ES, 733 in PT, and 2,081 under
+ * `country=ES&country=PT`; `country=ES&country=pt` counts 1,348.
+ */
+describe('several values in one filter (#98)', () => {
+  /** Each tool's request for the same filters, with its controls, as GBIF receives it. */
+  const wire = {
+    search: (filters: string) => `?${filters}&limit=3&offset=2`,
+    count: (filters: string) => `?${filters}&limit=0`,
+    facets: (filters: string) =>
+      `?limit=0&facet=BASIS_OF_RECORD&${filters}&facetLimit=3&facetOffset=1`,
+  } as const;
+
+  it.each(calls)(
+    '$name sends and echoes a single value of each filter exactly as before',
+    async ({ name, run, controls }) => {
+      for (const [args, filters, trailer] of [
+        [
+          { taxonKey: 2435261, country: 'ES', basisOfRecord: 'PRESERVED_SPECIMEN' },
+          'taxonKey=2435261&country=ES&basisOfRecord=PRESERVED_SPECIMEN&occurrenceStatus=PRESENT',
+          '**scope:** {"taxonKey":2435261,"country":"ES","basisOfRecord":"PRESERVED_SPECIMEN","occurrenceStatus":"PRESENT"}',
+        ],
+        [
+          { checklistTaxonKey: '3WSJV', checklistKey: COL_XR_CHECKLIST_KEY },
+          `taxonKey=3WSJV&checklistKey=${COL_XR_CHECKLIST_KEY}&occurrenceStatus=PRESENT`,
+          `**scope:** {"checklistTaxonKey":"3WSJV","checklistKey":"${COL_XR_CHECKLIST_KEY}","occurrenceStatus":"PRESENT"}`,
+        ],
+      ] as const) {
+        population();
+        const result = await run({ ...args, ...controls });
+        expect(result.isError).not.toBe(true);
+        expect(requests.at(-1)!.search).toBe(wire[name as keyof typeof wire](filters));
+        expect(result.structuredContent?.scope).toEqual({ ...args, occurrenceStatus: 'PRESENT' });
+        expect(JSON.stringify(result.content)).toContain(JSON.stringify(trailer).slice(1, -1));
+      }
+      expect(requests).toHaveLength(2);
+    },
+  );
+
+  it.each(calls)(
+    '$name sends each array member as a repeated parameter and echoes the array on both surfaces',
+    async ({ name, run, controls }) => {
+      for (const [args, filters, trailer] of [
+        [
+          {
+            taxonKey: [2435261, 2435246],
+            country: ['ES', 'PT'],
+            basisOfRecord: ['PRESERVED_SPECIMEN', 'FOSSIL_SPECIMEN'],
+          },
+          'taxonKey=2435261&taxonKey=2435246&country=ES&country=PT&basisOfRecord=PRESERVED_SPECIMEN&basisOfRecord=FOSSIL_SPECIMEN&occurrenceStatus=PRESENT',
+          '**scope:** {"taxonKey":[2435261,2435246],"country":["ES","PT"],"basisOfRecord":["PRESERVED_SPECIMEN","FOSSIL_SPECIMEN"],"occurrenceStatus":"PRESENT"}',
+        ],
+        [
+          { checklistTaxonKey: ['3WSJV', '6QR9T'], checklistKey: COL_XR_CHECKLIST_KEY },
+          `taxonKey=3WSJV&taxonKey=6QR9T&checklistKey=${COL_XR_CHECKLIST_KEY}&occurrenceStatus=PRESENT`,
+          `**scope:** {"checklistTaxonKey":["3WSJV","6QR9T"],"checklistKey":"${COL_XR_CHECKLIST_KEY}","occurrenceStatus":"PRESENT"}`,
+        ],
+        [
+          { country: ['ES'] },
+          'country=ES&occurrenceStatus=PRESENT',
+          '**scope:** {"country":["ES"],"occurrenceStatus":"PRESENT"}',
+        ],
+      ] as const) {
+        population();
+        const result = await run({ ...args, ...controls });
+        expect(result.isError).not.toBe(true);
+        expect(requests.at(-1)!.search).toBe(wire[name as keyof typeof wire](filters));
+        expect(result.structuredContent?.scope).toEqual({ ...args, occurrenceStatus: 'PRESENT' });
+        expect(JSON.stringify(result.content)).toContain(JSON.stringify(trailer).slice(1, -1));
+      }
+      expect(requests).toHaveLength(3);
+    },
+  );
+
+  it.each(calls)(
+    '$name rejects an empty array, a bad member, or too many keys before any request',
+    async ({ run }) => {
+      const keys = Array.from({ length: 101 }, (_, i) => 2435000 + i);
+      for (const [args, reason, field, phrase] of [
+        [{ country: [] }, 'invalid_arguments', 'country', 'country'],
+        [{ country: ['ES', 'pt'] }, 'invalid_arguments', 'country', 'uppercase ISO 3166-1 alpha-2'],
+        [
+          { basisOfRecord: ['PRESERVED_SPECIMEN', 'SPECIMEN'] },
+          'invalid_arguments',
+          'basisOfRecord',
+          'basisOfRecord',
+        ],
+        [{ taxonKey: keys }, 'invalid_arguments', 'taxonKey', 'taxonKey'],
+        [
+          { checklistTaxonKey: ['3WSJV', ' '], checklistKey: COL_XR_CHECKLIST_KEY },
+          'invalid_filter',
+          'checklistTaxonKey',
+          'checklistTaxonKey[1] was supplied blank',
+        ],
+        [
+          { taxonKey: [2435261, 2435246], checklistKey: COL_XR_CHECKLIST_KEY },
+          'invalid_filter',
+          'taxonKey 2435261 is a Backbone key',
+          'taxonKey 2435261 is a Backbone key',
+        ],
+      ] as const) {
+        const result = await run(args);
+        expect(result.isError, JSON.stringify(args)).toBe(true);
+        expect(result.structuredContent?.error).toMatchObject({
+          message: expect.stringContaining(phrase),
+          data: { reason },
+        });
+        expect(JSON.stringify(result.content)).toContain(field);
+      }
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  it.each([gbifSearchOccurrences, gbifCountOccurrences, gbifOccurrenceFacets])(
+    '$name says values within one filter are OR-ed and different filters intersect',
+    (tool) => {
+      expect(tool.description).toContain('values within one filter are OR-ed');
+      expect(tool.description).toContain('different filters still intersect');
+      const { shape } = tool.input;
+      for (const field of ['country', 'basisOfRecord', 'taxonKey', 'checklistTaxonKey'] as const)
+        expect(shape[field].description, field).toContain('array');
+      const contract = tool.errors?.find((entry) => entry.reason === 'invalid_filter');
+      expect(contract?.when).toContain('checklistTaxonKey member');
+    },
+  );
+
+  /**
+   * The pattern message is the only guidance a rejected code carries, so each clause
+   * must be true of `/occurrence/search`: for country and publishingCountry alike, `gb`,
+   * `USA`, and `Sweden` (GBIF's own name for the country) answer 200 with zero records,
+   * while `Britain` draws HTTP 400 `Cannot parse Britain into a known Country`.
+   */
+  it.each([gbifSearchOccurrences, gbifCountOccurrences, gbifOccurrenceFacets])(
+    '$name words its country rejections as what GBIF does with each form',
+    (tool) => {
+      for (const field of ['country', 'publishingCountry'] as const) {
+        const parsed = tool.input.safeParse({ facet: 'COUNTRY', [field]: 'Britain' });
+        const message = (parsed.error?.issues ?? [])
+          .filter((issue) => issue.path[0] === field)
+          .map((issue) => issue.message)
+          .join(' ');
+        expect(message).toContain(`${field} must be an uppercase ISO 3166-1 alpha-2 code`);
+        expect(message).not.toMatch(/country names \("Britain"\) match no records/);
+        expect(message).toContain('lowercase ("gb") or alpha-3 ("USA") form');
+        expect(message).toContain('or for its own name for a country ("Sweden")');
+        expect(message).toContain('rejects any other name ("Britain")');
+      }
+    },
+  );
 });

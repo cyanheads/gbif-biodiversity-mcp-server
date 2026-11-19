@@ -7,6 +7,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
+import { gbifSearchSpecies } from '@/mcp-server/tools/definitions/gbif-search-species.tool.js';
 import { listedInputSchema as listedWorkerInputSchema } from '../helpers/worker-request.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
@@ -342,7 +343,10 @@ describe('gbifGetSpecies', () => {
       kingdomKey: 0,
     });
     const text = textOf(result.content);
-    expect(text).toContain('**Taxon key:** 0');
+    expect(text).toContain('**Taxon usage key:** 0');
+    // nubKey 0 is the same real key: tested for presence, never truthiness (#94).
+    expect(result.structuredContent).toMatchObject({ nubKey: 0 });
+    expect(text).toContain('**Backbone key:** 0');
     expect(text).toContain('Kingdom: incertae sedis (0)');
   });
 
@@ -371,5 +375,123 @@ describe('gbifGetSpecies', () => {
   it('describes numOccurrences without promising GBIF sends it', () => {
     const described = gbifGetSpecies.output.shape.numOccurrences.description ?? '';
     expect(described).toContain('gbif_count_occurrences');
+  });
+
+  /**
+   * #94 — /species/{key} reads every checklist, so a usage key from gbif_search_species
+   * with a datasetKey resolves to that checklist's record. Live /species/152543218: a
+   * usage of checklist 6d9e952f-…, its genusKey and kingdomKey usage keys of the same
+   * checklist, and nubKey 2498252 the backbone key that counts its occurrences.
+   */
+  describe('checklist identity (#94)', () => {
+    const CHECKLIST = '6d9e952f-948c-4483-9807-575348147c7e';
+    const BACKBONE = 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c';
+
+    it('returns the nubKey and datasetKey of a checklist usage on both surfaces', async () => {
+      mockGetSpecies.mockResolvedValue({
+        key: 152543218,
+        nubKey: 2498252,
+        datasetKey: CHECKLIST,
+        canonicalName: 'Alopochen aegyptiaca',
+        rank: 'SPECIES',
+        kingdomKey: 342994368,
+        genusKey: 342995876,
+        parentKey: 342995876,
+        parent: 'Alopochen',
+      });
+
+      const result = await runToolContract(gbifGetSpecies, { taxonKey: 152543218 });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        key: 152543218,
+        nubKey: 2498252,
+        datasetKey: CHECKLIST,
+        genusKey: 342995876,
+      });
+      const text = textOf(result.content);
+      expect(text).toContain('**Taxon usage key:** 152543218');
+      expect(text).toContain(`**Dataset key:** ${CHECKLIST}`);
+      expect(text).toContain('**Backbone key:** 2498252');
+    });
+
+    it('returns a backbone usage with nubKey equal to its key', async () => {
+      mockGetSpecies.mockResolvedValue({
+        key: 2498252,
+        nubKey: 2498252,
+        datasetKey: BACKBONE,
+        canonicalName: 'Alopochen aegyptiaca',
+      });
+
+      const result = await runToolContract(gbifGetSpecies, { taxonKey: 2498252 });
+
+      expect(result.structuredContent).toMatchObject({
+        key: 2498252,
+        nubKey: 2498252,
+        datasetKey: BACKBONE,
+      });
+      expect(textOf(result.content)).toContain(`**Dataset key:** ${BACKBONE}`);
+    });
+
+    /** Live /species/206094766 omits nubKey: the backbone has no mapping for it. */
+    it('infers no nubKey for an unmapped usage and renders no backbone line', async () => {
+      mockGetSpecies.mockResolvedValue({
+        key: 206094766,
+        datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed',
+        canonicalName: 'Septoria galinsogae',
+      });
+
+      const result = await runToolContract(gbifGetSpecies, { taxonKey: 206094766 });
+
+      // The wire form: JSON drops an undefined field, so this is what a client receives.
+      expect(JSON.parse(JSON.stringify(result.structuredContent))).not.toHaveProperty('nubKey');
+      expect(result.structuredContent).toMatchObject({
+        datasetKey: '2c38cf8a-f981-4dfb-bc9d-dd2b6fc792ed',
+      });
+      const text = textOf(result.content);
+      expect(text).not.toContain('Backbone key');
+      expect(text).toContain('**Taxon usage key:** 206094766');
+    });
+
+    it('describes the identity keys as gbif_search_species does, and no usage key as backbone', () => {
+      const { shape } = gbifGetSpecies.output;
+      const searchRow = gbifSearchSpecies.output.shape.taxa.element.shape;
+      for (const field of ['key', 'datasetKey', 'nubKey'] as const) {
+        expect(shape[field].description, field).toBe(searchRow[field].description);
+      }
+      for (const field of [
+        'kingdomKey',
+        'phylumKey',
+        'classKey',
+        'orderKey',
+        'familyKey',
+        'genusKey',
+        'speciesKey',
+        'parentKey',
+        'acceptedKey',
+        'numDescendants',
+      ] as const) {
+        expect(shape[field].description, field).not.toMatch(/backbone/i);
+      }
+      expect(gbifGetSpecies.input.shape.taxonKey.description).not.toMatch(/backbone taxon key/i);
+      expect(shape.numOccurrences.description).toContain('nubKey');
+    });
+
+    it('keeps backbone out of the error conditions and the not_found message', async () => {
+      for (const entry of gbifGetSpecies.errors ?? []) {
+        expect(entry.when, entry.reason).not.toMatch(/backbone/i);
+      }
+      const invalid = gbifGetSpecies.errors?.find((e) => e.reason === 'invalid_filter');
+      expect(invalid?.recovery).not.toMatch(/backbone/i);
+
+      mockGetSpecies.mockResolvedValue({ key: undefined });
+      const ctx = createMockContext({ errors: gbifGetSpecies.errors });
+      const err = await gbifGetSpecies
+        .handler(gbifGetSpecies.input.parse({ taxonKey: 2147483647 }), ctx)
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ data: { reason: 'not_found' } });
+      expect((err as Error).message).toContain('2147483647');
+      expect((err as Error).message).not.toMatch(/backbone/i);
+    });
   });
 });

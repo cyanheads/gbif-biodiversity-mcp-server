@@ -1,5 +1,6 @@
 /**
- * @fileoverview GBIF species resource — stable URI for taxon records from the backbone.
+ * @fileoverview GBIF species resource — stable URI for taxon usage records from the
+ * backbone or any other checklist.
  * @module mcp-server/resources/definitions/gbif-species
  */
 
@@ -12,8 +13,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
   name: 'gbif-species',
   title: 'GBIF Species Record',
   description:
-    'Taxon record from the GBIF backbone — classification, authorship, synonymy status, ' +
-    'vernacular name. Stable URI for caching and injection as context.',
+    'Taxon usage record from the GBIF backbone or any other checklist — classification, authorship, synonymy status, vernacular name, the source checklist (datasetKey), and the mapped backbone key (nubKey) the occurrence tools take; key and acceptedKey are taxon usage keys of that checklist. Stable URI for caching and injection as context.',
   mimeType: 'application/json',
   params: z.object({
     taxonKey: z
@@ -23,7 +23,20 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       ),
   }),
   output: z.object({
-    key: z.number().optional().describe('GBIF backbone taxon key.'),
+    key: z
+      .number()
+      .optional()
+      .describe('Taxon usage key within the source checklist; not necessarily a backbone key.'),
+    datasetKey: z
+      .string()
+      .optional()
+      .describe('Source checklist dataset UUID, when GBIF supplies it.'),
+    nubKey: z
+      .number()
+      .optional()
+      .describe(
+        'Mapped backbone taxon key for occurrence queries, when GBIF supplies it. Otherwise resolve the name with gbif_match_species.',
+      ),
     scientificName: z.string().optional().describe('Full scientific name with authorship.'),
     canonicalName: z.string().optional().describe('Scientific name without authorship.'),
     authorship: z.string().optional().describe('Taxonomic authorship.'),
@@ -36,9 +49,15 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
     order: z.string().optional().describe('Order classification.'),
     family: z.string().optional().describe('Family classification.'),
     genus: z.string().optional().describe('Genus classification.'),
-    numDescendants: z.number().optional().describe('Count of child taxa in backbone.'),
+    numDescendants: z
+      .number()
+      .optional()
+      .describe('Count of descendant taxa under this taxon in its source checklist.'),
     extinct: z.boolean().optional().describe('True when explicitly flagged as extinct.'),
-    acceptedKey: z.number().optional().describe('Accepted taxon key when synonym.'),
+    acceptedKey: z
+      .number()
+      .optional()
+      .describe('Taxon usage key of the accepted taxon, in the source checklist, when synonym.'),
     accepted: z.string().optional().describe('Accepted name when synonym.'),
   }),
 
@@ -46,7 +65,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'The taxonKey does not exist in the GBIF backbone.',
+      when: 'No GBIF checklist has a taxon usage with this taxonKey.',
       recovery:
         'Use gbif_match_species to resolve a name to a valid backbone key, or gbif_search_species to browse.',
     },
@@ -55,7 +74,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       code: JsonRpcErrorCode.InvalidParams,
       when: 'The taxonKey segment has malformed URI escapes, is not a whole signed decimal integer after one decode and surrounding-whitespace trimming, or is outside the signed 32-bit integer range.',
       recovery:
-        'Address the resource with a whole backbone taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
+        'Address the resource with a whole taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
     },
   ],
 
@@ -83,6 +102,7 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       );
     }
     ctx.log.debug('Fetching species resource', { taxonKey });
+    const notFoundMessage = `Taxon key ${taxonKey} not found in GBIF: no checklist has a taxon usage with that key.`;
     let raw: RawSpeciesRecord;
     try {
       raw = await getGbifService().getSpecies(taxonKey, ctx);
@@ -90,18 +110,21 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       // Map the upstream GBIF 404 envelope to a clean domain not_found, mirroring
       // gbif_get_species — the service throws before the missing-key check can run.
       if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
-        throw ctx.fail('not_found', `Taxon key ${taxonKey} not found in the GBIF backbone.`);
+        throw ctx.fail('not_found', notFoundMessage);
       }
       throw err;
     }
 
     // Presence, not truthiness: key 0 is the backbone kingdom incertae sedis.
     if (raw.key == null) {
-      throw ctx.fail('not_found', `Taxon key ${taxonKey} not found in the GBIF backbone.`);
+      throw ctx.fail('not_found', notFoundMessage);
     }
 
     return {
       key: raw.key,
+      // As GBIF sends them: an unmapped usage has no nubKey, and none is inferred from key.
+      datasetKey: raw.datasetKey,
+      nubKey: raw.nubKey,
       scientificName: raw.scientificName,
       canonicalName: raw.canonicalName,
       authorship: raw.authorship,

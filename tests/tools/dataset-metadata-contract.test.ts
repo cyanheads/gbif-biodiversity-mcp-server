@@ -179,6 +179,97 @@ describe('dataset metadata contract', () => {
     expect(JSON.stringify(tool.content)).not.toContain('Publishing organization');
   });
 
+  /**
+   * #95 — the tool and the resource return the same deleted timestamp and the same
+   * coverage boxes, through the real service. Bodies are the live /v1/dataset
+   * records' fields: 59f27a74 (deleted), 50c9509d (a box beside "Bounding Box",
+   * its longitude bounds crossing the antimeridian), eb974f54 (a box alone).
+   */
+  it.each([
+    {
+      key: '59f27a74-b861-4e34-a2d8-a50b75a83caa',
+      body: `{"key":"59f27a74-b861-4e34-a2d8-a50b75a83caa","title":"UCarpHT vegetation data","deleted":"2026-11-10T20:11:45.006+00:00","geographicCoverages":[{"description":"22.99683-24.50901, 49.06977-48.14996","boundingBox":{"minLatitude":48.14996,"maxLatitude":49.06977,"minLongitude":22.99683,"maxLongitude":24.50901,"globalCoverage":false}}]}`,
+      deleted: '2026-11-10T20:11:45.006+00:00',
+      coverages: [
+        {
+          description: '22.99683-24.50901, 49.06977-48.14996',
+          boundingBox: {
+            minLatitude: 48.14996,
+            maxLatitude: 49.06977,
+            minLongitude: 22.99683,
+            maxLongitude: 24.50901,
+            globalCoverage: false,
+          },
+        },
+      ],
+    },
+    {
+      key: '50c9509d-22c7-4a22-a47d-8c48425ef4a7',
+      body: `{"key":"50c9509d-22c7-4a22-a47d-8c48425ef4a7","title":"iNaturalist Research-grade Observations","geographicCoverages":[{"description":"Bounding Box","boundingBox":{"minLatitude":-87.80586803331971,"maxLatitude":89.98972198460251,"minLongitude":0.0,"maxLongitude":-1.6763806343078613E-7,"globalCoverage":false}}]}`,
+      deleted: undefined,
+      coverages: [
+        {
+          description: 'Bounding Box',
+          boundingBox: {
+            minLatitude: -87.80586803331971,
+            maxLatitude: 89.98972198460251,
+            minLongitude: 0,
+            maxLongitude: -1.6763806343078613e-7,
+            globalCoverage: false,
+          },
+        },
+      ],
+    },
+    {
+      key: 'eb974f54-0a3c-496a-85ac-703b9c63e55a',
+      body: `{"key":"eb974f54-0a3c-496a-85ac-703b9c63e55a","title":"Advancing airDNA Experiment 3 BirT","geographicCoverages":[{"boundingBox":{"minLatitude":56.8336111111,"maxLatitude":56.8347222222,"minLongitude":10.2477777778,"maxLongitude":10.2516666667,"globalCoverage":false}}]}`,
+      deleted: undefined,
+      coverages: [
+        {
+          boundingBox: {
+            minLatitude: 56.8336111111,
+            maxLatitude: 56.8347222222,
+            minLongitude: 10.2477777778,
+            maxLongitude: 10.2516666667,
+            globalCoverage: false,
+          },
+        },
+      ],
+    },
+  ])(
+    'returns the same deleted and coverage values on both surfaces for $key',
+    async ({ key: datasetKey, body, deleted, coverages }) => {
+      fixture([]);
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockImplementation((url: string) =>
+            Promise.resolve(
+              new Response(url.includes('/occurrence/count') ? '0' : body, { status: 200 }),
+            ),
+          ),
+      );
+      const tool = await runToolContract(gbifGetDataset, { datasetKey });
+      const resource = JSON.parse(
+        JSON.stringify(
+          gbifDatasetResource.output.parse(
+            await gbifDatasetResource.handler({ datasetKey }, createMockContext()),
+          ),
+        ),
+      ) as Record<string, unknown>;
+      const wire = JSON.parse(JSON.stringify(tool.structuredContent)) as Record<string, unknown>;
+
+      expect(tool.isError).not.toBe(true);
+      expect(wire.deleted).toBe(deleted);
+      expect(resource.deleted).toBe(deleted);
+      expect(wire.geographicCoverages).toEqual(coverages);
+      expect(resource.geographicCoverages).toEqual(coverages);
+      if (deleted) expect(JSON.stringify(tool.content)).toContain(`**Deleted:** ${deleted}`);
+      else expect(JSON.stringify(tool.content)).not.toContain('Deleted');
+    },
+  );
+
   it.each([
     { entries: [] },
     { entries: [{}] },

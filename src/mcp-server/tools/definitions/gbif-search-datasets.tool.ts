@@ -88,7 +88,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       .string()
       .regex(
         /^[A-Z]{2}$/,
-        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb"), alpha-3 ("GBR"), and country names ("Britain") match no datasets upstream.',
+        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb") and alpha-3 ("GBR") forms match no datasets upstream. A country name fails upstream ("Britain") unless it is the name GBIF itself uses ("Sweden"), which matches the same datasets as the code; only the code is accepted here.',
       )
       .optional()
       .describe(

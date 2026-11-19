@@ -302,7 +302,7 @@ describe('gbifSearchOccurrences', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+            hint: 'The message names the rejected value. A blank filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, geoDistance is latitude,longitude,distance with the distance ending in km or m ("38.17,-3.95,25km"), ranges are "min,max", where "*" may stand for an open end, written with no whitespace between the "*" and the comma ("*,1990"), but never for the whole value, datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 taken from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
           },
         },
       },
@@ -870,6 +870,18 @@ describe('gbifSearchOccurrences iucnRedListCategory (#37)', () => {
     );
   });
 
+  /** NE is a facet bucket gbif_occurrence_facets returns, so it has to go back in unchanged. */
+  it('passes NE to the service unchanged', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 9703, iucnRedListCategory: 'NE' });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ taxonKey: 9703, iucnRedListCategory: 'NE' }),
+      ctx,
+    );
+  });
+
   it('omits the category when not provided', async () => {
     const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
     const input = gbifSearchOccurrences.input.parse({ taxonKey: 5219404 });
@@ -884,13 +896,16 @@ describe('gbifSearchOccurrences iucnRedListCategory (#37)', () => {
   /**
    * GBIF answers an unrecognized category with HTTP 200 and a count of zero, not
    * an error, so the enum is the only guard against a confident empty answer. NE
-   * is excluded on the same grounds — it matches no record in the index.
+   * (Not Evaluated) is a category GBIF indexes and a facet bucket names, so the
+   * enum takes it.
    */
   it('rejects a category GBIF would answer with a silent zero', () => {
     expect(() =>
       gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'VULNERABLE' }),
     ).toThrow();
-    expect(() => gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'NE' })).toThrow();
+    expect(
+      gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'NE' }).iucnRedListCategory,
+    ).toBe('NE');
     expect(() => gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'VU' })).not.toThrow();
   });
 
@@ -1061,6 +1076,100 @@ describe('gbifSearchOccurrences specimen identity on rows (#78)', () => {
     const text = JSON.stringify(result.content);
     expect(text).toContain('**Institution:** MCZ&#95;&#42;');
     expect(text).toContain('**Catalog number:** &#91;x&#93;&#40;y&#41; &#35;1');
+  });
+});
+
+/**
+ * Every publisher-supplied string a row renders goes through `escapeMarkdownText`:
+ * locality, stateProvince, recordedBy, datasetName, and eventTime, as institutionCode
+ * and catalogNumber already do. A value holding no Markdown or character-reference syntax
+ * renders byte-identical. Each media identifier goes through `linkOrEscapedText`
+ * instead: an http(s) URL is a link to itself, any other value escaped text.
+ */
+describe('gbifSearchOccurrences publisher text on rows', () => {
+  const mockSearchOccurrences = vi.fn();
+  const rowLines = async (record: Record<string, unknown>) => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [record],
+      count: 1,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+    const result = await runToolContract(gbifSearchOccurrences, { includeMedia: true });
+    expect(result.isError).not.toBe(true);
+    return {
+      row: (result.structuredContent?.occurrences as Record<string, unknown>[] | undefined)?.[0],
+      lines: (result.content ?? [])
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n')
+        .split('\n'),
+    };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+  });
+
+  it('renders plain publisher values unchanged', async () => {
+    const { lines } = await rowLines(
+      makeOccurrence({ media: [{ type: 'StillImage', identifier: 'https://example.org/4.jpg' }] }),
+    );
+
+    for (const line of [
+      '**Location:** Hyde Park, England, United Kingdom (GB)',
+      '**Recorded by:** J. Smith',
+      '**Dataset:** eBird (key: abc-123)',
+      '  - StillImage: [https://example.org/4.jpg](<https://example.org/4.jpg>)',
+    ])
+      expect(lines).toContain(line);
+  });
+
+  it('renders Markdown and character-reference syntax literally, keeping values as sent', async () => {
+    const edits = {
+      locality: 'Hyde [Park](x)',
+      stateProvince: '*Eng* &amp;',
+      recordedBy: '<J> & Smith_',
+      datasetName: 'eBird (v2) #1',
+      eventTime: 'ca. 9h [night](x) *dusk*',
+      media: [{ type: 'StillImage', identifier: 'https://example.org/a_b(1).jpg' }],
+    };
+    const { row, lines } = await rowLines(makeOccurrence(edits));
+
+    expect(row).toMatchObject(edits);
+    for (const line of [
+      '**Time:** ca. 9h &#91;night&#93;&#40;x&#41; &#42;dusk&#42;',
+      '**Location:** Hyde &#91;Park&#93;&#40;x&#41;, &#42;Eng&#42; &#38;amp;, United Kingdom (GB)',
+      '**Recorded by:** &#60;J&#62; &#38; Smith&#95;',
+      '**Dataset:** eBird &#40;v2&#41; &#35;1 (key: abc-123)',
+      '  - StillImage: [https://example.org/a_b(1).jpg](<https://example.org/a_b(1).jpg>)',
+    ])
+      expect(lines).toContain(line);
+  });
+
+  it('renders an http(s) media identifier as one link to the value', async () => {
+    const url = 'https://example.org/media?id=1&size=large_2';
+    const { row, lines } = await rowLines(
+      makeOccurrence({ media: [{ type: 'StillImage', identifier: url }] }),
+    );
+
+    expect(row?.media).toEqual([{ type: 'StillImage', identifier: url }]);
+    expect(lines).toContain(
+      '  - StillImage: [https://example.org/media?id=1&size=large_2](<https://example.org/media?id=1&size=large_2>)',
+    );
+  });
+
+  it('renders a non-URL media identifier as escaped text', async () => {
+    const urn = 'urn:catalog:MCZ:Herp:A-1_2';
+    const { row, lines } = await rowLines(
+      makeOccurrence({ media: [{ type: 'StillImage', identifier: urn }] }),
+    );
+
+    expect(row?.media).toEqual([{ type: 'StillImage', identifier: urn }]);
+    expect(lines).toContain('  - StillImage: urn:catalog:MCZ:Herp:A-1&#95;2');
   });
 });
 
@@ -1320,14 +1429,16 @@ describe('gbifSearchOccurrences reuse, publisher, accepted taxon, and specimen f
       section.split('\n').filter((line) => line.startsWith('  - '));
     expect(sections[0]).toContain('**Media:** 3 item(s)');
     expect(items(sections[0]!)).toEqual([
-      '  - StillImage [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): https://inaturalist-open-data.s3.amazonaws.com/photos/606398138/original.jpg',
-      '  - StillImage [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): https://inaturalist-open-data.s3.amazonaws.com/photos/606398140/original.jpg',
-      '  - Sound [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): https://static.inaturalist.org/sounds/1785847.wav?1772303488',
+      '  - StillImage [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): [https://inaturalist-open-data.s3.amazonaws.com/photos/606398138/original.jpg](<https://inaturalist-open-data.s3.amazonaws.com/photos/606398138/original.jpg>)',
+      '  - StillImage [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): [https://inaturalist-open-data.s3.amazonaws.com/photos/606398140/original.jpg](<https://inaturalist-open-data.s3.amazonaws.com/photos/606398140/original.jpg>)',
+      '  - Sound [http://creativecommons.org/licenses/by-nc/4.0/] (rights holder: Luca Berardi): [https://static.inaturalist.org/sounds/1785847.wav?1772303488](<https://static.inaturalist.org/sounds/1785847.wav?1772303488>)',
     ]);
     expect(sections[1]).not.toContain('Media');
     expect(sections[2]).not.toContain('Media');
     expect(sections[3]).toContain('**Media:** 1 item(s)');
-    expect(items(sections[3]!)).toEqual(['  - StillImage: https://example.org/4.jpg']);
+    expect(items(sections[3]!)).toEqual([
+      '  - StillImage: [https://example.org/4.jpg](<https://example.org/4.jpg>)',
+    ]);
   });
 
   /** 25 items is the most seen on one row of a 300-row material-citation page. */
@@ -1344,7 +1455,7 @@ describe('gbifSearchOccurrences reuse, publisher, accepted taxon, and specimen f
     const text = textOf(result);
     expect(text).toContain('**Media:** 25 item(s)');
     expect(text.split('\n').filter((line) => line.startsWith('  - StillImage: '))).toEqual(
-      items.map((item) => `  - StillImage: ${item.identifier}`),
+      items.map((item) => `  - StillImage: [${item.identifier}](<${item.identifier}>)`),
     );
   });
 
@@ -1374,7 +1485,7 @@ describe('gbifSearchOccurrences reuse, publisher, accepted taxon, and specimen f
       },
     ]);
     expect(textOf(result)).toContain(
-      '  - StillImage [&#40;c&#41; Field Museum of Natural History - CC BY-NC 4.0] (rights holder: Field Museum &#42;of&#42; Natural History): http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg',
+      '  - StillImage [&#40;c&#41; Field Museum of Natural History - CC BY-NC 4.0] (rights holder: Field Museum &#42;of&#42; Natural History): [http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg](<http://fm-digital-assets.fieldmuseum.org/56/373/V0060057F.jpg>)',
     );
   });
 

@@ -346,6 +346,21 @@ describe('gbifSearchDatasets', () => {
   });
 
   /**
+   * The rejection message is the only guidance a caller gets here, so each clause must
+   * be true of `/dataset/search`. `gb` and `GBR` answer 0 datasets, but a country name
+   * is no silent zero: "Britain" draws HTTP 400 `Cannot parse Britain into a known
+   * Country`, and "Sweden" returns the same 217 datasets as "SE".
+   */
+  it('words the publishingCountry rejection as what /dataset/search does with each form', () => {
+    const parsed = gbifSearchDatasets.input.safeParse({ publishingCountry: 'Sweden' });
+    expect(parsed.success).toBe(false);
+    const message = parsed.error?.issues.map((i) => i.message).join(' ') ?? '';
+    expect(message).toContain('uppercase ISO 3166-1 alpha-2');
+    expect(message).not.toMatch(/country names \("Britain"\) match no datasets/);
+    for (const text of ['"gb"', '"GBR"', '"Britain"', '"Sweden"']) expect(message).toContain(text);
+  });
+
+  /**
    * #52 — `/dataset/search` carries two organization filters for two different
    * relationships, and only `hostingOrg` was exposed. Measured live: of the first
    * 25 organizations `/organization?country=GB` lists, all 25 host no datasets

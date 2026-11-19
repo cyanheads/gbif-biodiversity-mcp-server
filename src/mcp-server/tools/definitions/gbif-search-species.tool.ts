@@ -13,6 +13,7 @@ import {
   BACKBONE_CHECKLIST_KEY,
   type RawSpeciesMatch,
   type RawSpeciesSearchRecord,
+  TAXONOMIC_STATUS_VALUES,
 } from '@/services/gbif/types.js';
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import { escapeMarkdownText, firstBlankFilter, isGbifUuid } from '../utils.js';
@@ -116,7 +117,7 @@ function buildNotice(args: {
     if (scopedBy && datasetKey && datasetKey.toLowerCase() !== BACKBONE_CHECKLIST_KEY) {
       return `No taxa matched. ${scopedBy} resolved to a GBIF backbone key, and GBIF applies a higher-taxon key only within the checklist that key belongs to — so a backbone key paired with another checklist's datasetKey matches nothing whatever that checklist holds. Drop datasetKey to browse the backbone under this ${scopedBy}, or drop ${scopedBy} to browse the checklist.`;
     }
-    return 'No taxa matched the query. Try a shorter name fragment, drop the rank filter or the kingdom/family/genus scope, or use gbif_match_species for exact name lookup.';
+    return 'No taxa matched the query. Try a shorter name fragment, drop the rank or status filter or the kingdom/family/genus scope, or use gbif_match_species for exact name lookup.';
   }
   if (taxaCount === 0 && offset > 0 && offset >= totalCount) {
     return `Offset ${offset} exceeds totalCount (${totalCount}). Reset offset to 0 or reduce it below ${totalCount} to page through results.`;
@@ -133,13 +134,13 @@ function buildNotice(args: {
  */
 function overCeilingNotice(totalCount: number): string | undefined {
   if (totalCount <= SPECIES_SEARCH_CEILING) return;
-  return `${totalCount.toLocaleString('en-US')} taxa match, past the offset+limit ceiling of ${SPECIES_SEARCH_CEILING.toLocaleString('en-US')} that GBIF's species search serves, so taxa deeper than that cannot be paged to. Narrow the search until it fits — kingdom, family, or genus scopes it to a higher taxon, and rank, isExtinct, and q cut it further — or walk a subtree with gbif_get_species_children, which lists a taxon's direct children without this ceiling.`;
+  return `${totalCount.toLocaleString('en-US')} taxa match, past the offset+limit ceiling of ${SPECIES_SEARCH_CEILING.toLocaleString('en-US')} that GBIF's species search serves, so taxa deeper than that cannot be paged to. Narrow the search until it fits — kingdom, family, or genus scopes it to a higher taxon, and rank, status, isExtinct, and q cut it further — or walk a subtree with gbif_get_species_children, which lists a taxon's direct children without this ceiling.`;
 }
 
 export const gbifSearchSpecies = tool('gbif_search_species', {
   title: 'Search Species Taxonomy',
   description:
-    'Search or browse the GBIF backbone taxonomy by default, or an explicit checklist datasetKey. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Useful for exploring what species exist under a higher taxon (e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when gbif_match_species returns too narrow a result. kingdom, family, and genus scope the browse to a higher taxon: each is resolved to its backbone key before the search runs, so the narrowest one supplied is what scopes, an alternative name resolves to the taxon it is a synonym of, and a name that matches no backbone taxon at that rank fails rather than returning the whole index. Names are capitalized as GBIF writes them ("Paridae", not "paridae") and are matched exactly, not fuzzily. Paginated — use limit and offset to walk through results, up to an offset + limit of 100,000.',
+    'Search or browse the GBIF backbone taxonomy by default, or an explicit checklist datasetKey. Accepts scientific name fragments, rank and taxonomic status filters, and higher-taxon constraints — status ["ACCEPTED"] with rank SPECIES under a genus lists only that genus\'s accepted species. Useful for exploring what species exist under a higher taxon (e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when gbif_match_species returns too narrow a result. kingdom, family, and genus scope the browse to a higher taxon: each is resolved to its backbone key before the search runs, so the narrowest one supplied is what scopes, an alternative name resolves to the taxon it is a synonym of, and a name that matches no backbone taxon at that rank fails rather than returning the whole index. Names are matched by their exact spelling in any letter case, never fuzzily. Paginated — use limit and offset to walk through results, up to an offset + limit of 100,000.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     q: z
@@ -152,23 +153,30 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .enum(['KINGDOM', 'PHYLUM', 'CLASS', 'ORDER', 'FAMILY', 'GENUS', 'SPECIES', 'SUBSPECIES'])
       .optional()
       .describe('Filter to a specific taxonomic rank.'),
+    status: z
+      .array(z.enum(TAXONOMIC_STATUS_VALUES))
+      .min(1)
+      .optional()
+      .describe(
+        'Filter by taxonomic status. A name matches when it carries any of the listed values, so ["ACCEPTED", "DOUBTFUL"] returns both. SYNONYM matches only names whose status is exactly SYNONYM, not the heterotypic, homotypic, or pro parte forms, which have values of their own. Omit the field to return every status; an empty list is rejected.',
+      ),
     kingdom: z
       .string()
       .optional()
       .describe(
-        'Scope the search to a kingdom, by name — "Animalia", "Plantae", "Fungi". Resolved to its backbone key before the search runs, and matched exactly: capitalize it as GBIF writes it, since "animalia" resolves to nothing. Supplied alongside family or genus it disambiguates that name rather than scoping on its own — "Prunella" alone names both a bird genus and a plant genus and resolves to neither. Omit the field to browse every kingdom; a blank or whitespace-only value is rejected rather than dropped.',
+        'Scope the search to a kingdom, by name — "Animalia", "Plantae", "Fungi". Resolved to its backbone key before the search runs, and matched by its exact spelling in any letter case, never fuzzily. Supplied alongside family or genus it disambiguates that name rather than scoping on its own — "Prunella" alone names both a bird genus and a plant genus and resolves to neither. Omit the field to browse every kingdom; a blank or whitespace-only value is rejected rather than dropped.',
       ),
     family: z
       .string()
       .optional()
       .describe(
-        'Scope the search to a family, by name — "Paridae", "Fagaceae". Resolved to its backbone key before the search runs, so an alternative family name lands on the taxon it is a synonym of ("Compositae" scopes to Asteraceae). Matched exactly and capitalized as GBIF writes it; a name that is not a backbone family fails rather than being ignored. Supplied with genus, it must be that genus\'s own family. Omit the field to browse every family; a blank or whitespace-only value is rejected rather than dropped.',
+        'Scope the search to a family, by name — "Paridae", "Fagaceae". Resolved to its backbone key before the search runs, so an alternative family name lands on the taxon it is a synonym of ("Compositae" scopes to Asteraceae). Matched by its exact spelling in any letter case, never fuzzily; a name that is not a backbone family fails rather than being ignored. Supplied with genus, it must be that genus\'s own family. Omit the field to browse every family; a blank or whitespace-only value is rejected rather than dropped.',
       ),
     genus: z
       .string()
       .optional()
       .describe(
-        'Scope the search to a genus, by name — "Quercus", "Parus". Resolved to its backbone key before the search runs, and it is the narrowest of the three, so it is what scopes when kingdom or family is supplied too. Matched exactly and capitalized as GBIF writes it; a name shared across kingdoms ("Prunella", "Oenanthe") resolves only when kingdom is supplied with it. Omit the field to browse every genus; a blank or whitespace-only value is rejected rather than dropped.',
+        'Scope the search to a genus, by name — "Quercus", "Parus". Resolved to its backbone key before the search runs, and it is the narrowest of the three, so it is what scopes when kingdom or family is supplied too. Matched by its exact spelling in any letter case, never fuzzily; a name shared across kingdoms ("Prunella", "Oenanthe") resolves only when kingdom is supplied with it. Omit the field to browse every genus; a blank or whitespace-only value is rejected rather than dropped.',
       ),
     isExtinct: z.boolean().optional().describe('Filter to extinct (true) or extant (false) taxa.'),
     datasetKey: z
@@ -186,7 +194,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .min(0)
       .default(0)
       .describe(
-        "Pagination offset. offset + limit may not exceed 100,000, the deepest page GBIF's species search serves; narrow a larger match with kingdom, family, genus, rank, isExtinct, or q, or walk a subtree with gbif_get_species_children, which has no ceiling, instead of paging past it.",
+        "Pagination offset. offset + limit may not exceed 100,000, the deepest page GBIF's species search serves; narrow a larger match with kingdom, family, genus, rank, status, isExtinct, or q, or walk a subtree with gbif_get_species_children, which has no ceiling, instead of paging past it.",
       ),
   }),
   output: z.object({
@@ -232,7 +240,10 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
               .describe(
                 "Occurrence record count, present only when GBIF supplies a positive value. GBIF's species search sends 0 on every row as a placeholder, so this is normally absent; for a count, pass nubKey as taxonKey to gbif_count_occurrences, or facet by SPECIES_KEY with gbif_occurrence_facets.",
               ),
-            numDescendants: z.number().optional().describe('Count of child taxa in the backbone.'),
+            numDescendants: z
+              .number()
+              .optional()
+              .describe('Count of descendant taxa under this taxon in its source checklist.'),
             extinct: z.boolean().optional().describe('True when explicitly flagged as extinct.'),
           })
           .describe(
@@ -254,6 +265,12 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .describe(
         'The higher-taxon scope actually applied — which of kingdom, family, or genus scoped the search, the backbone taxon its name resolved to, and that taxon key. Absent when none of the three was supplied.',
       ),
+    status: z
+      .array(z.enum(TAXONOMIC_STATUS_VALUES))
+      .optional()
+      .describe(
+        'The taxonomic statuses the search was filtered to, as sent. Absent when status was not supplied.',
+      ),
     notice: z
       .string()
       .optional()
@@ -261,6 +278,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
         'Guidance when results are empty, paging overshot, an oversized read limit was clamped, or more taxa match than the 100,000 offset+limit ceiling lets a caller page to. Absent when none applies.',
       ),
   },
+  enrichmentTrailer: { status: { render: (status) => `**status:** ${JSON.stringify(status)}` } },
 
   errors: [
     {
@@ -268,7 +286,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       code: JsonRpcErrorCode.ValidationError,
       when: "offset + limit exceeds 100,000, the deepest page GBIF's species search serves.",
       recovery:
-        "Reduce offset or limit so their sum is at most 100,000; taxa past it cannot be paged to from this search. To reach a larger match, narrow it until it fits: kingdom, family, or genus scopes it to a higher taxon, and rank, isExtinct, and q cut it further. To cover a whole subtree, walk it with gbif_get_species_children, which lists a taxon's direct children without this ceiling.",
+        "Reduce offset or limit so their sum is at most 100,000; taxa past it cannot be paged to from this search. To reach a larger match, narrow it until it fits: kingdom, family, or genus scopes it to a higher taxon, and rank, status, isExtinct, and q cut it further. To cover a whole subtree, walk it with gbif_get_species_children, which lists a taxon's direct children without this ceiling.",
     },
     {
       reason: 'invalid_filter',
@@ -280,9 +298,9 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     {
       reason: 'unresolved_taxon_scope',
       code: JsonRpcErrorCode.NotFound,
-      when: 'kingdom, family, or genus named no GBIF backbone taxon at that rank — a misspelling, a lowercase name, a name entered under the wrong rank, or a name shared across kingdoms with no kingdom supplied to separate them.',
+      when: 'kingdom, family, or genus named no GBIF backbone taxon at that rank — a misspelling, a name entered under the wrong rank, or a name shared across kingdoms with no kingdom supplied to separate them.',
       recovery:
-        'Check the spelling and the capitalization GBIF uses, and confirm the name belongs to the rank the field names — gbif_match_species with that name and rank reports what it resolves to. A genus or family name that several kingdoms share needs kingdom supplied alongside it.',
+        'Check the spelling, which must be exact though letter case does not matter, and confirm the name belongs to the rank the field names — gbif_match_species with that name and rank reports what it resolves to. A genus or family name that several kingdoms share needs kingdom supplied alongside it.',
     },
     {
       reason: 'conflicting_taxon_scope',
@@ -312,7 +330,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
      * neither is the search that was asked for: `?q=` returns the whole
      * 46,623,754-name index, `?q=%20%20` returns nothing. One space between the
      * whole backbone and an empty page is not a distinction a caller can plan
-     * around. `kingdom`, `family`, and `genus` join the rule now that they scope:
+     * around. `kingdom`, `family`, and `genus` follow the rule because they scope:
      * a blank one resolves to no backbone taxon, and rejecting it by name beats
      * reporting that the empty string is not a kingdom.
      */
@@ -335,7 +353,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
      * hint instead of a bare upstream 400 that costs a round trip and the retry
      * budget. The empty string is rejected for the opposite reason: it draws no error
      * at all — `/species/search?datasetKey=` answers 200 with the unfiltered backbone
-     * result, so a `?.trim()` guard dropped the scope and returned the same 4,972 taxa
+     * result, so a `?.trim()` guard would drop the scope and return the same 4,972 taxa
      * under q=Aves that the unscoped call returns, to a caller who believed the search
      * was confined to one checklist. Letter case stays unchecked: this route resolves a
      * key either way, unlike `/dataset/search`'s two organization filters.
@@ -439,6 +457,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       {
         ...(input.q !== undefined && { q: input.q }),
         ...(input.rank && { rank: input.rank }),
+        ...(input.status && { status: input.status }),
         ...(scope && { higherTaxonKey: scope.taxonKey }),
         ...(input.isExtinct !== undefined && { isExtinct: input.isExtinct }),
         datasetKey: input.datasetKey ?? BACKBONE_CHECKLIST_KEY,
@@ -483,6 +502,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       ...(scope && {
         taxonScope: `${scope.field} "${scope.name}" scoped the search to backbone taxon ${rankNameOf(scope.field, scope.match) ?? scope.name} (key ${scope.taxonKey}).`,
       }),
+      ...(input.status && { status: input.status }),
     });
     const notice = buildNotice({
       totalCount,

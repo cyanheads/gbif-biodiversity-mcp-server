@@ -4,10 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import {
-  BASIS_OF_RECORD_VALUES,
   COL_XR_CHECKLIST_KEY,
   type FacetLabelKind,
   IUCN_RED_LIST_CATEGORY_VALUES,
@@ -15,6 +14,9 @@ import {
 } from '@/services/gbif/types.js';
 import { clampReadLimit, readLimitSchema } from '../read-limits.js';
 import {
+  alpha2CountryCode,
+  basisOfRecordFilter,
+  countryFilter,
   escapeMarkdownText,
   exactCoordinateMatchNotice,
   isColTaxonKey,
@@ -26,6 +28,7 @@ import {
   occurrenceScopeSchema,
   occurrenceStatusNotice,
   sharedOccurrenceFilterFields,
+  taxonKeyFilter,
 } from '../utils.js';
 
 const FACET_VALUES = [
@@ -128,25 +131,33 @@ const LABEL_KINDS = {
 const LABEL_DEADLINE_MS = 10_000;
 const LABEL_DEADLINE_SECONDS = LABEL_DEADLINE_MS / 1000;
 
+/**
+ * GBIF's stated facet paging limit: it answers a page reaching past this ranked
+ * position — `facetOffset` plus the `facetLimit` sent — with HTTP 400 "Facets paging is
+ * only supported up to 1200000 elements", on every scope.
+ */
+const FACET_PAGING_CEILING = 1_200_000;
+
+/**
+ * Undocumented and observed: on a scope ranking more buckets than this, GBIF answers a
+ * page reaching past this position with HTTP 404 and an empty body. A scope that ends
+ * before it answers a deeper page with 200 and no buckets, so the edge cannot be checked
+ * before the request.
+ */
+const FACET_DEEP_EDGE = 500_001;
+
 export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   title: 'Occurrence Facet Aggregation',
   description:
-    'Aggregate occurrence counts across a dimension (COUNTRY, STATE_PROVINCE, YEAR, BASIS_OF_RECORD, DATASET_KEY, KINGDOM_KEY, etc.). Returns one page of facet values ranked by count descending — the top facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. Core tool for distribution analysis and trend queries: "which countries have the most records for this species?", "how has observation volume changed since 2010?". Key and GADM dimensions (KINGDOM_KEY through SPECIES_KEY, DATASET_KEY, PUBLISHING_ORG, GADM_LEVEL_0_GID through GADM_LEVEL_3_GID) return bare keys; includeLabels names the taxon, dataset, publishing organization, or administrative area behind each one on the page. Scope the aggregation with taxonKey (or checklistTaxonKey with checklistKey, for a Catalogue of Life key), country (uppercase ISO 3166-1 alpha-2), publishingCountry, stateProvince, gadmGid, year, scientificName, latitude/longitude ranges, month, hasCoordinate, hasGeospatialIssue, isInCluster, coordinateUncertaintyInMeters, geometry (all spatial filters intersect), basisOfRecord, datasetKey, publishingOrg, catalogNumber, institutionCode, recordedBy, mediaType, typeStatus, establishmentMeans, license, occurrenceStatus, or iucnRedListCategory filters. Also the way to split a result set too large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by DATASET_KEY, then search each datasetKey on its own. Aggregates sightings only by default, matching gbif_search_occurrences and gbif_count_occurrences; to measure the presence/absence split itself, pass facet OCCURRENCE_STATUS with occurrenceStatus ANY.',
+    'Aggregate occurrence counts across a dimension (COUNTRY, STATE_PROVINCE, YEAR, BASIS_OF_RECORD, DATASET_KEY, KINGDOM_KEY, etc.). Returns one page of facet values ranked by count descending — the top facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. Core tool for distribution analysis and trend queries: "which countries have the most records for this species?", "how has observation volume changed since 2010?". Key and GADM dimensions (KINGDOM_KEY through SPECIES_KEY, DATASET_KEY, PUBLISHING_ORG, GADM_LEVEL_0_GID through GADM_LEVEL_3_GID) return bare keys; includeLabels names the taxon, dataset, publishing organization, or administrative area behind each one on the page. Scope the aggregation with taxonKey (or checklistTaxonKey with checklistKey, for a Catalogue of Life key), country (uppercase ISO 3166-1 alpha-2), publishingCountry, stateProvince, gadmGid, year, month or a month range, eventDate (a date or date range), scientificName, latitude/longitude ranges, hasCoordinate, hasGeospatialIssue, isInCluster, coordinateUncertaintyInMeters, elevation and depth ranges, geometry and geoDistance (a radius around a point; all spatial filters intersect), basisOfRecord, datasetKey, publishingOrg, catalogNumber, institutionCode, recordedBy, mediaType, typeStatus, establishmentMeans, license, occurrenceStatus, or iucnRedListCategory filters. country, basisOfRecord, taxonKey, and checklistTaxonKey each take one value or an array: values within one filter are OR-ed, so an array aggregates into one ranking, and different filters still intersect, except that GBIF unions a taxon key with scientificName. Also the way to split a result set too large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by DATASET_KEY, then search each datasetKey on its own. Aggregates sightings only by default, matching gbif_search_occurrences and gbif_count_occurrences; to measure the presence/absence split itself, pass facet OCCURRENCE_STATUS with occurrenceStatus ANY.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     scientificName: z
       .string()
       .optional()
       .describe(
-        'Scientific name, which GBIF resolves to its accepted taxon, so a synonym scopes the records of that taxon; a name shared across kingdoms, such as Oenanthe (a bird genus and a plant genus), matches nothing — use taxonKey from gbif_match_species with kingdom set for one. With taxonKey GBIF takes their union (OR), not their intersection. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
+        'Scientific name, which GBIF resolves to its accepted taxon, so a synonym scopes the records of that taxon; a name shared across kingdoms, such as Oenanthe (a bird genus and a plant genus), matches nothing — use taxonKey from gbif_match_species with kingdom set for one. With taxonKey GBIF takes their union (OR), not their intersection, yet a name GBIF cannot resolve (one shared across kingdoms, or one it does not know) empties the combined aggregation, the taxonKey records included. Omit to leave names unfiltered; blank or whitespace-only is rejected.',
       ),
-    month: z
-      .number()
-      .int()
-      .min(1)
-      .max(12)
-      .optional()
-      .describe('Calendar month (1–12), matching the occurrence search filter.'),
     hasCoordinate: z
       .boolean()
       .optional()
@@ -164,30 +175,17 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .describe(
         'Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY). DATASET_KEY is the first cut when a result set is too large to page: every occurrence carries exactly one datasetKey, so its buckets cover totalOccurrences with no gap or overlap. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free second cuts for a dataset bucket still too large; both have a matching filter on the occurrence tools. A dimension a record can lack drops that record from every bucket: YEAR loses undated records; MONTH, STATE_PROVINCE, SPECIES_KEY, INSTITUTION_CODE, MEDIA_TYPE, RECORDED_BY, TYPE_STATUS, and ESTABLISHMENT_MEANS lose records lacking that dimension; GADM_LEVEL_0_GID, GADM_LEVEL_1_GID, GADM_LEVEL_2_GID, and GADM_LEVEL_3_GID lose records without coordinates or outside every GADM unit at that level — each even where the occurrence tools can filter on it. MEDIA_TYPE and RECORDED_BY buckets also overlap: a record with two media types or two collectors counts in each, so their sums can exceed totalOccurrences. TYPE_STATUS and ESTABLISHMENT_MEANS buckets overlap the same way: a record counts under its concept and every broader one (an Isolectotype also under Lectotype and Type, a nativeReintroduced record also under native). GADM buckets are GIDs to pass back as gadmGid; INSTITUTION_CODE buckets come back lowercased and institutionCode takes them unchanged; RECORDED_BY buckets are the exact spellings recordedBy matches; PUBLISHING_ORG, TYPE_STATUS, ESTABLISHMENT_MEANS, and LICENSE buckets pass back unchanged as publishingOrg, typeStatus, establishmentMeans, and license. OCCURRENCE_STATUS buckets read DETECTED and NOT_DETECTED, the current GBIF names for PRESENT and ABSENT, and pass back unchanged as occurrenceStatus. KINGDOM_KEY through SPECIES_KEY buckets are Backbone keys to pass back as taxonKey. Under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b they are Catalogue of Life keys to pass back as checklistTaxonKey, some all digits (8288, the genus Tringa) yet never Backbone keys. Sums are comparable only across the same occurrenceStatus scope.',
       ),
-    taxonKey: z
-      .number()
-      .int()
-      .nonnegative()
+    taxonKey: taxonKeyFilter()
       .optional()
       .describe(
-        'Backbone taxon key to scope the aggregation. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.). Rejected under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b — scope by a Catalogue of Life key with checklistTaxonKey there.',
+        'Backbone taxon key to scope the aggregation, or an array of up to 100 keys to aggregate records of any of them into one ranking. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.). Rejected under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b — scope by a Catalogue of Life key with checklistTaxonKey there.',
       ),
-    country: z
-      .string()
-      .regex(
-        /^[A-Z]{2}$/,
-        'country must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
-      )
+    country: countryFilter()
       .optional()
       .describe(
-        'ISO 3166-1 alpha-2 code, uppercase, of where the occurrence was recorded, to scope to one country. Not the publisher\'s country — that is publishingCountry, and the two disagree on most records. Scope to one country, or pass back a value this tool returned under facet COUNTRY to drill into that bucket. Lowercase and alpha-3 forms ("gb", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
+        'ISO 3166-1 alpha-2 code, uppercase, of where the occurrence was recorded, to scope to one country, or an array of codes to aggregate records from any of them into one ranking (["ES", "PT"] ranks both together). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records. Scope to one country, or pass back a value this tool returned under facet COUNTRY to drill into that bucket. Lowercase and alpha-3 forms ("gb", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here, for every member.',
       ),
-    publishingCountry: z
-      .string()
-      .regex(
-        /^[A-Z]{2}$/,
-        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("us"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
-      )
+    publishingCountry: alpha2CountryCode('publishingCountry')
       .optional()
       .describe(
         'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. Scope to one publisher country, or pass back a value this tool returned under facet PUBLISHING_COUNTRY to drill into that bucket. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
@@ -198,16 +196,11 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .describe(
         'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. Pass back a value this tool returned under facet STATE_PROVINCE rather than a guessed one: GBIF stores what each dataset recorded without normalizing it, so "England", "England - Greater London", and "Greater London" are three distinct values, "england" is none of them, and an unmatched value aggregates zero records rather than erroring. Omit the field to aggregate across every state or province — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
       ),
-    year: z
-      .string()
+    basisOfRecord: basisOfRecordFilter()
       .optional()
       .describe(
-        'Year or year range (e.g., "2020,2024") to scope the aggregation. Both endpoints inclusive. Omit the field to aggregate across every year — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
+        'Scope to a specific basis of record, or to any of an array of them (["PRESERVED_SPECIMEN", "FOSSIL_SPECIMEN"] aggregates both).',
       ),
-    basisOfRecord: z
-      .enum(BASIS_OF_RECORD_VALUES)
-      .optional()
-      .describe('Scope to a specific basis of record.'),
     geometry: z
       .string()
       .optional()
@@ -230,7 +223,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .enum(IUCN_RED_LIST_CATEGORY_VALUES)
       .optional()
       .describe(
-        'Scope to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Leave unset and facet on IUCN_RED_LIST_CATEGORY to see the whole distribution instead.',
+        'Scope to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent, NE Not Evaluated. Leave unset and facet on IUCN_RED_LIST_CATEGORY to see the whole distribution instead.',
       ),
     ...sharedOccurrenceFilterFields(),
     facetLimit: readLimitSchema(z.number().int().min(1), 100)
@@ -242,7 +235,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .min(0)
       .default(0)
       .describe(
-        'Zero-based offset into the ranked facet values, for paging past the first facetLimit values on high-cardinality dimensions like DATASET_KEY. Advance by facetLimit to fetch the next page (0, then facetLimit, then 2×facetLimit, …).',
+        'Zero-based offset into the ranked facet values, for paging past the first facetLimit values on high-cardinality dimensions like DATASET_KEY. Advance by facetLimit to fetch the next page (0, then facetLimit, then 2×facetLimit, …). GBIF pages a ranking only so far, and each page also requests the one bucket after it to tell whether more remain: facetOffset + facetLimit may reach 1,199,999 on any scope, past which the call fails as pagination_cap_exceeded before any request, and 500,000 on a scope ranking more than 500,001 buckets, where GBIF refuses a deeper page and the call fails the same way. On that scope, when the next page at the same facetLimit would reach past position 500,001 (the lookahead bucket counts), the notice names the facetLimit that lands the next page exactly on it. To rank buckets past either, narrow the scope with filters and page each narrower scope from 0.',
       ),
     includeLabels: z
       .boolean()
@@ -293,7 +286,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .number()
       .optional()
       .describe(
-        'facetLimit applied when the page was capped. Re-call with facetOffset advanced by this value to page on. Absent otherwise.',
+        'facetLimit applied when the page was capped. Re-call with facetOffset advanced by this value to page on, at the facetLimit that notice names when it names one, unless notice says GBIF serves no later page. Absent otherwise.',
       ),
     occurrenceStatus: z
       .string()
@@ -304,7 +297,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain, includeLabels left buckets without a label, a scientificName or an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters without a comma matched only that exact value, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
+        'Guidance when no facet values were returned, a read limit was clamped, a lookahead bucket proves more remain (naming the facetLimit that lands the next page exactly on position 500,001 when the next page at this facetLimit would reach past it, or that the page reached position 500,001, past which GBIF serves no later page for a scope ranking more buckets), includeLabels left buckets without a label, a scientificName or an exact-match stateProvince, gadmGid, or recordedBy filter matched nothing, a decimalLatitude, decimalLongitude, coordinateUncertaintyInMeters, elevation, or depth without a comma matched only that exact value, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
 
@@ -312,11 +305,18 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
 
   errors: [
     {
+      reason: 'pagination_cap_exceeded',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'facetOffset + facetLimit exceeds 1,199,999, the deepest GBIF pages facets to on any scope (refused before any request), or GBIF answered a page reaching past position 500,001 with an empty HTTP 404, as it does on a scope ranking more buckets than that.',
+      recovery:
+        'No parameter pages past these ceilings: keep facetOffset + facetLimit at most 1,199,999 on any scope, and at most 500,000 on a scope ranking more than 500,001 buckets (each page also requests the one bucket after it to tell whether more remain). To rank the buckets past either, narrow the scope so its ranking is shorter and page each narrower scope from facetOffset 0, repeating the other filters of this call on each: taxonKey of a class or order from gbif_match_species (checklistTaxonKey under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b) splits a GENUS_KEY or SPECIES_KEY ranking cleanly, since each genus and species sits under one, while country, year as a "min,max" range, basisOfRecord, or a datasetKey from a DATASET_KEY facet narrow any ranking, though one bucket can then recur in several parts, so merge the parts by bucket name.',
+    },
+    {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A string scope filter other than country and publishingCountry was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), decimalLatitude, decimalLongitude, or coordinateUncertaintyInMeters is a bare "*", datasetKey or publishingOrg is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, checklistTaxonKey holds a character other than an uppercase letter or digit, taxonKey was supplied under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b or checklistTaxonKey without it, typeStatus or establishmentMeans names no concept in its GBIF vocabulary, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter as malformed.',
+      when: 'A string scope filter other than country and publishingCountry, or a checklistTaxonKey member, was supplied blank or whitespace-only (a blank country or publishingCountry fails earlier, at its uppercase pattern, as -32602 invalid_arguments), decimalLatitude, decimalLongitude, coordinateUncertaintyInMeters, elevation, depth, year, month, or eventDate is a bare "*", coordinateUncertaintyInMeters, year, month, elevation, or depth has whitespace between a "*" end and the comma, geoDistance is not latitude,longitude,distance with the distance in a lowercase km or m unit, datasetKey or publishingOrg is not an 8-4-4-4-12 hex UUID, gadmGid holds a character other than an uppercase letter, digit, dot, or underscore, a checklistTaxonKey key holds a character other than an uppercase letter or digit, taxonKey was supplied under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b or checklistTaxonKey without it, typeStatus or establishmentMeans names no concept in its GBIF vocabulary, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter as malformed.',
       recovery:
-        'The message names the rejected value. A blank scope filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", the coordinate ranges are "min,max" (a value without a comma matches only that exact value), datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists or a TYPE_STATUS or ESTABLISHMENT_MEANS bucket, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
+        'The message names the rejected value. A blank scope filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, geoDistance is latitude,longitude,distance with the distance ending in km or m ("38.17,-3.95,25km"), year, month, and eventDate are a single value or "min,max", where "*" may stand for an open end ("*,1990", "2020,*", written with no whitespace between the "*" and the comma) but never for the whole value, the coordinate ranges are "min,max" (a value without a comma matches only that exact value), and so are elevation and depth, datasetKey is a UUID from gbif_search_datasets, publishingOrg is an organization UUID from gbif_search_publishers, gadmGid is an uppercase GADM GID such as ESP.1_1 from a GADM_LEVEL_0_GID through GADM_LEVEL_3_GID facet or the gadm field of gbif_get_occurrence, taxonKey takes a Backbone key and checklistTaxonKey a Catalogue of Life key such as 3WSJV from gbif_match_species, the second only with checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b and the first only without it, typeStatus and establishmentMeans take a concept the message lists or a TYPE_STATUS or ESTABLISHMENT_MEANS bucket, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
     },
   ],
 
@@ -330,6 +330,16 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     );
     input = { ...input, facetLimit: clamp.applied };
     ctx.log.info('Fetching occurrence facets', { facet: input.facet, taxonKey: input.taxonKey });
+
+    // The deepest ranked position the request asks for: this page and its lookahead bucket.
+    const reach = input.facetOffset + input.facetLimit + 1;
+    if (reach > FACET_PAGING_CEILING) {
+      throw ctx.fail(
+        'pagination_cap_exceeded',
+        `facetOffset + facetLimit (${input.facetOffset + input.facetLimit}) exceeds ${(FACET_PAGING_CEILING - 1).toLocaleString('en-US')}: GBIF pages facet buckets only through position ${FACET_PAGING_CEILING.toLocaleString('en-US')} on any scope, and each page also requests the one bucket after it to tell whether more remain.`,
+      );
+    }
+
     const violation = occurrenceFilterViolation(input);
     if (violation) throw ctx.fail('invalid_filter', violation);
 
@@ -341,10 +351,28 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       facetKind === 'taxon' && input.checklistKey === COL_XR_CHECKLIST_KEY ? 'colTaxon' : facetKind;
     // An unreachable label route is refused before the aggregation request is spent.
     if (labelKind) service.facetLabelRoot(labelKind);
-    const raw = await service.getOccurrenceFacets(
-      { ...occurrenceFilters(filters), facet, facetLimit: facetLimit + 1, facetOffset },
-      ctx,
-    );
+    const raw = await service
+      .getOccurrenceFacets(
+        { ...occurrenceFilters(filters), facet, facetLimit: facetLimit + 1, facetOffset },
+        ctx,
+      )
+      .catch((err: unknown) => {
+        // GBIF's refusal past the edge; an empty 404 on a page inside it is not a paging cap.
+        const emptyNotFound =
+          err instanceof McpError &&
+          err.data?.status === 404 &&
+          typeof err.data.body === 'string' &&
+          err.data.body.trim() === '';
+        if (emptyNotFound && reach > FACET_DEEP_EDGE) {
+          throw ctx.fail(
+            'pagination_cap_exceeded',
+            `GBIF answered facetOffset ${facetOffset} with facetLimit ${facetLimit} with an empty HTTP 404: it serves no facet bucket past position ${FACET_DEEP_EDGE.toLocaleString('en-US')} on a scope ranking more buckets than that, and this page, with the one bucket after it requested to tell whether more remain, reaches position ${reach.toLocaleString('en-US')}. Keep facetOffset + facetLimit at most ${(FACET_DEEP_EDGE - 1).toLocaleString('en-US')} on this scope.`,
+            undefined,
+            { cause: err },
+          );
+        }
+        throw err;
+      });
 
     const facetData = raw.facets?.find((f) => f.field?.toUpperCase() === input.facet.toUpperCase());
     const buckets = facetData?.counts ?? [];
@@ -380,6 +408,9 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     // One lookahead bucket proves continuation without advancing past an unexposed value.
     // Compose notices once: truncated guidance and notice share a last-wins key.
     const hasMore = buckets.length > input.facetLimit;
+    const nextOffset = input.facetOffset + counts.length;
+    // The next page, lookahead included, lands on the edge at most; at this facetLimit it may cross it.
+    const nextLimit = Math.min(input.facetLimit, FACET_DEEP_EDGE - 1 - nextOffset);
     const notice = [
       clamp.notice,
       counts.length === 0
@@ -390,7 +421,11 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
             : 'No facet values returned. The facet dimension has no data for the given scope.'
         : undefined,
       hasMore
-        ? `Showing ${counts.length} facet values; more remain. Re-call with facetOffset ${input.facetOffset + counts.length} for the next page.`
+        ? reach === FACET_DEEP_EDGE
+          ? `Showing ${counts.length} facet values; more remain, but GBIF serves no facet bucket past position ${FACET_DEEP_EDGE.toLocaleString('en-US')} on a scope ranking more than that, and this page with its lookahead bucket reaches it, so no later page can be fetched. To rank the rest, narrow the scope with filters (taxonKey of a class or order, or checklistTaxonKey under the Catalogue of Life checklistKey; country; year; a datasetKey from a DATASET_KEY facet) and page each narrower scope from facetOffset 0.`
+          : nextLimit < input.facetLimit
+            ? `Showing ${counts.length} facet values; more remain. Re-call with facetOffset ${nextOffset} and facetLimit ${nextLimit} for the next page: GBIF serves no facet bucket past position ${FACET_DEEP_EDGE.toLocaleString('en-US')} on a scope ranking more than that, and a larger page there reaches past it.`
+            : `Showing ${counts.length} facet values; more remain. Re-call with facetOffset ${nextOffset} for the next page.`
         : undefined,
       labelKind && unlabeled > 0
         ? `${unlabeled} of ${counts.length} buckets carry no label: the name lookup for each failed, found no name, or did not finish within the ${LABEL_DEADLINE_SECONDS} s label deadline. The keys are exact; ${LABEL_KINDS[labelKind].lookup}.`

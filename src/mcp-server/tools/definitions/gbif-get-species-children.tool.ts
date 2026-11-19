@@ -1,5 +1,5 @@
 /**
- * @fileoverview List direct children of a backbone taxon.
+ * @fileoverview List direct children of a GBIF taxon usage within its own checklist.
  * @module mcp-server/tools/definitions/gbif-get-species-children
  */
 
@@ -18,7 +18,7 @@ function buildNotice(args: {
   if (childCount === 0 && endOfRecords) {
     if (offset > 0)
       return `No children in this page at offset ${offset}. Reset offset to 0 or reduce it to revisit earlier pages.`;
-    return 'This taxon has no direct children in the GBIF backbone at this rank.';
+    return 'This taxon has no direct children in its source checklist.';
   }
   return;
 }
@@ -26,16 +26,16 @@ function buildNotice(args: {
 export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   title: 'Get Species Children',
   description:
-    'List direct children of a backbone taxon — genera within a family, species within a genus, ' +
-    'subspecies within a species. Paginated. Use gbif_match_species to get the taxonKey first, ' +
-    'then iterate with offset for large groups.',
+    "List direct children of a taxon usage within its own checklist — genera within a family, species within a genus, subspecies within a species. Each child is a usage of the parent's checklist: datasetKey names that checklist, key is its taxon usage key there, and nubKey is the mapped backbone key the occurrence tools take, absent where the backbone has no mapping. Paginated. Use gbif_match_species to get a backbone taxonKey first, then iterate with offset for large groups.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
       .number()
       .int()
       .nonnegative()
-      .describe('GBIF backbone taxon key from gbif_match_species or another taxonomy tool.'),
+      .describe(
+        'GBIF taxon key: a backbone key from gbif_match_species, or a taxon usage key of any checklist, such as key from gbif_search_species.',
+      ),
     limit: readLimitSchema(z.number().int().min(1), 1000)
       .default(20)
       .describe('Number of children to return (default 20, max 1000).'),
@@ -46,7 +46,22 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       .array(
         z
           .object({
-            key: z.number().optional().describe('GBIF backbone taxon key.'),
+            key: z
+              .number()
+              .optional()
+              .describe(
+                'Taxon usage key within the source checklist; not necessarily a backbone key.',
+              ),
+            datasetKey: z
+              .string()
+              .optional()
+              .describe('Source checklist dataset UUID, when GBIF supplies it.'),
+            nubKey: z
+              .number()
+              .optional()
+              .describe(
+                'Mapped backbone taxon key for occurrence queries, when GBIF supplies it. Otherwise resolve the name with gbif_match_species.',
+              ),
             scientificName: z.string().optional().describe('Full scientific name with authorship.'),
             canonicalName: z.string().optional().describe('Scientific name without authorship.'),
             rank: z.string().optional().describe('Taxonomic rank.'),
@@ -56,11 +71,16 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
               .number()
               .optional()
               .describe(
-                "Occurrence record count, present only when GBIF supplies one. GBIF's children listing does not, so this is normally absent; for a count, pass key as taxonKey to gbif_count_occurrences.",
+                "Occurrence record count, present only when GBIF supplies one. GBIF's children listing does not, so this is normally absent; for a count, pass nubKey as taxonKey to gbif_count_occurrences.",
               ),
-            numDescendants: z.number().optional().describe('Count of child taxa under this node.'),
+            numDescendants: z
+              .number()
+              .optional()
+              .describe('Count of descendant taxa under this node in its source checklist.'),
           })
-          .describe('A direct child taxon with key, name, rank, and status.'),
+          .describe(
+            'A direct child taxon usage with its key, checklist, backbone mapping, name, rank, and status.',
+          ),
       )
       .describe('Direct child taxa.'),
   }),
@@ -96,7 +116,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'The taxonKey does not exist in the GBIF backbone.',
+      when: 'No GBIF checklist has a taxon usage with this taxonKey.',
       recovery: 'Use gbif_match_species to resolve a name to a valid backbone taxon key.',
     },
     {
@@ -104,7 +124,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       code: JsonRpcErrorCode.InvalidParams,
       when: 'GBIF rejected the taxonKey as unparseable — a value outside the 32-bit signed integer range.',
       recovery:
-        'Backbone taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+        'GBIF taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
       thrownBy: 'service',
     },
   ],
@@ -121,6 +141,9 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
 
     const children = (raw.results ?? []).map((r) => ({
       key: r.key,
+      // As GBIF sends them: an unmapped usage has no nubKey, and none is inferred from key.
+      datasetKey: r.datasetKey,
+      nubKey: r.nubKey,
       scientificName: r.scientificName,
       canonicalName: r.canonicalName,
       rank: r.rank,
@@ -143,7 +166,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
         if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
           throw ctx.fail(
             'not_found',
-            `Taxon key ${input.taxonKey} not found in the GBIF backbone.`,
+            `Taxon key ${input.taxonKey} not found in GBIF: no checklist has a taxon usage with that key.`,
           );
         }
         throw err;
@@ -185,7 +208,9 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       const sci =
         child.scientificName && child.scientificName !== name ? ` [${child.scientificName}]` : '';
       lines.push(`\n- **${name}**${sci}`);
-      if (child.key != null) lines.push(`  Key: ${child.key}`);
+      if (child.key != null) lines.push(`  Taxon usage key: ${child.key}`);
+      if (child.datasetKey != null) lines.push(`  Dataset key: ${child.datasetKey}`);
+      if (child.nubKey != null) lines.push(`  Backbone key: ${child.nubKey}`);
       if (child.rank) lines.push(`  Rank: ${child.rank}`);
       if (child.taxonomicStatus) lines.push(`  Status: ${child.taxonomicStatus}`);
       if (child.vernacularName) lines.push(`  Common name: ${child.vernacularName}`);

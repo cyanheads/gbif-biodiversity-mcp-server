@@ -4,25 +4,33 @@
  * @module tests/tools/utils.test
  */
 
+import type { z } from '@cyanheads/mcp-ts-core';
 import { describe, expect, it } from 'vitest';
 import {
   backboneAcceptedName,
+  basisOfRecordFilter,
+  compactGeographicCoverages,
+  countryFilter,
   escapeMarkdownText,
   exactCoordinateMatchNotice,
   fromBackboneMatch,
   fromChecklistMatch,
   gadmGidNoMatchNotice,
+  linkOrEscapedText,
   matchKeyFields,
   occurrenceFilters,
   occurrenceFilterViolation,
   occurrenceNoMatchNotices,
   occurrenceScope,
+  occurrenceScopeSchema,
   overPaginationCapNotice,
   PAGINATION_CAP,
   recordedByNoMatchNotice,
   scientificNameNoMatchNotice,
+  sharedOccurrenceFilterFields,
   stateProvinceNoMatchNotice,
   stripHtml,
+  taxonKeyFilter,
 } from '@/mcp-server/tools/utils.js';
 import {
   BACKBONE_CHECKLIST_KEY,
@@ -31,6 +39,18 @@ import {
   OCCURRENCE_FILTER_KEYS,
   TYPE_STATUS_VALUES,
 } from '@/services/gbif/types.js';
+
+/** Least thread CPU per call, in µs, over five batches of `batch` calls. */
+const leastCpuUs = (run: () => void, batch: number) => {
+  let least = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const start = process.threadCpuUsage();
+    for (let i = 0; i < batch; i++) run();
+    const cpu = process.threadCpuUsage(start);
+    least = Math.min(least, (cpu.user + cpu.system) / batch);
+  }
+  return least;
+};
 
 /**
  * #85 — a Backbone synonym's accepted taxon is named by the classification field whose
@@ -306,6 +326,88 @@ describe('escapeMarkdownText', () => {
     expect(escapeMarkdownText('\tParus major')).toBe('&#9;Parus major');
     expect(escapeMarkdownText('first\n    second', false)).toBe('first\n&#32;   second');
   });
+
+  /**
+   * The escaper renders publisher free text of thousands of characters — occurrence
+   * remarks, dataset descriptions — so it is timed like any scanner over caller-sized
+   * text, in both modes: a run it never touches (digits, carried to 320k), a run it
+   * rewrites character by character, a run of spaces whose boundary check reads both
+   * neighbours, and the two line-break shapes. Each is timed per call over a 64-fold
+   * span, the least of several batches kept, with the smallest input re-timed beside
+   * every larger one; the shapes other than the digit run stay under 80k.
+   */
+  it('stays linear in thread CPU across a 64-fold span of publisher text', () => {
+    const shapes = {
+      'digit-run': { build: (size: number) => '1'.repeat(size), from: 5000 },
+      'escaped-run': { build: (size: number) => '[&'.repeat(size / 2), from: 1000 },
+      'space-run': { build: (size: number) => `${' '.repeat(size - 1)}x`, from: 1000 },
+      'trailing-break': { build: (size: number) => `${'§1 x'.repeat(size / 4)}\ny`, from: 1000 },
+      'embedded-breaks': { build: (size: number) => '  \r\n'.repeat(size / 4), from: 1000 },
+    };
+    for (const inline of [true, false]) {
+      for (const [shape, { build, from }] of Object.entries(shapes)) {
+        const baseline = build(from);
+        for (let size = from * 2; size <= from * 64; size *= 2) {
+          const input = build(size);
+          for (let i = 0; i < 8; i++) escapeMarkdownText(input, inline);
+          const largeUs = leastCpuUs(() => escapeMarkdownText(input, inline), 4);
+          const smallUs = leastCpuUs(() => escapeMarkdownText(baseline, inline), 64);
+          expect(largeUs, `${shape} inline=${inline} at ${size}`).toBeLessThan(50_000);
+          if (size === from * 64)
+            expect(
+              largeUs / Math.max(smallUs, 1),
+              `${shape} inline=${inline} across 64x`,
+            ).toBeLessThan(256);
+        }
+      }
+    }
+  }, 0);
+});
+
+/**
+ * A URL-valued publisher field is a link to itself only when it is an absolute http(s)
+ * URL on one line; any other value — another scheme, a relative path, a URN, a value
+ * spanning lines — is escaped text, with no live target. A value that tries to close the
+ * link early — `)`, `]`, `>`, a backslash, a second link — still yields one link whose
+ * destination is the value itself, and `&` or `_` in the URL stays as sent.
+ */
+describe('linkOrEscapedText', () => {
+  it.each([
+    { value: 'javascript:alert(1)', rendered: 'javascript:alert&#40;1&#41;' },
+    { value: 'ftp://example.org/file', rendered: 'ftp://example.org/file' },
+    { value: 'www.example.org/x_y', rendered: 'www.example.org/x&#95;y' },
+    { value: '/media/1_2.jpg', rendered: '/media/1&#95;2.jpg' },
+    { value: 'urn:catalog:MCZ:Herp:A-1_2', rendered: 'urn:catalog:MCZ:Herp:A-1&#95;2' },
+    { value: 'https://example.org/a\nb', rendered: 'https://example.org/a&#10;b' },
+    {
+      value: 'https://example.org/media?id=1&size=large_2',
+      rendered:
+        '[https://example.org/media?id=1&size=large_2](<https://example.org/media?id=1&size=large_2>)',
+    },
+    {
+      value: 'https://example.org/a&#38;b',
+      rendered: '[https://example.org/a\\&#38;b](<https://example.org/a\\&#38;b>)',
+    },
+    {
+      value: 'https://example.org/a)b c',
+      rendered: '[https://example.org/a)b c](<https://example.org/a)b c>)',
+    },
+    {
+      value: 'https://example.org/x]y\\z',
+      rendered: '[https://example.org/x\\]y\\z](<https://example.org/x]y\\\\z>)',
+    },
+    {
+      value: 'https://example.org/<b>x</b>',
+      rendered: '[https://example.org/\\<b>x\\</b>](<https://example.org/\\<b\\>x\\</b\\>>)',
+    },
+    {
+      value: 'https://example.org/>)[x](javascript:alert(1)',
+      rendered:
+        '[https://example.org/>)\\[x\\](javascript:alert(1)](<https://example.org/\\>)[x](javascript:alert(1)>)',
+    },
+  ])('renders $value as one safe link or as text', ({ value, rendered }) => {
+    expect(linkOrEscapedText(value)).toBe(rendered);
+  });
 });
 
 /**
@@ -504,6 +606,72 @@ describe('gadmGid and recordedBy no-match notices', () => {
     ).toBe(notice);
   });
 
+  /**
+   * GBIF ORs scientificName with a taxon key, yet a name it cannot resolve empties the
+   * whole query: taxonKey 2435261 counts 2,269, with "Lynx lynx" beside it 122,551, and
+   * with "Zzzz zzzz" beside it 0. Under the Catalogue of Life checklistKey,
+   * checklistTaxonKey 3WSJV counts the same 2,269, and 0 beside "Zzzz zzzz".
+   */
+  it('scientificName beside a taxon key says an unresolved name empties the whole query', () => {
+    const notice = scientificNameNoMatchNotice('Zzzz zzzz', 0, undefined, true) as string;
+    expect(notice).toContain('scientificName "Zzzz zzzz" was applied beside taxonKey');
+    expect(notice).toContain('empties the whole query, the taxonKey records included');
+    expect(notice).toContain('this zero does not show that taxonKey has no records');
+    expect(notice).toContain('Drop scientificName to count the taxonKey records alone');
+    expect(notice).toContain('gbif_match_species');
+    expect(notice).toContain('kingdom');
+    expect(notice).not.toMatch(/does not distinguish/);
+    expect(notice).not.toContain('checklistTaxonKey');
+    expect(scientificNameNoMatchNotice('Zzzz zzzz', 0, BACKBONE_CHECKLIST_KEY, true)).toBe(notice);
+    expect(scientificNameNoMatchNotice('Lynx lynx', 122551, undefined, true)).toBeUndefined();
+    for (const absent of [undefined, '', '   '])
+      expect(scientificNameNoMatchNotice(absent, 0, undefined, true)).toBeUndefined();
+
+    const col = scientificNameNoMatchNotice('Zzzz zzzz', 0, COL_XR_CHECKLIST_KEY, true) as string;
+    expect(col).toContain('applied beside checklistTaxonKey');
+    expect(col).toContain('the checklistTaxonKey records included');
+    expect(col).toContain(`returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}`);
+    expect(col).not.toMatch(/\btaxonKey\b/);
+    expect(col).not.toContain('Backbone');
+    expect(col).not.toMatch(/does not distinguish/);
+  });
+
+  /**
+   * The resolved key joins the call's own key rather than replacing it: taxonKey
+   * 2435261 beside "Oenanthe" counts 0, Oenanthe's bird genus 2492483 alone 2,831,997,
+   * and [2435261, 2492483] the 2,834,266 union the call asked for.
+   */
+  it('keyed scientificName notice adds the resolved key to the key array', () => {
+    const notice = scientificNameNoMatchNotice('Oenanthe', 0, undefined, true) as string;
+    expect(notice).toContain(
+      "add the returned taxonKey to this call's taxonKey, which takes an array, in place of the name",
+    );
+    expect(notice).not.toContain('query the returned taxonKey');
+    const col = scientificNameNoMatchNotice('Oenanthe', 0, COL_XR_CHECKLIST_KEY, true) as string;
+    expect(col).toContain(
+      `add the returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}, to this call's checklistTaxonKey, which takes an array, in place of the name`,
+    );
+  });
+
+  it('hands the scientificName notice a supplied taxonKey or checklistTaxonKey, key 0 included', () => {
+    const keyed = scientificNameNoMatchNotice('Oenanthe', 0, undefined, true) as string;
+    expect(keyed).toContain('the taxonKey records included');
+    for (const taxonKey of [0, 2435261])
+      expect(occurrenceNoMatchNotices({ scientificName: 'Oenanthe', taxonKey }, 0)[0]).toBe(keyed);
+    const col = occurrenceNoMatchNotices(
+      {
+        scientificName: 'Oenanthe',
+        checklistKey: COL_XR_CHECKLIST_KEY,
+        checklistTaxonKey: '3WSJV',
+      },
+      0,
+    )[0];
+    expect(col).toContain('the checklistTaxonKey records included');
+    expect(occurrenceNoMatchNotices({ scientificName: 'Oenanthe' }, 0)[0]).toMatch(
+      /does not distinguish/,
+    );
+  });
+
   it('composes every applicable notice in a fixed order and none on a match', () => {
     const input = {
       scientificName: 'Oenanthe',
@@ -545,6 +713,12 @@ describe('occurrenceFilterViolation', () => {
     'typeStatus',
     'establishmentMeans',
     'checklistTaxonKey',
+    // #97: `eventDate=`, `geoDistance=`, and `elevation=` each answer the unfiltered scope.
+    'month',
+    'eventDate',
+    'geoDistance',
+    'elevation',
+    'depth',
   ] as const;
 
   it('passes every well-formed value, and an input with no filters', () => {
@@ -583,12 +757,105 @@ describe('occurrenceFilterViolation', () => {
     },
   );
 
+  /**
+   * #93 — GBIF answers a bare "*" year with the same empty-body 404, while "*" as one
+   * end of a range answers: on Lynx pardinus "*,1990" counts 46 and "2020,*" 466.
+   */
+  it.each([
+    ['year', '"*,1990" or "2020,*"'],
+    // #97: month, elevation, and depth answer the same 404; eventDate a 400.
+    ['month', '"*,5" or "9,*"'],
+    ['eventDate', '"*,2020-06-30" or "2026-01-01,*"'],
+    ['elevation', '"2000,*"'],
+    ['depth', '"200,*"'],
+  ] as const)('rejects a bare "*" as %s, pointing at the open range %s', (field, open) => {
+    for (const star of ['*', ' * ', '*\n']) {
+      const violation = occurrenceFilterViolation({ [field]: star }) as string;
+      expect(violation).toContain(`${field} "${star}" is not a range`);
+      expect(violation).toContain(`"*" may stand for one open end, as in ${open}`);
+    }
+  });
+
+  /**
+   * GBIF answers the same empty-body 404 when whitespace sits between a "*" end and the
+   * comma: on Lynx pardinus year "* ,1990" and "2020, *" each answer 404 with no body,
+   * while " *,1990" and "*, 1990" each count 46 — the "*" end is read untrimmed on its
+   * comma side only. eventDate answers that spacing with a 400 naming it.
+   */
+  it.each([
+    ['year', '* ,1990', '"*,1990"'],
+    ['year', '2020, *', '"2020,*"'],
+    ['month', '*\t,5', '"*,5"'],
+    ['elevation', '* ,2000', '"*,2000"'],
+    ['depth', '200, *', '"200,*"'],
+    ['coordinateUncertaintyInMeters', '* , *', '"*,*"'],
+  ] as const)(
+    'rejects %s %j, whose "*" end meets the comma through whitespace, naming %s',
+    (field, value, fixed) => {
+      const violation = occurrenceFilterViolation({ [field]: value }) as string;
+      expect(violation).toContain(`${field} "${value}" has whitespace between "*" and the comma`);
+      expect(violation).toContain(`write it ${fixed}`);
+    },
+  );
+
+  it('keeps the padded open ranges GBIF reads as ranges', () => {
+    for (const value of [' *,1990', '*,1990 ', '*, 1990', '1990 ,*', ' *,* '])
+      expect(occurrenceFilterViolation({ year: value }), value).toBeUndefined();
+    expect(occurrenceFilterViolation({ eventDate: '* ,2020-06-30' })).toBeUndefined();
+  });
+
   /** Comma-less values answer upstream as exact matches, and "*" as one end of an uncertainty range. */
   it('keeps every value GBIF answers, comma-less and open-ended ones included', () => {
     for (const value of ['38', ' 38.16', '-3.8', '38,39', '38 , 39'])
       expect(occurrenceFilterViolation({ decimalLatitude: value })).toBeUndefined();
     for (const value of ['1000', '*,1000', '1000,*', '0,1000'])
       expect(occurrenceFilterViolation({ coordinateUncertaintyInMeters: value })).toBeUndefined();
+    for (const value of ['2024', ' 2024', '2020,2024', '*,1990', '2020,*', '*,*'])
+      expect(occurrenceFilterViolation({ year: value })).toBeUndefined();
+    // #97: each forwarded for GBIF to answer, or to name in its own 400 ("11,2", "13").
+    for (const month of [1, 12, '3', ' 3', '03', '3,5', '*,5', '9,*', '11,2', '13'])
+      expect(occurrenceFilterViolation({ month }), String(month)).toBeUndefined();
+    for (const value of ['2026', '2026-03', '2026-3-1', '2025,2026-03', '2026-01-01,*', '*,*'])
+      expect(occurrenceFilterViolation({ eventDate: value })).toBeUndefined();
+    for (const value of ['2000', '2000,9000', '-5,*', '0.5,1999.5', '*,*'])
+      for (const field of ['elevation', 'depth'] as const)
+        expect(occurrenceFilterViolation({ [field]: value })).toBeUndefined();
+  });
+
+  /**
+   * #97 — GBIF reads a geoDistance distance with no unit as meters: around 38.17,-3.95
+   * on Lynx pardinus, "25km" and "25000" each count 256 while "25" counts 0. Each part
+   * is read with its surrounding whitespace ignored, as GBIF reads it.
+   */
+  it.each([
+    '38.17,-3.95,25km',
+    '38.17,-3.95,25000m',
+    '38.17, -3.95, 25km',
+    ' 38.17,-3.95,25km ',
+    '38.17,-3.95,25 km',
+    '-38,147,2.5km',
+    '38,-3,0.5m',
+  ])('accepts geoDistance %j', (geoDistance) => {
+    expect(occurrenceFilterViolation({ geoDistance })).toBeUndefined();
+  });
+
+  it.each([
+    '38.17,-3.95,25',
+    '38.17,-3.95,25KM',
+    '38.17,-3.95,25Km',
+    '38.17,-3.95,25mi',
+    '38.17,-3.95,25cm',
+    '38.17,-3.95,km',
+    '38.17,-3.95',
+    '38.17,-3.95,25km,1',
+    '38.17,,25km',
+    'north,-3.95,25km',
+    '*',
+  ])('rejects geoDistance %j, naming both units', (geoDistance) => {
+    const violation = occurrenceFilterViolation({ geoDistance }) as string;
+    expect(violation).toContain(`geoDistance "${geoDistance}"`);
+    expect(violation).toContain('lowercase km or m');
+    expect(violation).toContain('as meters');
   });
 
   it.each([
@@ -777,16 +1044,6 @@ describe('occurrenceFilterViolation', () => {
    * carries the span to 320k; the other shapes stay under 80k.
    */
   it('stays linear in thread CPU across a 64-fold span of coordinate, organization, and concept input', () => {
-    const leastCpuUs = (run: () => void, batch: number) => {
-      let least = Number.POSITIVE_INFINITY;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const start = process.threadCpuUsage();
-        for (let i = 0; i < batch; i++) run();
-        const cpu = process.threadCpuUsage(start);
-        least = Math.min(least, (cpu.user + cpu.system) / batch);
-      }
-      return least;
-    };
     const checks = {
       'decimalLatitude star check': (value: string) =>
         occurrenceFilterViolation({ decimalLatitude: value }),
@@ -798,6 +1055,9 @@ describe('occurrenceFilterViolation', () => {
         occurrenceFilterViolation({ establishmentMeans: value }),
       // #90: the key alphabet, then the pairing, whose message echoes the value.
       checklistTaxonKey: (value: string) => occurrenceFilterViolation({ checklistTaxonKey: value }),
+      // #98: the same checks on one member of an array.
+      'checklistTaxonKey member': (value: string) =>
+        occurrenceFilterViolation({ checklistTaxonKey: ['3WSJV', value] }),
     };
     const shapes = {
       'digit-run': { build: (size: number) => '1'.repeat(size), from: 5000 },
@@ -816,6 +1076,41 @@ describe('occurrenceFilterViolation', () => {
           if (size === from * 64)
             expect(largeUs / Math.max(smallUs, 1), `${name} ${shape} across 64x`).toBeLessThan(256);
         }
+      }
+    }
+  }, 0);
+
+  /**
+   * #97 — the geoDistance shape check splits the value and reads each part, echoing
+   * the value when it rejects. Timed on what each step scans: a part-less digit run,
+   * a distance that passes the split and unit and is one huge number, a comma run, a
+   * long run of unit letters, padding inside the distance, and the two line-break
+   * shapes. Digit runs carry the span to 320k; the others stay under 80k.
+   */
+  it('stays linear in thread CPU across a 64-fold span of geoDistance input', () => {
+    const check = (geoDistance: string) => occurrenceFilterViolation({ geoDistance });
+    const shapes = {
+      'digit-run': { build: (size: number) => '1'.repeat(size), from: 5000 },
+      'distance-digit-run': { build: (size: number) => `1,1,${'1'.repeat(size)}km`, from: 5000 },
+      'comma-run': { build: (size: number) => ','.repeat(size), from: 1000 },
+      'unit-run': { build: (size: number) => `1,1,1${'m'.repeat(size)}`, from: 1000 },
+      'padded-distance': { build: (size: number) => `1,1,${' '.repeat(size)}25km`, from: 1000 },
+      'trailing-break': { build: (size: number) => `${'§1 x'.repeat(size / 4)}\ny`, from: 1000 },
+      'embedded-breaks': {
+        build: (size: number) => `1,\n1,\n${'2\r\n '.repeat(size / 4)}km`,
+        from: 1000,
+      },
+    };
+    for (const [shape, { build, from }] of Object.entries(shapes)) {
+      const baseline = build(from);
+      for (let size = from * 2; size <= from * 64; size *= 2) {
+        const input = build(size);
+        for (let i = 0; i < 8; i++) check(input);
+        const largeUs = leastCpuUs(() => check(input), 4);
+        const smallUs = leastCpuUs(() => check(baseline), 64);
+        expect(largeUs, `${shape} at ${size}`).toBeLessThan(50_000);
+        if (size === from * 64)
+          expect(largeUs / Math.max(smallUs, 1), `${shape} across 64x`).toBeLessThan(256);
       }
     }
   }, 0);
@@ -860,6 +1155,27 @@ describe('exactCoordinateMatchNotice', () => {
     expect(notice).toContain('"min,max", both ends inclusive');
   });
 
+  /**
+   * The range example belongs to the field the notice names: sent as elevation,
+   * "0,1000" is a 0–1,000 m band (277,945 Quercus records), not "within 1 km", and
+   * "38,39" a 38–39 m one (413).
+   */
+  it.each([
+    [{ elevation: '2000' }, 'elevation "2000,*"'],
+    [{ depth: '200' }, 'depth "200,*"'],
+    [{ decimalLatitude: '38' }, 'decimalLatitude "38,39"'],
+    [{ decimalLongitude: '-3' }, 'decimalLongitude "-4,-3"'],
+    [
+      { coordinateUncertaintyInMeters: '1000' },
+      'coordinateUncertaintyInMeters "0,1000" for within 1 km',
+    ],
+  ])('gives %j a range example of its own', (input, example) => {
+    const notice = exactCoordinateMatchNotice(input) as string;
+    expect(notice).toContain(example);
+    for (const other of ['"38,39"', '"-4,-3"', '"0,1000"', '"2000,*"', '"200,*"'])
+      if (!example.includes(other)) expect(notice).not.toContain(other);
+  });
+
   it('names only the fields without a comma', () => {
     const notice = exactCoordinateMatchNotice({
       decimalLatitude: '38,39',
@@ -869,9 +1185,48 @@ describe('exactCoordinateMatchNotice', () => {
     expect(notice).not.toContain('decimalLatitude');
     expect(notice).not.toContain('coordinateUncertaintyInMeters');
   });
+
+  /**
+   * #97 — a single elevation or depth matches only that figure (`elevation=2000`
+   * counts 784 Quercus records, exactly as `2000,2000`), while a single year, month,
+   * or eventDate is a whole period and a geoDistance is a radius.
+   */
+  it('names a comma-less elevation or depth, and no other range filter', () => {
+    expect(
+      exactCoordinateMatchNotice({ elevation: '2000', depth: '200' })?.startsWith(
+        'elevation and depth have no comma, so GBIF matched each as one exact value',
+      ),
+    ).toBe(true);
+    expect(exactCoordinateMatchNotice({ elevation: '2000,*', depth: '0,199' })).toBeUndefined();
+    const periods = {
+      decimalLatitude: '38,39',
+      year: '2024',
+      month: 3,
+      eventDate: '2026-03',
+      geoDistance: '38.17,-3.95,25km',
+    };
+    for (const input of [periods, { ...periods, month: '3' }])
+      expect(exactCoordinateMatchNotice(input)).toBeUndefined();
+  });
 });
 
 /** One table decides what the three occurrence tools forward and echo. */
+/**
+ * Either checklistKey value limits the result to records GBIF has classified in
+ * that checklist, so neither asks for the same records as an omitted key:
+ * /v1/occurrence/search?country=IS&occurrenceStatus=PRESENT counts 2,707,757 with
+ * no checklistKey, 2,685,509 under the Backbone key, and 2,686,609 under the
+ * Catalogue of Life key (2026-11-19).
+ */
+describe('sharedOccurrenceFilterFields checklistKey', () => {
+  it('says either value leaves out the records GBIF has not matched in that checklist', () => {
+    const description = sharedOccurrenceFilterFields().checklistKey.description ?? '';
+    expect(description).toContain('either value');
+    expect(description).toContain('not matched to a taxon in that checklist');
+    expect(description).toContain('no checklistKey keeps');
+  });
+});
+
 describe('occurrence filter table', () => {
   const everyFilter = {
     taxonKey: 0,
@@ -884,6 +1239,10 @@ describe('occurrence filter table', () => {
     geometry: 'POLYGON((15 -35,35 -35,35 -20,15 -20,15 -35))',
     year: '2020,2024',
     month: 12,
+    eventDate: '2025,2026-03',
+    geoDistance: '38.17, -3.95, 25km',
+    elevation: '-5,2000.5',
+    depth: '*,200',
     basisOfRecord: 'FOSSIL_SPECIMEN',
     hasCoordinate: false,
     isInCluster: false,
@@ -985,6 +1344,244 @@ describe('occurrence filter table', () => {
     expect(ESTABLISHMENT_MEANS_VALUES).toHaveLength(7);
     for (const concepts of [TYPE_STATUS_VALUES, ESTABLISHMENT_MEANS_VALUES])
       expect(new Set(concepts.map((c) => c.toLowerCase())).size).toBe(concepts.length);
+  });
+});
+
+/**
+ * #98 — country, basisOfRecord, taxonKey, and checklistTaxonKey take one value or a
+ * non-empty array, sent as one repeated parameter per member, which GBIF ORs. Each
+ * member passes the check a single value passes: GBIF answers a bad member by adding
+ * nothing to the union (`country=ES&country=pt` counts the 1,348 Lynx pardinus records
+ * `ES` alone does), and an empty array sends no parameter, which answers the unfiltered
+ * scope. Members are sent and echoed as given, never deduplicated or reordered.
+ */
+describe('one value or several (#98)', () => {
+  const fields: Record<
+    string,
+    { schema: () => z.ZodType; good: readonly [unknown, unknown]; bad: readonly unknown[] }
+  > = {
+    country: { schema: countryFilter, good: ['ES', 'PT'], bad: ['es', 'ESP', 'Spain', '', 34] },
+    basisOfRecord: {
+      schema: basisOfRecordFilter,
+      good: ['PRESERVED_SPECIMEN', 'FOSSIL_SPECIMEN'],
+      bad: ['preserved_specimen', 'SPECIMEN', '', 1],
+    },
+    taxonKey: {
+      schema: taxonKeyFilter,
+      good: [2435261, 0],
+      bad: [-1, 2435261.5, '01', '1e3', '2.5', '-3', 'Puma', ''],
+    },
+    // The blank check and the key alphabet run in occurrenceFilterViolation, below.
+    checklistTaxonKey: {
+      schema: () => sharedOccurrenceFilterFields().checklistTaxonKey,
+      good: ['3WSJV', '8288'],
+      bad: [8288, null],
+    },
+  };
+
+  it.each(Object.entries(fields))(
+    '%s takes one value, or a non-empty array kept exactly as sent',
+    (_, { schema, good: [a, b] }) => {
+      expect(schema().parse(a)).toBe(a);
+      expect(schema().parse([a])).toEqual([a]);
+      expect(schema().parse([b, a, b])).toEqual([b, a, b]);
+    },
+  );
+
+  it.each(Object.entries(fields))(
+    '%s rejects an empty array, and a bad value alone or as a member',
+    (_, { schema, good: [a], bad }) => {
+      expect(schema().safeParse([]).success).toBe(false);
+      for (const value of bad) {
+        expect(schema().safeParse(value).success, String(value)).toBe(false);
+        expect(schema().safeParse([a, value]).success, String(value)).toBe(false);
+      }
+    },
+  );
+
+  /**
+   * A client that sends a number as text gets the number: the framework's repair of a
+   * spelled number stops at a union that also takes an array or a string, so taxonKey
+   * and month apply its rule themselves. Only a string whose trimmed form is the
+   * number's own decimal spelling converts; anything else stays the string sent.
+   */
+  it('reads a taxonKey spelled as text as that key, alone or as a member', () => {
+    expect(taxonKeyFilter().parse('2435261')).toBe(2435261);
+    expect(taxonKeyFilter().parse(' 2435261 ')).toBe(2435261);
+    expect(taxonKeyFilter().parse('0')).toBe(0);
+    expect(taxonKeyFilter().parse(['2435261', 5219404])).toEqual([2435261, 5219404]);
+  });
+
+  it('reads a month spelled as text as that integer, and keeps every other string as sent', () => {
+    const { month } = sharedOccurrenceFilterFields();
+    expect(month.parse('3')).toBe(3);
+    expect(month.parse(' 12 ')).toBe(12);
+    for (const text of ['03', '3,5', '*,5', ' * ', '']) expect(month.parse(text)).toBe(text);
+    for (const outside of ['13', '0', '1.5', 13, 0])
+      expect(month.safeParse(outside).success, String(outside)).toBe(false);
+  });
+
+  /** 218 seven-digit keys fit GBIF's URL ceiling and 219 draw HTTP 400, so the cap sits well inside it. */
+  it.each(['taxonKey', 'checklistTaxonKey'] as const)(
+    '%s takes up to 100 members and refuses 101',
+    (field) => {
+      const { schema, good } = fields[field]!;
+      expect(schema().safeParse(Array.from({ length: 100 }, () => good[0])).success).toBe(true);
+      expect(schema().safeParse(Array.from({ length: 101 }, () => good[0])).success).toBe(false);
+    },
+  );
+
+  it('names the accepted country form, and the member, when a member fails it', () => {
+    const issues = countryFilter().safeParse(['ES', 'pt']).error?.issues ?? [];
+    expect(issues.map((issue) => issue.path)).toEqual([[1]]);
+    expect(issues[0]?.message).toMatch(/^country must be an uppercase ISO 3166-1 alpha-2 code/);
+  });
+
+  it('passes checklistTaxonKey arrays, and taxonKey arrays, under their own checklists', () => {
+    for (const input of [
+      { checklistKey: COL_XR_CHECKLIST_KEY, checklistTaxonKey: ['3WSJV', '6QR9T'] },
+      { checklistKey: COL_XR_CHECKLIST_KEY, checklistTaxonKey: ['8288'] },
+      { taxonKey: [2435261, 2435246] },
+      { taxonKey: [0], checklistKey: BACKBONE_CHECKLIST_KEY },
+    ])
+      expect(occurrenceFilterViolation(input), JSON.stringify(input)).toBeUndefined();
+  });
+
+  it('names a blank checklistTaxonKey member by its position, before any key alphabet check', () => {
+    for (const blank of ['', '   ', '\t\n'])
+      for (const checklistTaxonKey of [
+        ['3WSJV', blank],
+        ['3wsjv', blank],
+      ])
+        expect(
+          occurrenceFilterViolation({ checklistKey: COL_XR_CHECKLIST_KEY, checklistTaxonKey }),
+        ).toBe(
+          'checklistTaxonKey[1] was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.',
+        );
+  });
+
+  it('names a checklistTaxonKey member outside the key alphabet by its value', () => {
+    const violation = occurrenceFilterViolation({
+      checklistKey: COL_XR_CHECKLIST_KEY,
+      checklistTaxonKey: ['3WSJV', '6qr9t', 'Lynx'],
+    });
+    expect(violation).toContain('checklistTaxonKey "6qr9t" is not a Catalogue of Life key');
+  });
+
+  it('refuses either array beside the other checklist, naming its first member', () => {
+    expect(
+      occurrenceFilterViolation({
+        taxonKey: [2435261, 2435246],
+        checklistKey: COL_XR_CHECKLIST_KEY,
+      }),
+    ).toContain('taxonKey 2435261 is a Backbone key');
+    for (const checklistKey of [undefined, BACKBONE_CHECKLIST_KEY])
+      expect(
+        occurrenceFilterViolation({ checklistTaxonKey: ['3WSJV', '6QR9T'], checklistKey }),
+      ).toContain('checklistTaxonKey "3WSJV" is a Catalogue of Life key');
+  });
+
+  it('sends and echoes arrays as given, repeated and out-of-order members included', () => {
+    const input = {
+      taxonKey: [2435246, 2435261, 2435246],
+      country: ['PT', 'ES'],
+      basisOfRecord: ['FOSSIL_SPECIMEN' as const],
+      occurrenceStatus: 'PRESENT' as const,
+    };
+    expect(occurrenceFilters(input)).toEqual(input);
+    expect(occurrenceScope(input)).toEqual(input);
+  });
+
+  it('admits an array of strings or of numbers in scope, beside the scalars', () => {
+    const scope = {
+      taxonKey: [2435261, 2435246],
+      country: ['ES', 'PT'],
+      checklistTaxonKey: ['3WSJV'],
+      hasCoordinate: false,
+      month: 3,
+      year: '2020',
+      occurrenceStatus: 'PRESENT',
+    };
+    expect(occurrenceScopeSchema.parse(scope)).toEqual(scope);
+  });
+});
+
+/**
+ * #95 — a coverage entry is kept when it carries a description, a bounding box, or
+ * both, and the box passes through as GBIF sends it. Boxes are from live
+ * /v1/dataset records: 50c9509d (iNaturalist, a box beside a description, whose
+ * minLongitude above maxLongitude crosses the antimeridian) and eb974f54 (a box
+ * with no description).
+ */
+describe('compactGeographicCoverages', () => {
+  const INAT_BOX = {
+    minLatitude: -87.80586803331971,
+    maxLatitude: 89.98972198460251,
+    minLongitude: 0,
+    maxLongitude: -1.6763806343078613e-7,
+    globalCoverage: false,
+  };
+  const AIRDNA_BOX = {
+    minLatitude: 56.8336111111,
+    maxLatitude: 56.8347222222,
+    minLongitude: 10.2477777778,
+    maxLongitude: 10.2516666667,
+    globalCoverage: false,
+  };
+
+  it('keeps a box beside its description with every value unchanged', () => {
+    expect(
+      compactGeographicCoverages([{ description: 'Bounding Box', boundingBox: INAT_BOX }]),
+    ).toEqual([
+      {
+        description: 'Bounding Box',
+        boundingBox: {
+          minLatitude: -87.80586803331971,
+          maxLatitude: 89.98972198460251,
+          minLongitude: 0,
+          maxLongitude: -1.6763806343078613e-7,
+          globalCoverage: false,
+        },
+      },
+    ]);
+  });
+
+  it('keeps a box that carries no description, adding none', () => {
+    const entries = compactGeographicCoverages([{ boundingBox: AIRDNA_BOX }]);
+    expect(entries).toEqual([{ boundingBox: AIRDNA_BOX }]);
+    expect(entries?.[0]).not.toHaveProperty('description');
+  });
+
+  it('keeps a description-only entry exactly as before', () => {
+    expect(compactGeographicCoverages([{ description: 'Worldwide' }])).toEqual([
+      { description: 'Worldwide' },
+    ]);
+  });
+
+  it('drops an entry with neither, keeping the rest in source order', () => {
+    expect(
+      compactGeographicCoverages([
+        {},
+        { boundingBox: AIRDNA_BOX },
+        { description: '' },
+        { description: 'Worldwide' },
+      ]),
+    ).toEqual([{ boundingBox: AIRDNA_BOX }, { description: 'Worldwide' }]);
+    expect(compactGeographicCoverages([{}])).toBeUndefined();
+    expect(compactGeographicCoverages(undefined)).toBeUndefined();
+  });
+
+  it('passes a box through without validating or reordering its bounds', () => {
+    const inverted = {
+      minLatitude: 10,
+      maxLatitude: -10,
+      minLongitude: 170,
+      maxLongitude: -170,
+      globalCoverage: true,
+    };
+    expect(compactGeographicCoverages([{ boundingBox: inverted }])).toEqual([
+      { boundingBox: { ...inverted } },
+    ]);
   });
 });
 

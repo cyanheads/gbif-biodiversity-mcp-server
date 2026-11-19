@@ -26,10 +26,7 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
   name: 'gbif-dataset',
   title: 'GBIF Dataset',
   description:
-    'Dataset metadata — title, description, citation, license, contacts, coverage, and the ' +
-    'publishing organization key that gbif_search_datasets takes as publishingOrg. ' +
-    'Stable URI for provenance context. Use the dataset UUID from gbif_search_datasets or ' +
-    "an occurrence record's datasetKey field.",
+    "Dataset metadata — title, description, citation, license, contacts, temporal and geographic coverage with its bounding boxes, the deletion timestamp of a dataset GBIF no longer publishes, and the publishing organization key that gbif_search_datasets takes as publishingOrg. Stable URI for provenance context. Use the dataset UUID from gbif_search_datasets or an occurrence record's datasetKey field.",
   mimeType: 'application/json',
   params: z.object({
     datasetKey: z.string().describe('Dataset UUID (8-4-4-4-12 hex).'),
@@ -37,6 +34,12 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
   output: z.object({
     key: z.string().optional().describe('Dataset UUID.'),
     title: z.string().optional().describe('Dataset title.'),
+    deleted: z
+      .string()
+      .optional()
+      .describe(
+        'When GBIF deleted the dataset, as the timestamp GBIF sends (e.g. 2026-11-10T20:11:45.006+00:00). A deleted dataset is no longer published or searchable, and GBIF indexes none of its occurrences. Absent on a published dataset.',
+      ),
     type: z.string().optional().describe('Dataset type.'),
     description: z.string().optional().describe('Dataset description. May be absent.'),
     license: z.string().optional().describe('License identifier. May be absent.'),
@@ -135,11 +138,34 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
               .string()
               .optional()
               .describe('Geographic coverage description (e.g. "Worldwide"). May be absent.'),
+            boundingBox: z
+              .object({
+                minLatitude: z.number().optional().describe('Southern bound in decimal degrees.'),
+                maxLatitude: z.number().optional().describe('Northern bound in decimal degrees.'),
+                minLongitude: z
+                  .number()
+                  .optional()
+                  .describe("Western bound in decimal degrees — EML's westBoundingCoordinate."),
+                maxLongitude: z
+                  .number()
+                  .optional()
+                  .describe("Eastern bound in decimal degrees — EML's eastBoundingCoordinate."),
+                globalCoverage: z
+                  .boolean()
+                  .optional()
+                  .describe("GBIF's global-coverage flag for the box, as sent."),
+              })
+              .optional()
+              .describe(
+                'Bounding box the dataset declares, with every value as GBIF sends it. GBIF maps EML west and east bounds to minLongitude and maxLongitude, so a minLongitude above maxLongitude is a box crossing the antimeridian, not an error. May be absent.',
+              ),
           })
-          .describe('A geographic coverage entry.'),
+          .describe('A geographic coverage entry: a description, a bounding box, or both.'),
       )
       .optional()
-      .describe('Geographic coverage descriptions declared by the dataset. May be absent.'),
+      .describe(
+        'Geographic coverage declared by the dataset — descriptions and bounding boxes. May be absent.',
+      ),
   }),
 
   errors: [
@@ -187,6 +213,7 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
     return {
       key: raw.key,
       title: raw.title,
+      deleted: raw.deleted,
       type: raw.type,
       description: raw.description ? stripHtml(raw.description) : undefined,
       license: raw.license,

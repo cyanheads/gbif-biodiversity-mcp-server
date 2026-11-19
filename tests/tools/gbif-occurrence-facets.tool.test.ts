@@ -3,9 +3,14 @@
  * @module tests/tools/gbif-occurrence-facets.tool.test
  */
 
+import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { gbifCountOccurrences } from '@/mcp-server/tools/definitions/gbif-count-occurrences.tool.js';
 import { gbifOccurrenceFacets } from '@/mcp-server/tools/definitions/gbif-occurrence-facets.tool.js';
+import { gbifSearchOccurrences } from '@/mcp-server/tools/definitions/gbif-search-occurrences.tool.js';
 
 vi.mock('@/services/gbif/gbif-service.js', () => ({
   getGbifService: vi.fn(),
@@ -679,6 +684,29 @@ describe('gbifOccurrenceFacets', () => {
     expect(enrichment.notice).toContain('No facet values returned');
   });
 
+  /**
+   * The 500,001-edge mapping reads only an McpError; anything else the facet request
+   * rejects with — the caller's cancellation, a programming error — reaches the caller
+   * as that same object, even on a page reaching past the edge.
+   */
+  it.each([
+    {
+      kind: 'a caller cancellation',
+      reason: new DOMException('The operation was aborted.', 'AbortError'),
+    },
+    { kind: 'a plain Error', reason: new Error('facet request failed') },
+  ])('rethrows $kind from the facet request untouched past the edge', async ({ reason }) => {
+    mockGetOccurrenceFacets.mockRejectedValueOnce(reason);
+    const ctx = createMockContext({ errors: gbifOccurrenceFacets.errors });
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'SPECIES_KEY',
+      facetOffset: 500_000,
+      facetLimit: 100,
+    });
+
+    await expect(gbifOccurrenceFacets.handler(input, ctx)).rejects.toBe(reason);
+  });
+
   /** #76 — a label follows its key; a bucket without one renders exactly as before. */
   it('renders a label after its key, escaped as text, and nothing for an unlabeled bucket', () => {
     const blocks = gbifOccurrenceFacets.format!({
@@ -737,6 +765,38 @@ describe('gbifOccurrenceFacets', () => {
       'Under checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b',
     );
   });
+
+  /** An unresolved scientificName empties a query that also carries taxonKey, the key's records included. */
+  it('says an empty aggregation under taxonKey and scientificName was emptied by the name', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 0,
+      facets: [{ field: 'COUNTRY', counts: [] }],
+    });
+    const ctx = createMockContext();
+    await gbifOccurrenceFacets.handler(
+      gbifOccurrenceFacets.input.parse({
+        facet: 'COUNTRY',
+        taxonKey: 2435261,
+        scientificName: 'Zzzz zzzz',
+      }),
+      ctx,
+    );
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('scientificName "Zzzz zzzz" was applied beside taxonKey');
+    expect(notice).toContain('the taxonKey records included');
+    expect(notice).not.toMatch(/does not distinguish/);
+  });
+
+  it.each([gbifSearchOccurrences, gbifCountOccurrences, gbifOccurrenceFacets])(
+    '$name says an unresolved scientificName empties its union with taxonKey',
+    (tool) => {
+      const described = tool.input.shape.scientificName.description ?? '';
+      expect(described).toMatch(/union/);
+      expect(described).toContain('a name GBIF cannot resolve');
+      expect(described).toContain('the taxonKey records included');
+    },
+  );
 });
 
 /**
@@ -861,13 +921,324 @@ describe('gbifOccurrenceFacets occurrenceStatus and IUCN dimensions', () => {
     );
   });
 
-  /** GBIF answers an unrecognized category with a silent zero, so the enum is the guard. */
+  /**
+   * GBIF answers an unrecognized category with a silent zero, so the enum is the
+   * guard. NE is a bucket an IUCN_RED_LIST_CATEGORY facet returns, so it scopes.
+   */
   it('rejects scope values GBIF would answer with a silent zero', () => {
     expect(() =>
-      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', iucnRedListCategory: 'NE' }),
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', iucnRedListCategory: 'VULNERABLE' }),
     ).toThrow();
+    expect(
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', iucnRedListCategory: 'NE' })
+        .iucnRedListCategory,
+    ).toBe('NE');
     expect(() =>
       gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', occurrenceStatus: 'BOGUS' }),
     ).toThrow();
+  });
+});
+
+/**
+ * #91 — on a scope ranking more than 500,001 buckets GBIF serves a facet page only while
+ * facetOffset plus the facetLimit sent (the tool's limit and one lookahead bucket) is at
+ * most 500,001, and answers one past it with HTTP 404 and an empty body; a scope that ends
+ * before the edge answers a deeper page with 200 and no buckets. These run the real
+ * service over a stubbed fetch, so the 404 the handler reads is the error gbifHttpError
+ * builds from the response.
+ */
+describe('gbifOccurrenceFacets past the 500,001-bucket edge', () => {
+  const config = {
+    mcpServerName: 'gbif-biodiversity-mcp-server',
+    mcpServerVersion: 'test',
+  } as AppConfig;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { GbifService } = await vi.importActual<typeof import('@/services/gbif/gbif-service.js')>(
+      '@/services/gbif/gbif-service.js',
+    );
+    vi.mocked(getGbifService).mockReturnValue(
+      new GbifService(config, {} as StorageService, {
+        baseUrl: 'https://api.gbif.org/v1',
+        timeoutMs: 1000,
+      }),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Stubs fetch to answer every request with a fresh `respond()`. */
+  function upstream(respond: () => Response) {
+    const fetch = vi.fn().mockImplementation(() => Promise.resolve(respond()));
+    vi.stubGlobal('fetch', fetch);
+    return fetch;
+  }
+
+  /** A ranked SPECIES_KEY page of `length` buckets, as GBIF returns one. */
+  function speciesPage(length: number) {
+    return () =>
+      new Response(
+        JSON.stringify({
+          count: 3767722046,
+          facets: [
+            {
+              field: 'SPECIES_KEY',
+              counts: Array.from({ length }, (_, i) => ({ name: String(6520000 + i), count: 43 })),
+            },
+          ],
+        }),
+      );
+  }
+
+  const emptyNotFound = () => new Response('', { status: 404, statusText: 'Not Found' });
+
+  it.each([
+    { facetOffset: 0, facetLimit: 10 },
+    { facetOffset: 499_999, facetLimit: 1 },
+  ])(
+    'leaves an empty-body 404 at facetOffset $facetOffset with facetLimit $facetLimit, inside the edge, a bare NotFound',
+    async ({ facetOffset, facetLimit }) => {
+      const fetch = upstream(emptyNotFound);
+      const result = await runToolContract(gbifOccurrenceFacets, {
+        facet: 'SPECIES_KEY',
+        facetOffset,
+        facetLimit,
+      });
+
+      expect(result.isError).toBe(true);
+      const error = result.structuredContent?.error as {
+        code: number;
+        message: string;
+        data?: { reason?: string };
+      };
+      expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+      expect(error.message).toBe('GBIF API returned HTTP 404 Not Found.');
+      expect(error.data?.reason).toBeUndefined();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const sent = new URL(fetch.mock.calls[0]?.[0] as string).searchParams;
+      expect(sent.get('facetOffset')).toBe(String(facetOffset));
+      expect(sent.get('facetLimit')).toBe(String(facetLimit + 1));
+    },
+  );
+
+  it.each([
+    { facetOffset: 500_000, facetLimit: 100, reach: '500,101' },
+    { facetOffset: 499_999, facetLimit: 2, reach: '500,002' },
+  ])(
+    'reports an empty-body 404 at facetOffset $facetOffset with facetLimit $facetLimit as pagination_cap_exceeded',
+    async ({ facetOffset, facetLimit, reach }) => {
+      const fetch = upstream(emptyNotFound);
+      const result = await runToolContract(gbifOccurrenceFacets, {
+        facet: 'SPECIES_KEY',
+        facetOffset,
+        facetLimit,
+      });
+
+      expect(result.isError).toBe(true);
+      const error = result.structuredContent?.error as {
+        code: number;
+        message: string;
+        data: { reason: string; recovery: { hint: string } };
+      };
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.data.reason).toBe('pagination_cap_exceeded');
+      expect(error.message).toContain(`facetOffset ${facetOffset} with facetLimit ${facetLimit}`);
+      expect(error.message).toContain('past position 500,001');
+      expect(error.message).toContain(`reaches position ${reach}`);
+      expect(error.message).toContain('at most 500,000');
+      for (const filter of ['taxonKey', 'country', 'year', 'datasetKey'])
+        expect(error.data.recovery.hint).toContain(filter);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('past position 500,001');
+      expect(text).toContain('Recovery:');
+      expect(text).toContain('pagination_cap_exceeded');
+      // A 404 is not retried, and the classification adds no request.
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('leaves a 404 with a body past the edge a bare NotFound', async () => {
+    upstream(() => new Response('Not found', { status: 404, statusText: 'Not Found' }));
+    const result = await runToolContract(gbifOccurrenceFacets, {
+      facet: 'SPECIES_KEY',
+      facetOffset: 500_000,
+      facetLimit: 100,
+    });
+
+    expect(result.isError).toBe(true);
+    const error = result.structuredContent?.error as { code: number; data?: { reason?: string } };
+    expect(error.code).toBe(JsonRpcErrorCode.NotFound);
+    expect(error.data?.reason).toBeUndefined();
+  });
+
+  /**
+   * Only an empty 404 marks the edge. Any other status past it, empty body included, is
+   * its own failure: a rejected filter, a rate limit, an outage.
+   */
+  it.each([
+    {
+      status: 400,
+      statusText: 'Bad Request',
+      code: JsonRpcErrorCode.InvalidParams,
+      reason: 'invalid_filter',
+    },
+    {
+      status: 429,
+      statusText: 'Too Many Requests',
+      code: JsonRpcErrorCode.RateLimited,
+      reason: undefined,
+    },
+    {
+      status: 502,
+      statusText: 'Bad Gateway',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      reason: undefined,
+    },
+  ])(
+    'leaves an empty-body $status past the edge its own failure, not pagination_cap_exceeded',
+    async ({ status, statusText, code, reason }) => {
+      vi.useFakeTimers();
+      upstream(() => new Response('', { status, statusText }));
+      const pending = runToolContract(gbifOccurrenceFacets, {
+        facet: 'SPECIES_KEY',
+        facetOffset: 500_000,
+        facetLimit: 100,
+      });
+      // A 429 or 502 is retried with backoff first; the fake clock runs the waits.
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(result.isError).toBe(true);
+      const error = result.structuredContent?.error as {
+        code: number;
+        message: string;
+        data?: { reason?: string };
+      };
+      expect(error.code).toBe(code);
+      expect(error.message).toContain(`GBIF API returned HTTP ${status} ${statusText}.`);
+      expect(error.data?.reason).toBe(reason);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain(`HTTP ${status} ${statusText}`);
+      expect(text).not.toContain('pagination_cap_exceeded');
+    },
+  );
+
+  it('returns the exhausted page when a scope ending before the edge answers a deeper page with no buckets', async () => {
+    const fetch = upstream(
+      () =>
+        new Response(
+          JSON.stringify({ count: 2269, facets: [{ field: 'SPECIES_KEY', counts: [] }] }),
+        ),
+    );
+    const result = await runToolContract(gbifOccurrenceFacets, {
+      facet: 'SPECIES_KEY',
+      taxonKey: 2435261,
+      facetOffset: 600_000,
+      facetLimit: 100,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.counts).toEqual([]);
+    expect(result.structuredContent?.totalOccurrences).toBe(2269);
+    expect(result.structuredContent?.truncated).toBeUndefined();
+    const exhausted =
+      'No facet values returned at facetOffset 600000. Reset facetOffset to 0 or reduce it to revisit earlier pages.';
+    expect(result.structuredContent?.notice).toContain(exhausted);
+    expect(JSON.stringify(result.content)).toContain(exhausted);
+    const sent = new URL(fetch.mock.calls[0]?.[0] as string).searchParams;
+    expect(sent.get('facetOffset')).toBe('600000');
+    expect(sent.get('facetLimit')).toBe('101');
+  });
+
+  it('names the next facetOffset on a full page whose next page also fits inside the edge', async () => {
+    upstream(speciesPage(101));
+    const result = await runToolContract(gbifOccurrenceFacets, {
+      facet: 'SPECIES_KEY',
+      facetOffset: 499_799,
+      facetLimit: 100,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.truncated).toBe(true);
+    const continuation =
+      'Showing 100 facet values; more remain. Re-call with facetOffset 499899 for the next page.';
+    expect(result.structuredContent?.notice).toContain(continuation);
+    expect(JSON.stringify(result.content)).toContain(continuation);
+  });
+
+  /**
+   * The next page at the same facetLimit would cross the edge without landing on it —
+   * 499,999 with facetLimit 100 asks GBIF for positions through 500,100 and draws the
+   * empty 404 — so the continuation names the facetLimit that lands on position
+   * 500,001, whose page then carries the edge notice.
+   */
+  it.each([
+    { facetOffset: 499_899, facetLimit: 100, next: 499_999, nextLimit: 1 },
+    { facetOffset: 499_995, facetLimit: 3, next: 499_998, nextLimit: 2 },
+  ])(
+    'caps the continuation at the edge from facetOffset $facetOffset with facetLimit $facetLimit',
+    async ({ facetOffset, facetLimit, next, nextLimit }) => {
+      upstream(speciesPage(facetLimit + 1));
+      const result = await runToolContract(gbifOccurrenceFacets, {
+        facet: 'SPECIES_KEY',
+        facetOffset,
+        facetLimit,
+      });
+      const continuation = `Re-call with facetOffset ${next} and facetLimit ${nextLimit}`;
+      expect(result.structuredContent?.notice).toContain(continuation);
+      expect(JSON.stringify(result.content)).toContain(continuation);
+
+      const fetch = upstream(speciesPage(nextLimit + 1));
+      const following = await runToolContract(gbifOccurrenceFacets, {
+        facet: 'SPECIES_KEY',
+        facetOffset: next,
+        facetLimit: nextLimit,
+      });
+      const sent = new URL(fetch.mock.calls[0]?.[0] as string).searchParams;
+      expect(Number(sent.get('facetOffset')) + Number(sent.get('facetLimit'))).toBe(500_001);
+      expect(following.structuredContent?.notice).toContain('no later page');
+    },
+  );
+
+  it('says GBIF serves no later page when the lookahead bucket is the 500,001st', async () => {
+    upstream(speciesPage(101));
+    const result = await runToolContract(gbifOccurrenceFacets, {
+      facet: 'SPECIES_KEY',
+      facetOffset: 499_900,
+      facetLimit: 100,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.counts).toHaveLength(100);
+    // More buckets do exist — the lookahead proves it — but none past it is served.
+    expect(result.structuredContent?.truncated).toBe(true);
+    const notice = result.structuredContent?.notice as string;
+    expect(notice).not.toContain('Re-call with facetOffset 500000');
+    expect(notice).toContain('Showing 100 facet values; more remain');
+    expect(notice).toContain('past position 500,001');
+    expect(notice).toContain('no later page');
+    for (const filter of ['taxonKey', 'country', 'year', 'datasetKey'])
+      expect(notice).toContain(filter);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain('past position 500,001');
+    expect(text).not.toContain('Re-call with facetOffset 500000');
+  });
+
+  it('declares both ceilings on the contract and the facetOffset, notice, and cap descriptions', () => {
+    const contract = gbifOccurrenceFacets.errors?.find(
+      (entry) => entry.reason === 'pagination_cap_exceeded',
+    );
+    expect(contract?.code).toBe(JsonRpcErrorCode.ValidationError);
+    for (const text of ['1,199,999', '500,001']) expect(contract?.when).toContain(text);
+    for (const text of ['1,199,999', '500,000', 'gbif_match_species', 'DATASET_KEY'])
+      expect(contract?.recovery).toContain(text);
+    const facetOffset = gbifOccurrenceFacets.input.shape.facetOffset.description ?? '';
+    for (const text of ['1,199,999', '500,000', '500,001', 'pagination_cap_exceeded'])
+      expect(facetOffset).toContain(text);
+    expect(gbifOccurrenceFacets.enrichment?.notice?.description).toContain('500,001');
+    expect(gbifOccurrenceFacets.enrichment?.cap?.description).toContain('notice');
   });
 });

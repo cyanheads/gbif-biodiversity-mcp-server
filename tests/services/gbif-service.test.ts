@@ -236,7 +236,7 @@ describe('GbifService upstream error payload', () => {
         data: {
           reason: 'invalid_filter',
           recovery: {
-            hint: 'Backbone taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+            hint: 'GBIF taxon keys fit in a 32-bit signed integer; take one from gbif_match_species or gbif_search_species rather than constructing it.',
           },
         },
       },
@@ -766,6 +766,10 @@ describe('GbifService occurrence filter table', () => {
     geometry: 'POLYGON((15 -35,35 -35,35 -20,15 -20,15 -35))',
     year: '2020,2024',
     month: 12,
+    eventDate: '2025,2026-03',
+    geoDistance: '38.17, -3.95, 25km',
+    elevation: '2000,*',
+    depth: '200,10000',
     basisOfRecord: 'FOSSIL_SPECIMEN',
     hasCoordinate: false,
     isInCluster: false,
@@ -917,6 +921,23 @@ describe('GbifService occurrence filter pass-through', () => {
     expect(params.has('stateProvince')).toBe(false);
   });
 
+  /** #98 — GBIF ORs a repeated parameter, so each member goes out as one, in the order given. */
+  it('sends each member of an array filter as a repeated parameter, in order', async () => {
+    await service().searchOccurrences(
+      {
+        taxonKey: [2435261, 2435246],
+        country: ['PT', 'ES', 'PT'],
+        basisOfRecord: ['PRESERVED_SPECIMEN', 'FOSSIL_SPECIMEN'],
+      },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.getAll('taxonKey')).toEqual(['2435261', '2435246']);
+    expect(params.getAll('country')).toEqual(['PT', 'ES', 'PT']);
+    expect(params.getAll('basisOfRecord')).toEqual(['PRESERVED_SPECIMEN', 'FOSSIL_SPECIMEN']);
+  });
+
   /**
    * #52 — `/dataset/search` names two organization relationships and the two
    * parameters are one character apart in effect, so a mix-up here would answer a
@@ -970,6 +991,37 @@ describe('GbifService occurrence filter pass-through', () => {
 
     const params = sentParams();
     expect(params.has('higherTaxonKey')).toBe(false);
+  });
+
+  /** #96 — a search without status sends the same URL, byte for byte, as before the filter. */
+  it('sends the species search URL unchanged when no status is supplied', async () => {
+    await service().searchSpecies(
+      {
+        rank: 'SPECIES',
+        higherTaxonKey: 2877951,
+        datasetKey: 'd7dddbf4-2cf0-4f39-9b2a-bb099caae36c',
+        limit: 20,
+        offset: 0,
+      },
+      createMockContext(),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://api.gbif.org/v1/species/search?rank=SPECIES&higherTaxonKey=2877951&datasetKey=d7dddbf4-2cf0-4f39-9b2a-bb099caae36c&limit=20&offset=0',
+    );
+  });
+
+  /** `/species/search` takes several statuses as repeated `status` parameters and OR-s them. */
+  it('sends each status as its own repeated status parameter on searchSpecies', async () => {
+    await service().searchSpecies(
+      { higherTaxonKey: 2877951, status: ['ACCEPTED', 'DOUBTFUL'] },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.getAll('status')).toStrictEqual(['ACCEPTED', 'DOUBTFUL']);
+    expect(params.get('higherTaxonKey')).toBe('2877951');
   });
 });
 
@@ -1585,5 +1637,16 @@ describe('GbifService checklist taxon key (#90)', () => {
   it('sends a Backbone taxonKey alone exactly as before', async () => {
     await service().countOccurrences({ taxonKey: 2435261 }, createMockContext());
     expect(requests[0]!.search).toBe('?taxonKey=2435261&limit=0');
+  });
+
+  /** #98 — a Catalogue of Life array goes out as repeated taxonKey, beside one checklistKey. */
+  it('sends each checklistTaxonKey member as a repeated taxonKey', async () => {
+    await service().countOccurrences(
+      { ...filters, checklistTaxonKey: ['3WSJV', '6QR9T'] },
+      createMockContext(),
+    );
+    expect(requests[0]!.search).toBe(
+      `?taxonKey=3WSJV&taxonKey=6QR9T&checklistKey=${COL_XR}&occurrenceStatus=PRESENT&limit=0`,
+    );
   });
 });

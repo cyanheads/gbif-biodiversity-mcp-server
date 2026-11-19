@@ -7,7 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type { RawGadm, RawGadmLevel, RawOccurrenceRecord } from '@/services/gbif/types.js';
-import { escapeMarkdownText } from '../utils.js';
+import { escapeMarkdownText, linkOrEscapedText } from '../utils.js';
 
 /** Output schema for one GADM administrative level. A fresh instance per call keeps the emitted JSON Schema inline (no $ref). */
 const gadmLevel = () =>
@@ -44,7 +44,7 @@ const compactGadm = (g: RawGadm | undefined) => {
 export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   title: 'Get Occurrence Record',
   description:
-    'Fetch a single occurrence record by its GBIF occurrence key. Returns the complete Darwin Core record — all coordinates, elevation and depth, administrative geography (GADM levels 0–3), dates, collections metadata, collector identifiers and record number, type status, establishment means, the accepted taxon behind a synonym, conservation status, license, rights holder, publishing organization, media links with their rights holders, and quality issue flags. Check occurrenceStatus before reading the record as a sighting: NOT_DETECTED (ABSENT or NOT_DETECTED in the occurrenceStatus filter) means a survey looked for the taxon and did not find it. Use the occurrence key from gbif_search_occurrences results.',
+    "Fetch a single occurrence record by its GBIF occurrence key. Returns the Darwin Core record — coordinates with what the publisher withheld or generalized about them (informationWithheld, dataGeneralizations), elevation and depth, administrative geography (GADM levels 0–3), dates, collections metadata, collector identifiers and record number, the identification date (dateIdentified), the recorder's remarks, habitat, sampling protocol and organism quantity, type status, establishment means, the backbone key at every rank, the accepted taxon behind a synonym, conservation status, license, rights holder, publishing organization, the source dataset's name, the link to the source record (references), media links with their rights holders, duplicate-cluster membership (isInCluster), and quality issue flags. Check occurrenceStatus before reading the record as a sighting: NOT_DETECTED (ABSENT or NOT_DETECTED in the occurrenceStatus filter) means a survey looked for the taxon and did not find it. Use the occurrence key from gbif_search_occurrences results.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     occurrenceKey: z
@@ -56,23 +56,47 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   output: z.object({
     key: z.number().optional().describe('GBIF occurrence key.'),
     datasetKey: z.string().optional().describe('UUID of the source dataset.'),
+    datasetName: z
+      .string()
+      .optional()
+      .describe(
+        'Dataset name as the publisher wrote it on the record — not always the registry title gbif_get_dataset returns for datasetKey. May be absent.',
+      ),
     occurrenceID: z
       .string()
       .optional()
       .describe(
         'Darwin Core occurrenceID — the source record identifier, often a URL back to the origin record. May be absent.',
       ),
+    references: z
+      .string()
+      .optional()
+      .describe(
+        "Link to the source record as the publisher supplies it, usually an http(s) URL — on many specimens the record's only URL, distinct from occurrenceID. May be absent.",
+      ),
     taxonKey: z.number().optional().describe('Backbone taxon key.'),
     scientificName: z.string().optional().describe('Scientific name from occurrence record.'),
     canonicalName: z.string().optional().describe('Canonical name without authorship.'),
     kingdom: z.string().optional().describe('Kingdom classification.'),
+    kingdomKey: z
+      .number()
+      .optional()
+      .describe('Backbone taxon key for the kingdom. May be absent.'),
     phylum: z.string().optional().describe('Phylum classification.'),
+    phylumKey: z.number().optional().describe('Backbone taxon key for the phylum. May be absent.'),
     class: z.string().optional().describe('Class classification. May be absent.'),
     classKey: z.number().optional().describe('Backbone taxon key for the class. May be absent.'),
     order: z.string().optional().describe('Order classification.'),
+    orderKey: z.number().optional().describe('Backbone taxon key for the order. May be absent.'),
     family: z.string().optional().describe('Family classification.'),
+    familyKey: z.number().optional().describe('Backbone taxon key for the family. May be absent.'),
     genus: z.string().optional().describe('Genus classification.'),
+    genusKey: z.number().optional().describe('Backbone taxon key for the genus. May be absent.'),
     species: z.string().optional().describe('Species canonical name.'),
+    speciesKey: z
+      .number()
+      .optional()
+      .describe('Backbone taxon key for the species. May be absent.'),
     taxonRank: z.string().optional().describe('Taxonomic rank of the identified taxon.'),
     taxonomicStatus: z
       .string()
@@ -104,6 +128,18 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .number()
       .optional()
       .describe('Coordinate uncertainty radius in meters. May be absent.'),
+    informationWithheld: z
+      .string()
+      .optional()
+      .describe(
+        'What the publisher withheld from the record and why, as written (e.g. "Coordinate uncertainty increased to 28300m to protect threatened taxon") — the coordinates or other values are coarser than observed on purpose. May be absent.',
+      ),
+    dataGeneralizations: z
+      .string()
+      .optional()
+      .describe(
+        'How the publisher generalized the record, as written — the Darwin Core counterpart to informationWithheld for values deliberately coarsened, most often rounded coordinates (e.g. "WGS84 coordinates generalized with formula: …"). May be absent.',
+      ),
     elevation: z
       .number()
       .optional()
@@ -190,7 +226,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .string()
       .optional()
       .describe(
-        'IUCN Red List category of the taxon — CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. May be absent.',
+        'IUCN Red List category of the taxon — CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent, NE Not Evaluated. May be absent.',
       ),
     institutionCode: z
       .string()
@@ -212,9 +248,47 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       ),
     recordedBy: z.string().optional().describe('Collector name(s). May be absent.'),
     identifiedBy: z.string().optional().describe('Identifier name(s). May be absent.'),
+    dateIdentified: z
+      .string()
+      .optional()
+      .describe(
+        'When the identification was made, as GBIF sends it: YYYY-MM-DDTHH:MM:SS with no UTC offset. GBIF pads a date-only value to T00:00:00 and a year-only one to -01-01T00:00:00, so a midnight time or a 1 January date may be padding rather than recorded precision. May be absent.',
+      ),
     individualCount: z.number().optional().describe('Number of individuals. May be absent.'),
+    organismQuantity: z
+      .number()
+      .optional()
+      .describe(
+        'Quantity of organisms, in the unit organismQuantityType names — survey abundance where individualCount is often absent. May be absent.',
+      ),
+    organismQuantityType: z
+      .string()
+      .optional()
+      .describe(
+        'Unit organismQuantity is counted in, as the publisher wrote it (e.g. Individuals, % biomass). May be absent.',
+      ),
     sex: z.string().optional().describe('Sex of the individual(s). May be absent.'),
     lifeStage: z.string().optional().describe('Life stage of the individual(s). May be absent.'),
+    habitat: z
+      .string()
+      .optional()
+      .describe('Habitat the publisher recorded for the occurrence. May be absent.'),
+    samplingProtocol: z
+      .string()
+      .optional()
+      .describe(
+        'Method used to collect or observe the record (e.g. GOV Trawl, acoustic detection) — what separates a survey from an incidental sighting. May be absent.',
+      ),
+    occurrenceRemarks: z
+      .string()
+      .optional()
+      .describe("The recorder's notes on the record, in full. May be absent."),
+    isInCluster: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when GBIF flags the record as a likely duplicate of another — the flag the isInCluster filter on gbif_search_occurrences, gbif_count_occurrences, and gbif_occurrence_facets selects on. GBIF exposes membership only, with no cluster identifier. May be absent.',
+      ),
     issues: z.array(z.string()).optional().describe('GBIF data quality issue flags.'),
     media: z
       .array(
@@ -278,18 +352,26 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     return {
       key: raw.key,
       datasetKey: raw.datasetKey,
+      datasetName: raw.datasetName,
       occurrenceID: raw.occurrenceID,
+      references: raw.references,
       taxonKey: raw.taxonKey,
       scientificName: raw.scientificName,
       canonicalName: raw.canonicalName,
       kingdom: raw.kingdom,
+      kingdomKey: raw.kingdomKey,
       phylum: raw.phylum,
+      phylumKey: raw.phylumKey,
       class: raw.class,
       classKey: raw.classKey,
       order: raw.order,
+      orderKey: raw.orderKey,
       family: raw.family,
+      familyKey: raw.familyKey,
       genus: raw.genus,
+      genusKey: raw.genusKey,
       species: raw.species,
+      speciesKey: raw.speciesKey,
       taxonRank: raw.taxonRank,
       taxonomicStatus: raw.taxonomicStatus,
       acceptedTaxonKey: raw.acceptedTaxonKey,
@@ -297,6 +379,8 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       decimalLatitude: raw.decimalLatitude,
       decimalLongitude: raw.decimalLongitude,
       coordinateUncertaintyInMeters: raw.coordinateUncertaintyInMeters,
+      informationWithheld: raw.informationWithheld,
+      dataGeneralizations: raw.dataGeneralizations,
       elevation: raw.elevation,
       depth: raw.depth,
       continent: raw.continent,
@@ -325,9 +409,16 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       recordNumber: raw.recordNumber,
       recordedBy: raw.recordedBy,
       identifiedBy: raw.identifiedBy,
+      dateIdentified: raw.dateIdentified,
       individualCount: raw.individualCount,
+      organismQuantity: raw.organismQuantity,
+      organismQuantityType: raw.organismQuantityType,
       sex: raw.sex,
       lifeStage: raw.lifeStage,
+      habitat: raw.habitat,
+      samplingProtocol: raw.samplingProtocol,
+      occurrenceRemarks: raw.occurrenceRemarks,
+      isInCluster: raw.isInCluster,
       issues: raw.issues?.length ? raw.issues : undefined,
       media: raw.media?.length
         ? raw.media.map((m) => ({
@@ -375,19 +466,20 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       lines.push(`**Establishment means:** ${escapeMarkdownText(result.establishmentMeans)}`);
     if (result.iucnRedListCategory)
       lines.push(`**IUCN Red List category:** ${result.iucnRedListCategory}`);
-    // Taxonomy
+    // Taxonomy: each rank's backbone key beside its name, or alone when the name is absent.
     const taxParts: string[] = [];
-    if (result.kingdom) taxParts.push(`Kingdom: ${result.kingdom}`);
-    if (result.phylum) taxParts.push(`Phylum: ${result.phylum}`);
-    if (result.class)
-      taxParts.push(
-        `Class: ${result.class}${result.classKey != null ? ` (${result.classKey})` : ''}`,
-      );
-    else if (result.classKey != null) taxParts.push(`Class key: ${result.classKey}`);
-    if (result.order) taxParts.push(`Order: ${result.order}`);
-    if (result.family) taxParts.push(`Family: ${result.family}`);
-    if (result.genus) taxParts.push(`Genus: ${result.genus}`);
-    if (result.species) taxParts.push(`Species: ${result.species}`);
+    for (const [rank, name, key] of [
+      ['Kingdom', result.kingdom, result.kingdomKey],
+      ['Phylum', result.phylum, result.phylumKey],
+      ['Class', result.class, result.classKey],
+      ['Order', result.order, result.orderKey],
+      ['Family', result.family, result.familyKey],
+      ['Genus', result.genus, result.genusKey],
+      ['Species', result.species, result.speciesKey],
+    ] as const) {
+      if (name) taxParts.push(`${rank}: ${name}${key != null ? ` (${key})` : ''}`);
+      else if (key != null) taxParts.push(`${rank} key: ${key}`);
+    }
     if (taxParts.length > 0) lines.push(`**Taxonomy:** ${taxParts.join(' › ')}`);
     lines.push('');
     if (result.eventDate) {
@@ -395,7 +487,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     } else if (result.year == null) {
       lines.push('**Date:** Not available');
     }
-    if (result.eventTime) lines.push(`**Time:** ${result.eventTime}`);
+    if (result.eventTime) lines.push(`**Time:** ${escapeMarkdownText(result.eventTime)}`);
     if (result.year != null) lines.push(`**Year:** ${result.year}`);
     if (result.month != null) lines.push(`**Month:** ${result.month}`);
     if (result.day != null) lines.push(`**Day:** ${result.day}`);
@@ -408,11 +500,15 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     if (result.decimalLatitude == null && result.decimalLongitude == null) {
       lines.push('**Coordinates:** Not available');
     }
+    if (result.informationWithheld)
+      lines.push(`**Information withheld:** ${escapeMarkdownText(result.informationWithheld)}`);
+    if (result.dataGeneralizations)
+      lines.push(`**Data generalizations:** ${escapeMarkdownText(result.dataGeneralizations)}`);
     if (result.elevation != null) lines.push(`**Elevation:** ${result.elevation} m`);
     if (result.depth != null) lines.push(`**Depth:** ${result.depth} m`);
     const geo: string[] = [];
-    if (result.locality) geo.push(result.locality);
-    if (result.stateProvince) geo.push(result.stateProvince);
+    if (result.locality) geo.push(escapeMarkdownText(result.locality));
+    if (result.stateProvince) geo.push(escapeMarkdownText(result.stateProvince));
     if (result.country) geo.push(result.country);
     if (result.continent) geo.push(result.continent);
     if (geo.length > 0)
@@ -434,20 +530,42 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       }
       if (gadmParts.length > 0) lines.push(`**GADM:** ${gadmParts.join(' › ')}`);
     }
-    if (result.recordedBy) lines.push(`**Recorded by:** ${result.recordedBy}`);
-    if (result.identifiedBy) lines.push(`**Identified by:** ${result.identifiedBy}`);
+    if (result.recordedBy) lines.push(`**Recorded by:** ${escapeMarkdownText(result.recordedBy)}`);
+    if (result.identifiedBy)
+      lines.push(`**Identified by:** ${escapeMarkdownText(result.identifiedBy)}`);
+    if (result.dateIdentified) lines.push(`**Date identified:** ${result.dateIdentified}`);
     if (result.individualCount != null)
       lines.push(`**Individual count:** ${result.individualCount}`);
+    const quantityType =
+      result.organismQuantityType && escapeMarkdownText(result.organismQuantityType);
+    if (result.organismQuantity != null)
+      lines.push(
+        `**Organism quantity:** ${result.organismQuantity}${quantityType ? ` ${quantityType}` : ''}`,
+      );
+    else if (quantityType) lines.push(`**Organism quantity type:** ${quantityType}`);
     if (result.sex) lines.push(`**Sex:** ${result.sex}`);
     if (result.lifeStage) lines.push(`**Life stage:** ${result.lifeStage}`);
+    if (result.habitat) lines.push(`**Habitat:** ${escapeMarkdownText(result.habitat)}`);
+    if (result.samplingProtocol)
+      lines.push(`**Sampling protocol:** ${escapeMarkdownText(result.samplingProtocol)}`);
+    if (result.occurrenceRemarks)
+      lines.push(`**Remarks:** ${escapeMarkdownText(result.occurrenceRemarks)}`);
     lines.push('');
-    if (result.institutionCode) lines.push(`**Institution:** ${result.institutionCode}`);
-    if (result.collectionCode) lines.push(`**Collection:** ${result.collectionCode}`);
-    if (result.catalogNumber) lines.push(`**Catalog number:** ${result.catalogNumber}`);
+    if (result.institutionCode)
+      lines.push(`**Institution:** ${escapeMarkdownText(result.institutionCode)}`);
+    if (result.collectionCode)
+      lines.push(`**Collection:** ${escapeMarkdownText(result.collectionCode)}`);
+    if (result.catalogNumber)
+      lines.push(`**Catalog number:** ${escapeMarkdownText(result.catalogNumber)}`);
     if (result.recordNumber)
       lines.push(`**Record number:** ${escapeMarkdownText(result.recordNumber)}`);
-    if (result.occurrenceID) lines.push(`**Occurrence ID:** ${result.occurrenceID}`);
+    if (result.occurrenceID)
+      lines.push(`**Occurrence ID:** ${linkOrEscapedText(result.occurrenceID)}`);
+    if (result.references) lines.push(`**References:** ${linkOrEscapedText(result.references)}`);
     if (result.datasetKey) lines.push(`**Dataset key:** ${result.datasetKey}`);
+    if (result.datasetName)
+      lines.push(`**Dataset name:** ${escapeMarkdownText(result.datasetName)}`);
+    if (result.isInCluster != null) lines.push(`**In cluster:** ${result.isInCluster}`);
     if (result.publishingCountry) lines.push(`**Publishing country:** ${result.publishingCountry}`);
     if (result.publishingOrganizationKey)
       lines.push(
@@ -460,22 +578,25 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       lines.push(`\n**Media:** ${result.media.length} item(s)`);
       for (const m of result.media) {
         const mediaType = m.type ?? 'Media';
-        const mediaTitle = m.title ? ` — ${m.title}` : '';
-        const mediaFmt = m.format ? ` (${m.format})` : '';
-        const mediaLicense = m.license ? ` [${m.license}]` : '';
+        const mediaTitle = m.title ? ` — ${escapeMarkdownText(m.title)}` : '';
+        const mediaFmt = m.format ? ` (${escapeMarkdownText(m.format)})` : '';
+        const mediaLicense = m.license ? ` [${escapeMarkdownText(m.license)}]` : '';
         const mediaRights = m.rightsHolder
           ? ` (rights holder: ${escapeMarkdownText(m.rightsHolder)})`
           : '';
+        const mediaLink = m.identifier ? `: ${linkOrEscapedText(m.identifier)}` : '';
         lines.push(
-          `  - ${mediaType}${mediaTitle}${mediaFmt}${mediaLicense}${mediaRights}${m.identifier ? `: ${m.identifier}` : ''}`,
+          `  - ${mediaType}${mediaTitle}${mediaFmt}${mediaLicense}${mediaRights}${mediaLink}`,
         );
       }
     }
     if (result.identifiers?.length) {
       lines.push(`\n**Identifiers:** ${result.identifiers.length} item(s)`);
       for (const id of result.identifiers) {
-        const idType = id.type ? `[${id.type}] ` : '';
-        lines.push(`  - ${idType}${id.identifier ?? '(no value)'}`);
+        const idType = id.type ? `[${escapeMarkdownText(id.type)}] ` : '';
+        lines.push(
+          `  - ${idType}${id.identifier === undefined ? '(no value)' : linkOrEscapedText(id.identifier)}`,
+        );
       }
     }
     if (result.issues?.length) lines.push(`\n**Quality issues:** ${result.issues.join(', ')}`);

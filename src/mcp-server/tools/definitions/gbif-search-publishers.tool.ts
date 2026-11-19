@@ -106,7 +106,7 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
       code: JsonRpcErrorCode.InvalidParams,
       when: 'q was supplied blank or whitespace-only, country is the empty string, or GBIF could not parse the country value as a country.',
       recovery:
-        'A blank filter is not a way to skip one — omit the field instead. Supply country as an ISO 3166-1 alpha-2 code such as US, GB, or SE; a country name is not accepted.',
+        'A blank filter is not a way to skip one — omit the field instead. Supply country as an ISO 3166-1 alpha-2 code such as US, GB, or SE. GBIF also parses the alpha-3 code (GBR) and its own enum name for a country (UNITED_KINGDOM, or United Kingdom), but no other name: Britain, UK, and numeric codes fail.',
     },
   ],
 

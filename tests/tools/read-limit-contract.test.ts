@@ -220,6 +220,54 @@ describe('read limit contract', () => {
       expect(fetch).toHaveBeenCalledTimes(1);
     },
   );
+  /**
+   * #91 — GBIF refuses a facet page past 1,200,000 on every scope, counting facetOffset
+   * plus the facetLimit sent: the clamped limit and one lookahead bucket. So facetLimit
+   * 101 one page short of the ceiling is sent as 101 and works, and one bucket further
+   * fails before any request whether facetLimit is 100 or the clamped 101.
+   */
+  it('applies the facet limit and its lookahead before checking the facet paging ceiling', async () => {
+    const fetch = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ count: 2269, facets: [{ field: 'SPECIES_KEY', counts: [] }] }),
+          ),
+        ),
+      );
+    vi.stubGlobal('fetch', fetch);
+    const input = { facet: 'SPECIES_KEY', taxonKey: 2435261 } as const;
+    const edge = await runToolContract(gbifOccurrenceFacets, {
+      ...input,
+      facetLimit: 101,
+      facetOffset: 1_199_899,
+    });
+    expect(edge.isError).not.toBe(true);
+    expect(edge.structuredContent).toMatchObject({ facetLimit: 100, facetOffset: 1_199_899 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const sent = new URL(fetch.mock.calls[0][0]).searchParams;
+    expect(sent.get('facetLimit')).toBe('101');
+    expect(sent.get('facetOffset')).toBe('1199899');
+    for (const facetLimit of [100, 101]) {
+      const past = await runToolContract(gbifOccurrenceFacets, {
+        ...input,
+        facetLimit,
+        facetOffset: 1_199_900,
+      });
+      expect(past.isError).toBe(true);
+      expect(past.structuredContent?.error).toMatchObject({
+        data: {
+          reason: 'pagination_cap_exceeded',
+          recovery: { hint: expect.stringContaining('1,199,999') },
+        },
+      });
+      expect(JSON.stringify(past.content)).toContain(
+        'facetOffset + facetLimit (1200000) exceeds 1,199,999',
+      );
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('uses applied facet size for lookahead, re-slicing and continuation', async () => {
     const fetch = vi.fn().mockImplementation((address: string) => {
       const url = new URL(address);

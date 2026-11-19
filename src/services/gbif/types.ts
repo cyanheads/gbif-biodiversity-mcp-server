@@ -36,14 +36,23 @@ export type TaxonomicRank =
   | 'FORM'
   | 'UNRANKED';
 
-export type TaxonomicStatus =
-  | 'ACCEPTED'
-  | 'SYNONYM'
-  | 'HOMOTYPIC_SYNONYM'
-  | 'HETEROTYPIC_SYNONYM'
-  | 'DOUBTFUL'
-  | 'MISAPPLIED'
-  | 'PROPARTE_SYNONYM';
+/**
+ * The statuses `/species/search` parses as `status`, in any letter case. It answers
+ * any other value with HTTP 400 `Cannot parse … into a known TaxonomicStatus`,
+ * AMBIGUOUS_SYNONYM and PROVISIONALLY_ACCEPTED included, though
+ * `/enumeration/basic/TaxonomicStatus` lists both.
+ */
+export const TAXONOMIC_STATUS_VALUES = [
+  'ACCEPTED',
+  'DOUBTFUL',
+  'SYNONYM',
+  'HETEROTYPIC_SYNONYM',
+  'HOMOTYPIC_SYNONYM',
+  'PROPARTE_SYNONYM',
+  'MISAPPLIED',
+] as const;
+
+export type TaxonomicStatus = (typeof TAXONOMIC_STATUS_VALUES)[number];
 
 export type MatchType = 'EXACT' | 'FUZZY' | 'HIGHERRANK' | 'NONE';
 
@@ -182,9 +191,15 @@ export type RawSpeciesSearchResponse = {
   results?: RawSpeciesSearchRecord[];
 };
 
-/** Raw parent node from /species/{key}/parents */
+/**
+ * Raw parent node from /species/{key}/parents. Each node is a usage of the queried
+ * usage's own checklist (`datasetKey`); `nubKey` is its mapped backbone key, omitted
+ * where the backbone has no mapping.
+ */
 export type RawParentNode = {
   key?: number;
+  nubKey?: number;
+  datasetKey?: string;
   rank?: string;
   canonicalName?: string;
   scientificName?: string;
@@ -250,10 +265,10 @@ export type OccurrenceStatus = Exclude<OccurrenceStatusFilter, 'ANY'>;
 
 /**
  * IUCN Red List categories GBIF's occurrence index actually carries, taken from
- * an unscoped `facet=IUCN_RED_LIST_CATEGORY` over the whole index. `NE` (Not
- * Evaluated) is deliberately absent — it matches zero records, and an
- * unrecognized value is answered with HTTP 200 and a count of zero rather than
- * an error, so offering it would return a confident empty result.
+ * an unscoped `facet=IUCN_RED_LIST_CATEGORY` over the whole index; `NE` (Not
+ * Evaluated) is one of its buckets. An unrecognized value is answered with HTTP
+ * 200 and a count of zero rather than an error, so the enum keeps a typo from
+ * returning a confident empty result.
  */
 export const IUCN_RED_LIST_CATEGORY_VALUES = [
   'CR',
@@ -265,6 +280,7 @@ export const IUCN_RED_LIST_CATEGORY_VALUES = [
   'EX',
   'EW',
   'CD',
+  'NE',
 ] as const;
 
 export type IucnRedListCategory = (typeof IUCN_RED_LIST_CATEGORY_VALUES)[number];
@@ -385,30 +401,38 @@ export type License = (typeof LICENSE_VALUES)[number];
  * Biological occurrence filters accepted by GBIF occurrence search, each under the
  * name the occurrence tools take it by; `OCCURRENCE_FILTER_TABLE` names the parameter
  * it is sent as. A member left `undefined` is not sent, so a tool can hand over its
- * parsed filter fields as-is.
+ * parsed filter fields as-is. The four that take an array — taxonKey,
+ * checklistTaxonKey, country, and basisOfRecord — send one repeated parameter per
+ * member, which GBIF ORs.
  */
 export type OccurrenceFilters = {
-  taxonKey?: number | undefined;
+  taxonKey?: number | number[] | undefined;
   /**
-   * A Catalogue of Life key, sent as `taxonKey`: GBIF reads `taxonKey` against the
+   * Catalogue of Life keys, sent as `taxonKey`: GBIF reads `taxonKey` against the
    * checklist `checklistKey` selects, and ignores a parameter it does not know.
    */
-  checklistTaxonKey?: string | undefined;
+  checklistTaxonKey?: string | string[] | undefined;
   checklistKey?: ChecklistKey | undefined;
   scientificName?: string | undefined;
-  country?: string | undefined;
+  country?: string | string[] | undefined;
   publishingCountry?: string | undefined;
   stateProvince?: string | undefined;
   decimalLatitude?: string | undefined;
   decimalLongitude?: string | undefined;
   geometry?: string | undefined;
+  /** `latitude,longitude,distance`, the distance carrying its `km` or `m` unit. */
+  geoDistance?: string | undefined;
   year?: string | undefined;
-  month?: number | undefined;
-  basisOfRecord?: BasisOfRecord | undefined;
+  /** One month as a number, or the text GBIF reads: one month or a `min,max` range. */
+  month?: number | string | undefined;
+  eventDate?: string | undefined;
+  basisOfRecord?: BasisOfRecord | BasisOfRecord[] | undefined;
   hasCoordinate?: boolean | undefined;
   hasGeospatialIssue?: boolean | undefined;
   isInCluster?: boolean | undefined;
   coordinateUncertaintyInMeters?: string | undefined;
+  elevation?: string | undefined;
+  depth?: string | undefined;
   datasetKey?: string | undefined;
   publishingOrg?: string | undefined;
   occurrenceStatus?: OccurrenceStatus | undefined;
@@ -442,13 +466,17 @@ const OCCURRENCE_FILTER_TABLE = {
   decimalLatitude: true,
   decimalLongitude: true,
   geometry: true,
+  geoDistance: true,
   year: true,
   month: true,
+  eventDate: true,
   basisOfRecord: true,
   hasCoordinate: true,
   hasGeospatialIssue: true,
   isInCluster: true,
   coordinateUncertaintyInMeters: true,
+  elevation: true,
+  depth: true,
   datasetKey: true,
   publishingOrg: true,
   catalogNumber: true,
@@ -542,6 +570,17 @@ export type RawOccurrenceRecord = {
   typeStatus?: string;
   iucnRedListCategory?: string;
   datasetName?: string;
+  informationWithheld?: string;
+  dataGeneralizations?: string;
+  references?: string;
+  occurrenceRemarks?: string;
+  habitat?: string;
+  samplingProtocol?: string;
+  organismQuantity?: number;
+  organismQuantityType?: string;
+  /** `YYYY-MM-DDTHH:MM:SS` with no offset; a date-only or year-only value arrives padded. */
+  dateIdentified?: string;
+  isInCluster?: boolean;
   issues?: string[];
   media?: RawMedia[];
   identifiers?: RawIdentifier[];
@@ -657,9 +696,20 @@ export type RawTemporalCoverage = {
   type?: string;
 };
 
-/** A geographic coverage entry on a dataset. */
+/**
+ * A geographic coverage entry on a dataset. GBIF maps EML's west and east bounding
+ * coordinates to `minLongitude` and `maxLongitude`, so a box crossing the
+ * antimeridian arrives with `minLongitude` above `maxLongitude`.
+ */
 export type RawGeographicCoverage = {
   description?: string;
+  boundingBox?: {
+    minLatitude?: number;
+    maxLatitude?: number;
+    minLongitude?: number;
+    maxLongitude?: number;
+    globalCoverage?: boolean;
+  };
 };
 
 /** A `/dataset/search` row, which names the publishing organization; `/dataset/{key}` carries its key only. */

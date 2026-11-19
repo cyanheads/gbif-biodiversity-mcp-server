@@ -281,6 +281,71 @@ describe('gbifDatasetResource', () => {
     expect(result.geographicCoverages).toEqual([{ description: 'Worldwide' }]);
   });
 
+  /**
+   * #95 — the resource carries what the tool carries: GBIF's deleted timestamp
+   * (live dataset 59f27a74) and each coverage's bounding box, a box with no
+   * description included (live dataset eb974f54).
+   */
+  it('returns deleted and coverage bounding boxes through the output schema', async () => {
+    const box = {
+      minLatitude: 48.14996,
+      maxLatitude: 49.06977,
+      minLongitude: 22.99683,
+      maxLongitude: 24.50901,
+      globalCoverage: false,
+    };
+    const boxOnly = {
+      minLatitude: 56.8336111111,
+      maxLatitude: 56.8347222222,
+      minLongitude: 10.2477777778,
+      maxLongitude: 10.2516666667,
+      globalCoverage: false,
+    };
+    mockGetDataset.mockResolvedValue({
+      key: '59f27a74-b861-4e34-a2d8-a50b75a83caa',
+      title: 'UCarpHT vegetation data',
+      deleted: '2026-11-10T20:11:45.006+00:00',
+      geographicCoverages: [
+        { description: '22.99683-24.50901, 49.06977-48.14996', boundingBox: box },
+        { boundingBox: boxOnly },
+        {},
+      ],
+    });
+    mockCount.mockResolvedValue(0);
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const result = gbifDatasetResource.output.parse(
+      await gbifDatasetResource.handler(
+        { datasetKey: '59f27a74-b861-4e34-a2d8-a50b75a83caa' },
+        ctx,
+      ),
+    );
+
+    expect(result).toEqual({
+      key: '59f27a74-b861-4e34-a2d8-a50b75a83caa',
+      title: 'UCarpHT vegetation data',
+      deleted: '2026-11-10T20:11:45.006+00:00',
+      recordCount: 0,
+      geographicCoverages: [
+        { description: '22.99683-24.50901, 49.06977-48.14996', boundingBox: box },
+        { boundingBox: boxOnly },
+      ],
+    });
+    expect(gbifDatasetResource.output.shape.deleted.description).toContain('no longer published');
+  });
+
+  it('returns no deleted field for a published dataset', async () => {
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY, numRecords: 1 });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
+    const result = gbifDatasetResource.output.parse(
+      await gbifDatasetResource.handler({ datasetKey: INAT_KEY }, ctx),
+    );
+
+    // The resource body is JSON, which drops undefined-valued keys.
+    expect(JSON.parse(JSON.stringify(result))).not.toHaveProperty('deleted');
+  });
+
   it('returns every contact and matching counts when under the fixed cap', async () => {
     mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, contacts: makeContacts(3) });
 

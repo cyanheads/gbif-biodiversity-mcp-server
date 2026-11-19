@@ -4,8 +4,10 @@
  */
 
 import { type Context, z } from '@cyanheads/mcp-ts-core';
+import { markdownLink } from '@cyanheads/mcp-ts-core/utils';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import {
+  BASIS_OF_RECORD_VALUES,
   CHECKLIST_KEY_VALUES,
   type ChecklistKey,
   COL_XR_CHECKLIST_KEY,
@@ -41,9 +43,12 @@ export type OccurrenceFilterInput = Omit<
 
 /** Filter echo shared by occurrence search, count and facets on both response surfaces. */
 export const occurrenceScopeSchema = z
-  .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+  .record(
+    z.string(),
+    z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.array(z.number())]),
+  )
   .describe(
-    'Effective supplied biological filters, with occurrenceStatus always included; excludes pagination and facet controls.',
+    'Effective supplied biological filters, with occurrenceStatus always included; excludes pagination and facet controls. A filter supplied as an array echoes as that array.',
   );
 
 /**
@@ -134,12 +139,119 @@ function occurrenceConcepts({
   };
 }
 
-/** The coordinate filters GBIF reads as a range only when the value holds a comma. */
-const COORDINATE_FILTERS = [
+/**
+ * The position filters — horizontal, its uncertainty, and vertical — GBIF reads as a
+ * range only when the value holds a comma, and otherwise as one exact value.
+ */
+const EXACT_MATCH_FILTERS = [
   'decimalLatitude',
   'decimalLongitude',
   'coordinateUncertaintyInMeters',
+  'elevation',
+  'depth',
 ] as const;
+
+/**
+ * A range example per `EXACT_MATCH_FILTERS` field, in that field's own unit: sent as
+ * elevation, the uncertainty example "0,1000" would be a 0–1,000 m band, not "within
+ * 1 km".
+ */
+const EXACT_MATCH_RANGE_EXAMPLES = {
+  decimalLatitude: '"38,39"',
+  decimalLongitude: '"-4,-3"',
+  coordinateUncertaintyInMeters: '"0,1000" for within 1 km',
+  elevation: '"2000,*" for 2,000 m and above',
+  depth: '"200,*" for 200 m and deeper',
+} as const satisfies Record<(typeof EXACT_MATCH_FILTERS)[number], string>;
+
+/**
+ * The range filters GBIF answers a bare `*` on with HTTP 404 and an empty body, which
+ * reaches the caller as a not-found with no reason — eventDate with a 400 naming it,
+ * refused here beside the others. Each maps to the open-ended range it does take,
+ * where `*` stands for one end, or to `undefined` where no such form is offered.
+ * Separate from `EXACT_MATCH_FILTERS`: a single year, month, or eventDate is a whole
+ * period, not an exact match to warn about.
+ */
+const BARE_STAR_FILTERS = {
+  decimalLatitude: undefined,
+  decimalLongitude: undefined,
+  coordinateUncertaintyInMeters: '"*,1000"',
+  year: '"*,1990" or "2020,*"',
+  month: '"*,5" or "9,*"',
+  eventDate: '"*,2020-06-30" or "2026-01-01,*"',
+  elevation: '"2000,*"',
+  depth: '"200,*"',
+} as const satisfies Partial<Record<keyof OccurrenceFilters, string | undefined>>;
+
+type BareStarFilter = keyof typeof BARE_STAR_FILTERS;
+const BARE_STAR_FIELDS = Object.keys(BARE_STAR_FILTERS) as BareStarFilter[];
+
+/** Message for `value` as `field` when it is a bare `*`, padded or not, else `undefined`. */
+function bareStarViolation(field: BareStarFilter, value: string): string | undefined {
+  if (value.trim() !== '*') return;
+  const open = BARE_STAR_FILTERS[field];
+  const openEnd = open === undefined ? '' : `, where "*" may stand for one open end, as in ${open}`;
+  return `${field} "${value}" is not a range: GBIF needs both ends, written "min,max" with each end inclusive${openEnd}. Omit the field to leave it unfiltered.`;
+}
+
+/**
+ * The open-ended range filters GBIF answers with the same empty-body 404 when
+ * whitespace sits between a `*` end and the comma — year `* ,1990` or `2020, *` —
+ * though it ignores padding on the outer side (` *,1990`) and beside a number end
+ * (`*, 1990`). eventDate answers that spacing with a 400 naming it, so it goes to GBIF.
+ */
+const SPACED_STAR_FILTERS = [
+  'coordinateUncertaintyInMeters',
+  'year',
+  'month',
+  'elevation',
+  'depth',
+] as const satisfies readonly BareStarFilter[];
+
+/** Message for `value` as `field` when a `*` end meets the comma through whitespace, else `undefined`. */
+function spacedStarViolation(field: string, value: string): string | undefined {
+  const comma = value.indexOf(',');
+  if (comma === -1) return;
+  const min = value.slice(0, comma);
+  const max = value.slice(comma + 1);
+  const spaced =
+    (min.trim() === '*' && min.trimEnd() !== min) ||
+    (max.trim() === '*' && max.trimStart() !== max);
+  if (!spaced) return;
+  return `${field} "${value}" has whitespace between "*" and the comma, which GBIF answers with an empty HTTP 404 rather than a range: write it "${min.trim()},${max.trim()}". Omit the field to leave it unfiltered.`;
+}
+
+/** The geoDistance units accepted here, `km` first so a kilometer distance is not read as `m`. */
+const GEO_DISTANCE_UNITS = ['km', 'm'] as const;
+
+/** True when `text`, ignoring surrounding whitespace as GBIF does, is one finite number. */
+const isNumber = (text: string) => text.trim() !== '' && Number.isFinite(Number(text));
+
+/**
+ * Message for a geoDistance that is not `latitude,longitude,distance` with the distance
+ * a number ending in a lowercase `km` or `m`, else `undefined`. GBIF reads a distance
+ * with no unit as meters — around 38.17,-3.95 on Lynx pardinus `25` counts 0 where
+ * `25km` and `25000` each count 256 — and nothing in its answer says so, so the unit
+ * is required here. GBIF ignores whitespace around each part, so this does too.
+ * Out-of-range coordinates and a zero distance are left to GBIF, whose 400 names them.
+ * Split once and read part by part, so the check is linear in the value.
+ */
+function geoDistanceViolation(value: string): string | undefined {
+  const parts = value.split(',', 4);
+  if (parts.length === 3) {
+    const [latitude, longitude, distance] = parts as [string, string, string];
+    const trimmed = distance.trim();
+    const unit = GEO_DISTANCE_UNITS.find((u) => trimmed.endsWith(u));
+    if (
+      unit !== undefined &&
+      isNumber(latitude) &&
+      isNumber(longitude) &&
+      isNumber(trimmed.slice(0, -unit.length))
+    )
+      return;
+  }
+  return `geoDistance "${value}" is not latitude,longitude,distance with the distance in a lowercase km or m unit: write it as "38.17,-3.95,25km" or "38.17,-3.95,25000m", latitude first. GBIF reads a distance with no unit as meters, so "38.17,-3.95,25" would be a 25 m circle. Omit the field to leave it unfiltered.`;
+}
 
 /**
  * The characters a GADM GID is built from — `ESP`, `ESP.1_1`, `ESP.1.6.3_1`, and
@@ -182,9 +294,11 @@ export function isColTaxonKey(value: string): boolean {
  * and case-sensitively and answers any other form — `esp.1_1`, a place name, a
  * padded value — with 200 and zero records rather than an error.
  *
- * A bare `*` on a coordinate filter is refused because GBIF answers it with HTTP
- * 404 and an empty body, which reaches the caller as a not-found with no reason;
- * `*` works only as one end of a `coordinateUncertaintyInMeters` range (`*,1000`).
+ * A bare `*` on a range filter in `BARE_STAR_FILTERS` is refused, naming the
+ * open-ended form that filter takes, because GBIF answers it with an empty-body 404,
+ * as it does a `*` end with whitespace between it and the comma (`SPACED_STAR_FILTERS`).
+ * geoDistance must carry its distance unit (`geoDistanceViolation`). Every other
+ * malformed range or date goes to GBIF, whose 400 names it.
  *
  * publishingOrg is checked like datasetKey. typeStatus and establishmentMeans must
  * name a concept of their vocabulary, ignoring case and surrounding whitespace,
@@ -196,44 +310,73 @@ export function isColTaxonKey(value: string): boolean {
  * unrelated taxon (8288 is the Catalogue of Life genus Tringa and the Backbone family
  * Lagenismataceae). So taxonKey is refused under the Catalogue of Life, and
  * checklistTaxonKey, whose alphabet is checked first, anywhere else.
+ *
+ * Each member of a checklistTaxonKey array passes the blank and alphabet checks a
+ * single key does — GBIF ORs the members, and a bad one adds nothing to the union
+ * rather than erroring. A blank member is named by its position (`checklistTaxonKey[1]`),
+ * any other by its value, and the pairing names the first member of either key
+ * filter. The members of the other array filters are checked by the schema.
  */
 export function occurrenceFilterViolation(
   input: Omit<OccurrenceFilterInput, 'occurrenceStatus'>,
 ): string | undefined {
+  const colKeys = [input.checklistTaxonKey ?? []].flat();
   const blank = firstBlankFilter({
     scientificName: input.scientificName,
     stateProvince: input.stateProvince,
     decimalLatitude: input.decimalLatitude,
     decimalLongitude: input.decimalLongitude,
     geometry: input.geometry,
+    geoDistance: input.geoDistance,
     year: input.year,
+    month: typeof input.month === 'string' ? input.month : undefined,
+    eventDate: input.eventDate,
     coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
+    elevation: input.elevation,
+    depth: input.depth,
     gadmGid: input.gadmGid,
     catalogNumber: input.catalogNumber,
     institutionCode: input.institutionCode,
     recordedBy: input.recordedBy,
     typeStatus: input.typeStatus,
     establishmentMeans: input.establishmentMeans,
-    checklistTaxonKey: input.checklistTaxonKey,
+    ...(Array.isArray(input.checklistTaxonKey)
+      ? Object.fromEntries(
+          input.checklistTaxonKey.map((key, i) => [`checklistTaxonKey[${i}]`, key]),
+        )
+      : { checklistTaxonKey: input.checklistTaxonKey }),
   });
   if (blank)
     return `${blank} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`;
-  const star = COORDINATE_FILTERS.find((field) => input[field]?.trim() === '*');
-  if (star)
-    return `${star} "${input[star]}" is not a range: GBIF needs both ends, written "min,max" with each end inclusive${star === 'coordinateUncertaintyInMeters' ? ', where "*" may stand for one open end, as in "*,1000"' : ''}. Omit the field to leave it unfiltered.`;
+  for (const field of BARE_STAR_FIELDS) {
+    const value = input[field];
+    const star = typeof value === 'string' ? bareStarViolation(field, value) : undefined;
+    if (star) return star;
+  }
+  for (const field of SPACED_STAR_FILTERS) {
+    const value = input[field];
+    const spaced = typeof value === 'string' ? spacedStarViolation(field, value) : undefined;
+    if (spaced) return spaced;
+  }
+  if (input.geoDistance !== undefined) {
+    const violation = geoDistanceViolation(input.geoDistance);
+    if (violation) return violation;
+  }
   if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey))
     return `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`;
   if (input.publishingOrg !== undefined && !isGbifUuid(input.publishingOrg))
     return `publishingOrg "${input.publishingOrg}" is not a GBIF organization UUID.`;
   if (input.gadmGid !== undefined && !GADM_GID.test(input.gadmGid))
     return `gadmGid "${input.gadmGid}" is not a GADM GID: a GID holds only uppercase letters, digits, dots, and underscores (ESP, ESP.1_1, ESP.1.5_1), and GBIF matches any other form against nothing.`;
-  if (input.checklistTaxonKey !== undefined && !isColTaxonKey(input.checklistTaxonKey))
-    return `checklistTaxonKey "${input.checklistTaxonKey}" is not a Catalogue of Life key: a key holds only uppercase letters and digits (3WSJV, 8288), and GBIF matches it case-sensitively, so a lowercase form matches nothing.`;
+  const badColKey = colKeys.find((key) => !isColTaxonKey(key));
+  if (badColKey !== undefined)
+    return `checklistTaxonKey "${badColKey}" is not a Catalogue of Life key: a key holds only uppercase letters and digits (3WSJV, 8288), and GBIF matches it case-sensitively, so a lowercase form matches nothing.`;
   const colChecklist = input.checklistKey === COL_XR_CHECKLIST_KEY;
-  if (colChecklist && input.taxonKey !== undefined)
-    return `taxonKey ${input.taxonKey} is a Backbone key, but checklistKey ${COL_XR_CHECKLIST_KEY} makes GBIF read taxonKey as a Catalogue of Life key, where a Backbone key matches nothing or an unrelated taxon. Pass the Catalogue of Life key as checklistTaxonKey instead, or omit checklistKey to scope by the Backbone taxonKey.`;
-  if (!colChecklist && input.checklistTaxonKey !== undefined)
-    return `checklistTaxonKey "${input.checklistTaxonKey}" is a Catalogue of Life key, so it needs checklistKey ${COL_XR_CHECKLIST_KEY}: under the Backbone, the default, GBIF reads it as a Backbone key and matches nothing or an unrelated taxon. Set checklistKey to ${COL_XR_CHECKLIST_KEY}, or pass a Backbone key as taxonKey instead.`;
+  const [taxonKey] = [input.taxonKey ?? []].flat();
+  if (colChecklist && taxonKey !== undefined)
+    return `taxonKey ${taxonKey} is a Backbone key, but checklistKey ${COL_XR_CHECKLIST_KEY} makes GBIF read taxonKey as a Catalogue of Life key, where a Backbone key matches nothing or an unrelated taxon. Pass the Catalogue of Life key as checklistTaxonKey instead, or omit checklistKey to scope by the Backbone taxonKey.`;
+  if (!colChecklist && colKeys[0] !== undefined)
+    return `checklistTaxonKey "${colKeys[0]}" is a Catalogue of Life key, so it needs checklistKey ${COL_XR_CHECKLIST_KEY}: under the Backbone, the default, GBIF reads it as a Backbone key and matches nothing or an unrelated taxon. Set checklistKey to ${COL_XR_CHECKLIST_KEY}, or pass a Backbone key as taxonKey instead.`;
   if (input.typeStatus !== undefined && !conceptOf(TYPE_STATUS_CONCEPTS, input.typeStatus))
     return `typeStatus "${input.typeStatus}" names no concept in GBIF's TypeStatus vocabulary, and GBIF would match it against nothing. Use one of ${TYPE_STATUS_VALUES.join(', ')} — letter case does not matter.`;
   if (
@@ -243,6 +386,70 @@ export function occurrenceFilterViolation(
     return `establishmentMeans "${input.establishmentMeans}" names no concept in GBIF's EstablishmentMeans vocabulary, and GBIF would match it against nothing. Use one of ${ESTABLISHMENT_MEANS_VALUES.join(', ')} — letter case does not matter.`;
   return;
 }
+
+/**
+ * One value, or a non-empty array of them, for an occurrence filter sent as a
+ * repeated parameter, which GBIF ORs: `["ES", "PT"]` covers both countries. Each
+ * member passes the check a single value passes. An empty array is refused, since
+ * it would send no parameter and GBIF would answer the unfiltered scope. `maxItems`
+ * bounds a filter whose members could reach GBIF's URL ceiling, past which it answers
+ * HTTP 400 (218 seven-digit taxon keys fit, 219 do not). A fresh member per use keeps
+ * the emitted JSON Schema inline.
+ */
+function oneOrMany<T extends z.ZodType>(member: () => T, maxItems?: number) {
+  const many = z.array(member()).min(1);
+  return z.union([
+    member().describe('One value.'),
+    (maxItems === undefined ? many : many.max(maxItems)).describe(
+      'Several values, OR-ed: a record matching any one of them matches.',
+    ),
+  ]);
+}
+
+/**
+ * The uppercase ISO 3166-1 alpha-2 form, the only one `/occurrence/search` matches a
+ * country filter by: `gb`, `USA`, and `Sweden` (GBIF's own name for the country)
+ * answer 200 with zero records, and any other name draws HTTP 400 `Cannot parse
+ * Britain into a known Country`.
+ */
+export const alpha2CountryCode = (field: 'country' | 'publishingCountry') =>
+  z
+    .string()
+    .regex(
+      /^[A-Z]{2}$/,
+      `${field} must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE: GBIF matches no records for a lowercase ("gb") or alpha-3 ("USA") form or for its own name for a country ("Sweden"), and rejects any other name ("Britain").`,
+    );
+
+/** `country` on the occurrence tools: one code, or any non-empty array of them — all 253 GBIF knows fit its URL ceiling. */
+export const countryFilter = () => oneOrMany(() => alpha2CountryCode('country'));
+
+/** `basisOfRecord` on the occurrence tools: one term, or a non-empty array of them. */
+export const basisOfRecordFilter = () => oneOrMany(() => z.enum(BASIS_OF_RECORD_VALUES));
+
+/**
+ * A string that spells a number, read as that number; any other value is returned as
+ * sent. The rule is the one the framework repairs a spelled number with: only when
+ * `String(n)` gives the trimmed string back, so "15" and " 15 " convert while "01",
+ * "1e3", and a blank stay strings. That repair stops at a union that also takes an
+ * array or a string, so `taxonKey` and `month` apply the rule themselves, and a client
+ * that sends a number as text is answered as one that sends the number.
+ */
+function spelledNumber(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  const number = Number(trimmed);
+  return Number.isFinite(number) && String(number) === trimmed ? number : value;
+}
+
+/**
+ * `taxonKey` on the occurrence tools: one Backbone key, or an array of 1–100 of them.
+ * A key spelled as text, alone or as a member, is read as the key.
+ */
+export const taxonKeyFilter = () =>
+  z.preprocess(
+    (value) => (Array.isArray(value) ? value.map(spelledNumber) : spelledNumber(value)),
+    oneOrMany(() => z.number().int().nonnegative(), 100),
+  );
 
 /**
  * Input fields search, count, and facets declare from one definition, so the
@@ -255,13 +462,12 @@ export function sharedOccurrenceFilterFields() {
       .enum(CHECKLIST_KEY_VALUES)
       .optional()
       .describe(
-        'Taxonomy taxon keys are read in, both in this scope and in KINGDOM_KEY through SPECIES_KEY facet buckets. Omitted, or d7dddbf4-2cf0-4f39-9b2a-bb099caae36c, is the GBIF Backbone, whose integer keys taxonKey takes; GBIF no longer updates it. 7ddf754f-d193-4cc9-b351-99906754a03b is the Catalogue of Life eXtended Release, the taxonomy GBIF now maintains: scope by one of its keys with checklistTaxonKey, which requires this value, and taxonKey is rejected under it. Records keep their Backbone taxonKey either way.',
+        'Taxonomy taxon keys are read in, both in this scope and in KINGDOM_KEY through SPECIES_KEY facet buckets. Omitted, or d7dddbf4-2cf0-4f39-9b2a-bb099caae36c, is the GBIF Backbone, whose integer keys taxonKey takes; GBIF no longer updates it. 7ddf754f-d193-4cc9-b351-99906754a03b is the Catalogue of Life eXtended Release, the taxonomy GBIF now maintains: scope by one of its keys with checklistTaxonKey, which requires this value, and taxonKey is rejected under it. Supplying either value also leaves out the records GBIF has not matched to a taxon in that checklist, which a call with no checklistKey keeps. Records keep their Backbone taxonKey either way.',
       ),
-    checklistTaxonKey: z
-      .string()
+    checklistTaxonKey: oneOrMany(() => z.string(), 100)
       .optional()
       .describe(
-        'Catalogue of Life taxon key, such as 3WSJV (Lynx pardinus), to scope to that taxon and every descendant — the checklistTaxonKey gbif_match_species or gbif_bulk_match_species returns under the same checklistKey, or a KINGDOM_KEY through SPECIES_KEY bucket of gbif_occurrence_facets under it. Requires checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b, and goes to GBIF as its taxonKey. Uppercase letters and digits only, matched case-sensitively; a digit-only key such as 8288 (the genus Tringa) is not the Backbone taxonKey of the same spelling, which names an unrelated taxon. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+        'Catalogue of Life taxon key, such as 3WSJV (Lynx pardinus), to scope to that taxon and every descendant, or an array of up to 100 keys to scope to any of them — the checklistTaxonKey gbif_match_species or gbif_bulk_match_species returns under the same checklistKey, or a KINGDOM_KEY through SPECIES_KEY bucket of gbif_occurrence_facets under it. Requires checklistKey 7ddf754f-d193-4cc9-b351-99906754a03b, and goes to GBIF as its taxonKey. Uppercase letters and digits only, matched case-sensitively; a digit-only key such as 8288 (the genus Tringa) is not the Backbone taxonKey of the same spelling, which names an unrelated taxon. Omit the field to leave it unfiltered — a blank or whitespace-only value, alone or as a member, and an empty array are rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
       ),
     decimalLatitude: z
       .string()
@@ -280,6 +486,53 @@ export function sharedOccurrenceFilterFields() {
       .optional()
       .describe(
         'Coordinate uncertainty in meters as a range "min,max", both ends inclusive, where "*" may stand for one open end: "0,1000" or "*,1000" keeps records placed to within 1 km. A value without a comma is not an upper bound: GBIF matches only records whose uncertainty is exactly that value, so "1000" is not "within 1 km". Omit the field to accept any uncertainty — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    geoDistance: z
+      .string()
+      .optional()
+      .describe(
+        'Circle around a point as "latitude,longitude,distance": latitude first, both in decimal degrees (WGS84), then a distance ending in a lowercase km or m ("38.17,-3.95,25km" keeps records within 25 km; "38.17,-3.95,25000m" is the same circle). The unit is required, because GBIF reads a distance with no unit as meters, so "38.17,-3.95,25" would be a 25 m circle; any other form is rejected. All supplied spatial filters intersect, geometry and the latitude and longitude ranges included. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    elevation: z
+      .string()
+      .optional()
+      .describe(
+        'Elevation in meters as a range "min,max", both ends inclusive, where "*" may stand for one open end ("2000,*" keeps 2,000 m and above); negatives and decimals are accepted. A value without a comma is not a bound: GBIF matches only records at exactly that elevation, so "2000" is not "2,000 m and above". Any value, "*,*" included, drops records that carry no elevation. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    depth: z
+      .string()
+      .optional()
+      .describe(
+        'Depth in meters below the local surface as a range "min,max", both ends inclusive, where "*" may stand for one open end ("200,*" keeps 200 m and deeper); negatives and decimals are accepted. A value without a comma is not a bound: GBIF matches only records at exactly that depth, so "200" is not "200 m and deeper". Any value, "*,*" included, drops records that carry no depth. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    year: z
+      .string()
+      .optional()
+      .describe(
+        'Observation year as one year ("2024") or a range "min,max", both ends inclusive ("2020,2024"), where "*" may stand for one open end: "*,1990" keeps 1990 and earlier, "2020,*" 2020 and later. Any value, "*,*" included, drops records that carry no year. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    month: z
+      .preprocess(
+        spelledNumber,
+        z.union([
+          z
+            .number()
+            .int()
+            .min(1)
+            .max(12)
+            .describe('One calendar month, 1 (January) to 12 (December).'),
+          z.string().describe('One month or a "min,max" month range, as text GBIF reads.'),
+        ]),
+      )
+      .optional()
+      .describe(
+        'Calendar month: an integer 1–12, or a string holding one month ("3", zero padding optional) or an ascending range "min,max", both ends inclusive ("3,5" for March through May), where "*" may stand for one open end ("*,5", "9,*"). A range cannot wrap past December, so a winter span such as November through February takes two calls, "11,12" and "1,2". Any value, "*,*" included, drops records that carry no month. GBIF reads the string form and rejects a month outside 1–12 or a descending range by name. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
+      ),
+    eventDate: z
+      .string()
+      .optional()
+      .describe(
+        'Event date as "YYYY", "YYYY-MM", or "YYYY-MM-DD", each covering its whole period ("2026-03" is all of March 2026), or a range "min,max" of any mix of those, both ends inclusive ("2026-01-01,2026-06-30"; "2025,2026-03"), where "*" may stand for one open end ("2026-01-01,*"). Dates only: GBIF rejects a time of day, a "/" interval, a space beside the comma, an impossible date, and a descending range by name. Any value, "*,*" included, drops records that carry no event date. Omit the field to leave it unfiltered — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered scope.',
       ),
     gadmGid: z
       .string()
@@ -369,14 +622,11 @@ export function isGbifUuid(value: string): boolean {
  * or `undefined` when every supplied value carries some. Keys are checked in
  * declaration order, so the reported field is stable for a given input.
  *
- * Every filter this server forwards used to be spread behind a `?.trim()` test,
- * which dropped a blank value instead of sending it — and GBIF answers a dropped
- * filter with the unfiltered scope. The caller that supplied a filter got the
- * answer to a wider question with nothing in the response saying so. This
- * inverts that test: the values the old guard dropped
- * are exactly the values it now names, and every value it forwarded is still
- * forwarded byte-identically — untrimmed, since GBIF trims a padded value itself
- * and normalizing one here would hide a caller-side defect.
+ * A blank value is named here rather than dropped, because GBIF answers a dropped
+ * filter with the unfiltered scope: the caller that supplied a filter would get the
+ * answer to a wider question with nothing in the response saying so. Every other
+ * value is forwarded byte-identically — untrimmed, since GBIF trims a padded value
+ * itself and normalizing one here would hide a caller-side defect.
  *
  * A blank is rejected rather than dropped even where the upstream answer is not
  * the unfiltered scope. `/dataset/search?q=` returns all 123,527 datasets while
@@ -510,14 +760,31 @@ export function recordedByNoMatchNotice(
  * Under the Catalogue of Life `checklistKey` the name answers the same zero, but
  * `taxonKey` is refused beside that checklist, so the route is a `checklistTaxonKey`
  * matched under it instead.
+ *
+ * `keyed` says the query also carried `taxonKey` or `checklistTaxonKey`. GBIF ORs the
+ * name with the key, yet a name it cannot resolve empties the whole query: `taxonKey`
+ * 2435261 counts 2,269, with "Lynx lynx" beside it 122,551, with "Zzzz zzzz" beside it
+ * 0, and `checklistTaxonKey` 3WSJV behaves the same under the Catalogue of Life. The
+ * zero then says nothing about the key's own records, so that notice names dropping
+ * the name as the way to count them, and adding the name's resolved key to the key
+ * array as the way to keep the union: [2435261, 2492483] counts 2,834,266 where the
+ * resolved Oenanthe key 2492483 alone, replacing the call's own key, counts 2,831,997.
  */
 export function scientificNameNoMatchNotice(
   scientificName: string | undefined,
   matched: number,
   checklistKey?: ChecklistKey,
+  keyed = false,
 ): string | undefined {
   if (!scientificName?.trim() || matched > 0) return;
   const col = checklistKey === COL_XR_CHECKLIST_KEY;
+  if (keyed) {
+    const key = col ? 'checklistTaxonKey' : 'taxonKey';
+    const resolve = col
+      ? `resolve the name with gbif_match_species under the same checklistKey, setting kingdom for a shared name, and add the returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}, to this call's checklistTaxonKey, which takes an array, in place of the name`
+      : "resolve the name with gbif_match_species, setting kingdom for a shared name, and add the returned taxonKey to this call's taxonKey, which takes an array, in place of the name";
+    return `Nothing matched, and scientificName "${scientificName}" was applied beside ${key}. GBIF combines the two as a union, but a name it cannot resolve, such as one shared across kingdoms (Oenanthe is a bird genus and a plant genus) or one it does not know, matches nothing and empties the whole query, the ${key} records included, so this zero does not show that ${key} has no records in this scope. Drop scientificName to count the ${key} records alone, or ${resolve}.`;
+  }
   const route = col
     ? `Resolve the name with gbif_match_species under the same checklistKey, setting kingdom for a shared name, and pass the returned checklistTaxonKey, with checklistKey ${COL_XR_CHECKLIST_KEY}, instead.`
     : 'Resolve the name with gbif_match_species, setting kingdom for a shared name, and pass the returned taxonKey instead.';
@@ -532,12 +799,24 @@ export function scientificNameNoMatchNotice(
 export function occurrenceNoMatchNotices(
   input: Pick<
     OccurrenceFilters,
-    'scientificName' | 'checklistKey' | 'stateProvince' | 'gadmGid' | 'recordedBy'
+    | 'scientificName'
+    | 'checklistKey'
+    | 'taxonKey'
+    | 'checklistTaxonKey'
+    | 'stateProvince'
+    | 'gadmGid'
+    | 'recordedBy'
   >,
   matched: number,
 ): (string | undefined)[] {
   return [
-    scientificNameNoMatchNotice(input.scientificName, matched, input.checklistKey),
+    scientificNameNoMatchNotice(
+      input.scientificName,
+      matched,
+      input.checklistKey,
+      // Key 0 is a valid taxon, so presence is tested, never truthiness.
+      input.taxonKey !== undefined || input.checklistTaxonKey !== undefined,
+    ),
     stateProvinceNoMatchNotice(input.stateProvince, matched),
     gadmGidNoMatchNotice(input.gadmGid, matched),
     recordedByNoMatchNotice(input.recordedBy, matched),
@@ -545,33 +824,34 @@ export function occurrenceNoMatchNotices(
 }
 
 /**
- * Agent-facing note naming each coordinate filter supplied without a comma, or
+ * Agent-facing note naming each position filter supplied without a comma, or
  * `undefined` when there is none. Search, count, and facets each add it to every
  * result they return.
  *
- * GBIF reads `decimalLatitude`, `decimalLongitude`, and
- * `coordinateUncertaintyInMeters` as a range only when the value holds a comma, and
- * anything else as one exact value: on one measured scope `decimalLatitude: "38"`
+ * GBIF reads the `EXACT_MATCH_FILTERS` as a range only when the value holds a comma,
+ * and anything else as one exact value: on one measured scope `decimalLatitude: "38"`
  * matches 0 records where `"38,39"` matches 504, and
- * `coordinateUncertaintyInMeters: "1000"` matches 1 where `"0,1000"` matches 615. A
- * single value reads as "near" or "within" and is neither. It is still forwarded
- * unchanged — the exact match is a filter GBIF answers and a caller can mean it —
- * so the note rides every result, not only an empty one.
+ * `coordinateUncertaintyInMeters: "1000"` matches 1 where `"0,1000"` matches 615;
+ * `elevation: "2000"` counts the 784 Quercus records `"2000,2000"` does. A single
+ * value reads as "near", "within", or "above" and is none of them. It is still
+ * forwarded unchanged — the exact match is a filter GBIF answers and a caller can
+ * mean it — so the note rides every result, not only an empty one.
  *
  * The comma alone decides. Padding does not change the reading (GBIF trims it), and
  * every comma form either ranges or fails upstream before any result exists.
  */
 export function exactCoordinateMatchNotice(
-  input: Pick<OccurrenceFilters, (typeof COORDINATE_FILTERS)[number]>,
+  input: Pick<OccurrenceFilters, (typeof EXACT_MATCH_FILTERS)[number]>,
 ): string | undefined {
-  const exact = COORDINATE_FILTERS.filter((field) => {
+  const exact = EXACT_MATCH_FILTERS.filter((field) => {
     const value = input[field];
     return value !== undefined && !value.includes(',');
   });
   if (exact.length === 0) return;
   const fields = new Intl.ListFormat('en', { type: 'conjunction' }).format(exact);
   const [verb, pronoun] = exact.length === 1 ? ['has', 'it'] : ['have', 'each'];
-  return `${fields} ${verb} no comma, so GBIF matched ${pronoun} as one exact value — only records at exactly that value, not a range around it. Send a range as "min,max", both ends inclusive ("38,39"; "0,1000" for within 1 km).`;
+  const examples = exact.map((field) => `${field} ${EXACT_MATCH_RANGE_EXAMPLES[field]}`).join('; ');
+  return `${fields} ${verb} no comma, so GBIF matched ${pronoun} as one exact value — only records at exactly that value, not a range around it. Send a range as "min,max", both ends inclusive (${examples}).`;
 }
 
 /**
@@ -742,8 +1022,8 @@ export function fromChecklistMatch(raw: RawChecklistSpeciesMatch): SpeciesMatch 
 
 /**
  * Match one name against the checklist `checklistKey` selects. Omitted, or the Backbone,
- * sends `/v1/species/match` exactly as before the parameter existed; the Catalogue of
- * Life goes through `/v2/species/match`, the only route that matches against it.
+ * goes through `/v1/species/match`; the Catalogue of Life goes through
+ * `/v2/species/match`, the only route that matches against it.
  */
 export async function matchName(
   params: { name: string; strict: boolean; kingdom?: string; rank?: string },
@@ -781,9 +1061,10 @@ export function matchKeyFields(key: MatchKey) {
  * The taxon GBIF falls back to can itself be a synonym — `Nyctea xyzzyqq` comes back as
  * the genus Nyctea, whose accepted genus is Bubo — and then the key is that accepted
  * taxon, not the one GBIF named, so the note names the accepted taxon when the answer
- * does. Only a Backbone key gets the gbif_get_species pointer, which takes Backbone
- * integers; a Catalogue of Life key reaches the occurrence tools only as
- * checklistTaxonKey beside its own checklistKey, so its pointer says so.
+ * does. Only a Backbone key gets the gbif_get_species pointer, which takes integer
+ * usage keys, and a Catalogue of Life key is a string; a Catalogue of Life key reaches
+ * the occurrence tools only as checklistTaxonKey beside its own checklistKey, so its
+ * pointer says so.
  */
 export function higherRankNote(
   name: string,
@@ -915,13 +1196,32 @@ export function projectTemporalCoverages(raw: RawTemporalCoverage[] | undefined)
 }
 
 /**
- * Project raw dataset geographic coverages to compact `{ description }` entries, keeping only
- * those that carry a description. Returns undefined when nothing survives.
+ * Project raw dataset geographic coverages to `{ description, boundingBox }` entries, keeping
+ * each that carries a description, a bounding box, or both. The box's values pass through
+ * as GBIF sends them — never validated or reordered, so a box crossing the antimeridian keeps
+ * its `minLongitude` above `maxLongitude`. Returns undefined when nothing survives.
  */
 export function compactGeographicCoverages(raw: RawGeographicCoverage[] | undefined) {
-  const entries = (raw ?? [])
-    .map((g) => ({ description: g.description }))
-    .filter((g) => g.description);
+  const entries = (raw ?? []).flatMap(({ description, boundingBox: box }) =>
+    description || box
+      ? [
+          {
+            ...(description ? { description } : {}),
+            ...(box
+              ? {
+                  boundingBox: {
+                    minLatitude: box.minLatitude,
+                    maxLatitude: box.maxLatitude,
+                    minLongitude: box.minLongitude,
+                    maxLongitude: box.maxLongitude,
+                    globalCoverage: box.globalCoverage,
+                  },
+                }
+              : {}),
+          },
+        ]
+      : [],
+  );
   return entries.length ? entries : undefined;
 }
 
@@ -1003,4 +1303,16 @@ export function escapeMarkdownText(text: string, inline = true): string {
       return character;
     return `&#${character.charCodeAt(0)};`;
   });
+}
+
+/**
+ * Render a publisher value that is usually a URL — a source-record link, an occurrenceID,
+ * a media file — as a link to itself when `markdownLink` can carry it as one: an absolute
+ * http(s) URL on one line. For any other value `markdownLink` returns escaped
+ * `label (url)` text, which can never open with an unescaped `[`; that value is rendered
+ * through `escapeMarkdownText` instead, like every other publisher string.
+ */
+export function linkOrEscapedText(value: string): string {
+  const link = markdownLink(value, value);
+  return link.startsWith('[') ? link : escapeMarkdownText(value);
 }
