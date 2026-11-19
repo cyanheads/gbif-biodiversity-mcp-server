@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.2](changelog/0.8.x/0.8.2.md) — 2026-11-19
+
+New occurrence filters (eventDate, geoDistance, elevation, depth, month ranges, array values), a species status filter, and richer occurrence and dataset records; facet paging ceilings, a bare * year, and checklist usage keys now report correctly.
+
 ## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-11-12
 
 Catalogue of Life eXtended Release keys on the match and occurrence tools, new occurrence filters and facets, richer occurrence records, per-name kingdoms in bulk matching, and offset ceilings on species and dataset search.
